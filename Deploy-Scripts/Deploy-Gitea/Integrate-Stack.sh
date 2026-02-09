@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # File: Integrate-Stack.sh
-# Description: Day-2 Integration Patcher & Healer (Rev 9 - Direct Postgres).
+# Description: Day-2 Integration Patcher & Healer (Rev 8 - Syntax Fix).
 #              1. Syncs Gitea DB Password (CLI).
 #              2. Clears Password Change Flag (Direct Postgres SQL).
 #              3. Configures VS Code (Quiet Install).
@@ -185,6 +185,7 @@ if docker ps | grep -q "Code-Server"; then
     docker exec -u 0 -e DEBIAN_FRONTEND=noninteractive Code-Server bash -c "apt-get update -qq && apt-get install -y -qq python3-pip git > /dev/null"
     
     # 2. Install Aider (User)
+    # Using --break-system-packages because this is an isolated container environment
     if docker exec -u abc -e DEBIAN_FRONTEND=noninteractive Code-Server pip3 install aider-chat --break-system-packages > /dev/null 2>&1; then
         log_succ "Aider installed successfully."
         
@@ -270,5 +271,5 @@ fi
 echo "================================================"
 echo "Integration Complete. To use Aider:"
 echo "1. Open VS Code (Port 8443)"
-echo "2. Open Terminal ('Ctrl+`')"
+echo "2. Open Terminal ('Ctrl+\`')"
 echo "3. Type: aider"
