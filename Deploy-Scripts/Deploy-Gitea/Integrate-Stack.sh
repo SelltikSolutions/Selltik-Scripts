@@ -1,10 +1,11 @@
 #!/bin/bash
 # ==============================================================================
 # File: Integrate-Stack.sh
-# Description: Day-2 Integration Patcher.
-#              1. Configures VS Code (SSH Keys/Git User).
-#              2. Links VS Code to Gitea (API Key Upload).
-#              3. Creates an AI-Workflow Demo Repo in Gitea.
+# Description: Day-2 Integration Patcher & Healer.
+#              1. Syncs Gitea DB Password to Vault (Fixes Auth Failures).
+#              2. Configures VS Code (SSH Keys/Git User).
+#              3. Links VS Code to Gitea (API Key Upload).
+#              4. Creates an AI-Workflow Demo Repo.
 # Author: Tier-3 Support
 # ==============================================================================
 
@@ -28,15 +29,16 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# 1. Load Credentials
+# 1. Load & Sanitize Credentials
 log_info "Loading Credentials from Vault..."
 if [ ! -d "$SECRETS_DIR" ]; then
     log_err "Secrets directory not found."
     exit 1
 fi
 
-ADMIN_USER=$(cat "${SECRETS_DIR}/gitea_admin_username.txt")
-ADMIN_PASS=$(cat "${SECRETS_DIR}/gitea_admin_password.txt")
+# Use tr -d '\n' to strip hidden newlines that break Basic Auth headers
+ADMIN_USER=$(cat "${SECRETS_DIR}/gitea_admin_username.txt" | tr -d '\n')
+ADMIN_PASS=$(cat "${SECRETS_DIR}/gitea_admin_password.txt" | tr -d '\n')
 GITEA_URL="http://127.0.0.1:3000"
 
 if [ -z "$ADMIN_USER" ] || [ -z "$ADMIN_PASS" ]; then
@@ -44,7 +46,15 @@ if [ -z "$ADMIN_USER" ] || [ -z "$ADMIN_PASS" ]; then
     exit 1
 fi
 
-# 2. Configure Code-Server (VS Code)
+# 2. Force Credential Sync (The Fix for 'invalid username/password')
+log_info "Synchronizing Database with Vault..."
+if docker exec -u 1000 Gitea gitea admin user change-password --username "$ADMIN_USER" --password "$ADMIN_PASS" >/dev/null 2>&1; then
+    log_succ "Admin password forcibly synced to Vault value."
+else
+    log_warn "Failed to sync password via CLI. API might fail if secrets are desynchronized."
+fi
+
+# 3. Configure Code-Server (VS Code)
 if docker ps | grep -q "Code-Server"; then
     log_info "Configuring Code-Server Identity..."
     
@@ -66,12 +76,21 @@ if docker ps | grep -q "Code-Server"; then
     # Extract Public Key
     PUB_KEY=$(docker exec -u abc Code-Server cat /config/.ssh/id_ed25519.pub)
     
-    # 3. Link to Gitea via API
+    # 4. Link to Gitea via API
     log_info "Registering SSH Key with Gitea..."
+    
+    # Wait for API availability
+    sleep 2
     
     # Check if key exists (basic check)
     KEY_CHECK=$(curl -s -u "${ADMIN_USER}:${ADMIN_PASS}" "${GITEA_URL}/api/v1/user/keys")
     
+    # Validate API Access first
+    if echo "$KEY_CHECK" | grep -q "Unauthorized"; then
+         log_err "API Authentication failed despite sync. Check server logs."
+         exit 1
+    fi
+
     if echo "$KEY_CHECK" | grep -q "Code-Server-Key"; then
         log_warn "SSH Key 'Code-Server-Key' already registered."
     else
@@ -91,7 +110,7 @@ else
     log_warn "Code-Server container not found. Skipping integration."
 fi
 
-# 4. Create AI Demo Repository
+# 5. Create AI Demo Repository
 log_info "Creating AI-Enabled Demo Repository..."
 
 REPO_NAME="ai-playground"
@@ -109,10 +128,13 @@ else
     if echo "$CREATE_RESP" | grep -q "\"id\":"; then
         log_succ "Repository '$REPO_NAME' created."
         
-        # 5. Inject AI Workflow
+        # 6. Inject AI Workflow
         log_info "Injecting Ollama Workflow..."
         
-        WORKFLOW_CONTENT="name: AI Code Review
+        # We assume the internal hostname 'ollama-worker' and port 11434
+        # We use a very simple curl to prove connectivity in the pipeline
+        WORKFLOW_CONTENT=$(cat <<EOF
+name: AI Code Review
 on: [push]
 jobs:
   ai-review:
@@ -120,14 +142,15 @@ jobs:
     steps:
       - name: Check Ollama Status
         run: curl -s http://ollama-worker:11434/api/tags
-      - name: Ask AI
+      - name: Ask AI to Review
         run: |
           curl -X POST http://ollama-worker:11434/api/generate -d '{
-            \"model\": \"tinyllama\",
-            \"prompt\": \"Explain why this code is empty.\",
-            \"stream\": false
-          }'"
-        
+            "model": "tinyllama",
+            "prompt": "You are a code reviewer. Say 'Code looks good' if you receive this.",
+            "stream": false
+          }'
+EOF
+)
         # Base64 encode content for API
         B64_CONTENT=$(echo "$WORKFLOW_CONTENT" | base64 -w 0)
         
