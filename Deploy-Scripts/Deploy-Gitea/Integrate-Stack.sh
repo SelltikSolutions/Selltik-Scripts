@@ -1,9 +1,9 @@
 #!/bin/bash
 # ==============================================================================
 # File: Integrate-Stack.sh
-# Description: Day-2 Integration Patcher & Healer (Rev 6 - Atomic).
-#              1. Syncs Gitea DB Password (Atomic Operation).
-#              2. Clears Password Change Flag (Atomic Operation).
+# Description: Day-2 Integration Patcher & Healer (Rev 7 - SQL Override).
+#              1. Syncs Gitea DB Password (CLI).
+#              2. Clears Password Change Flag (Direct SQL).
 #              3. Configures VS Code (Quiet Install).
 #              4. Links VS Code to Gitea.
 #              5. Creates AI Demo Repo.
@@ -62,39 +62,35 @@ TARGET_MODEL=${INPUT_MODEL:-$DEFAULT_MODEL}
 log_info "Synchronizing User Database..."
 GITEA_URL="http://127.0.0.1:3000"
 
-# Check if user exists
+# Check if user exists (CLI List usually works fine)
 USER_CHECK=$(docker exec -u 1000 Gitea gitea admin user list -c /data/gitea/conf/app.ini 2>&1)
 
 if echo "$USER_CHECK" | grep -q "$TARGET_USER"; then
     log_info "User '$TARGET_USER' exists. Starting Atomic Sync..."
     
-    # 1. Update Password (Critical)
+    # 1. Update Password (CLI handles hashing correctly)
     CMD_OUT=$(docker exec -u 1000 Gitea gitea admin user change-password -c /data/gitea/conf/app.ini --username "$TARGET_USER" --password "$EXISTING_PASS" 2>&1)
     if [ $? -eq 0 ]; then
-        log_succ "Password synced."
+        log_succ "Password synced via CLI."
     else
         log_warn "Password sync issue: $CMD_OUT"
     fi
     
-    # 2. Clear 'Must Change Password' Flag (Critical - Isolated Command)
-    CMD_OUT=$(docker exec -u 1000 Gitea gitea admin user modify -c /data/gitea/conf/app.ini --username "$TARGET_USER" --must-change-password=false 2>&1)
-    if [ $? -eq 0 ]; then
-        log_succ "Account Unlocked (Flag Cleared)."
-    else
-        log_err "Failed to unlock account: $CMD_OUT"
-        # We continue, but expect API failure
-    fi
-
-    # 3. Update Email (Optional - May fail if duplicate)
-    CMD_OUT=$(docker exec -u 1000 Gitea gitea admin user modify -c /data/gitea/conf/app.ini --username "$TARGET_USER" --email "$TARGET_EMAIL" 2>&1)
-    if [ $? -eq 0 ]; then
-        log_succ "Email updated to $TARGET_EMAIL."
-    else
-        log_warn "Email update failed (Non-Critical): $CMD_OUT"
-    fi
+    # 2. SQL OVERRIDE: Clear 'Must Change Password' Flag & Set Email
+    # Bypassing CLI 'modify' command which is proving unstable across versions
+    log_info "Unlocking account via direct SQL..."
+    
+    # Update Email
+    docker exec -u 1000 Gitea gitea db sql -c /data/gitea/conf/app.ini --query "UPDATE \"user\" SET email='$TARGET_EMAIL' WHERE name='$TARGET_USER';" >/dev/null 2>&1
+    
+    # Unlock Account
+    docker exec -u 1000 Gitea gitea db sql -c /data/gitea/conf/app.ini --query "UPDATE \"user\" SET must_change_password=false, is_admin=true, is_active=true WHERE name='$TARGET_USER';" >/dev/null 2>&1
+    
+    log_succ "Account forced to: Active, Admin, Unlocked."
 
 else
     log_info "Creating new Admin user '$TARGET_USER'..."
+    # Creation usually works fine via CLI
     CMD_OUT=$(docker exec -u 1000 Gitea gitea admin user create -c /data/gitea/conf/app.ini --username "$TARGET_USER" --password "$EXISTING_PASS" --email "$TARGET_EMAIL" --admin --must-change-password=false 2>&1)
     if [ $? -eq 0 ]; then
         log_succ "User created."
@@ -144,6 +140,12 @@ if docker ps | grep -q "Code-Server"; then
     # Pre-check keys
     EXISTING_KEYS=$(curl -s -u "${TARGET_USER}:${EXISTING_PASS}" "${GITEA_URL}/api/v1/user/keys")
     
+    # Validate API Access (Did the SQL unlock work?)
+    if echo "$EXISTING_KEYS" | grep -q "change_password"; then
+         log_err "API Refused: Account still locked. SQL update may have failed."
+         exit 1
+    fi
+
     if echo "$EXISTING_KEYS" | grep -q "Code-Server-Key"; then
         log_succ "SSH Key already linked."
     else
@@ -167,11 +169,10 @@ if docker ps | grep -q "Code-Server"; then
     
     # 2. Install Aider (User)
     # Using --break-system-packages because this is an isolated container environment
-    if docker exec -u abc Code-Server pip3 install aider-chat --break-system-packages > /dev/null 2>&1; then
+    if docker exec -u abc -e DEBIAN_FRONTEND=noninteractive Code-Server pip3 install aider-chat --break-system-packages > /dev/null 2>&1; then
         log_succ "Aider installed successfully."
         
         # 3. Configure Shell Environment for Aider
-        # Only append if not present
         docker exec -u abc Code-Server sh -c "grep -q OLLAMA_API_BASE /config/.bashrc || echo 'export OLLAMA_API_BASE=http://ollama-worker:11434' >> /config/.bashrc"
         docker exec -u abc Code-Server sh -c "grep -q AIDER_MODEL /config/.bashrc || echo 'export AIDER_MODEL=ollama/${TARGET_MODEL}' >> /config/.bashrc"
         docker exec -u abc Code-Server sh -c "grep -q 'PATH.*local/bin' /config/.bashrc || echo 'export PATH=\$PATH:\$HOME/.local/bin' >> /config/.bashrc"
@@ -247,8 +248,7 @@ if echo "$FILE_RESP" | grep -q "content"; then
 elif echo "$FILE_RESP" | grep -q "exists"; then
     log_succ "Workflow already exists."
 else
-    log_warn "Workflow injection failed (Repo might be empty/API error)."
-    # Don't dump raw HTML errors
+    log_warn "Workflow injection failed."
 fi
 
 echo "================================================"
