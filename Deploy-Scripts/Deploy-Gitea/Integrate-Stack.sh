@@ -1,12 +1,13 @@
 #!/bin/bash
 # ==============================================================================
 # File: Integrate-Stack.sh
-# Description: Day-2 Integration Patcher & Healer (Rev 8 - Syntax Fix).
+# Description: Day-2 Integration Patcher & Healer (Rev 10 - Silent Partner).
 #              1. Syncs Gitea DB Password (CLI).
 #              2. Clears Password Change Flag (Direct Postgres SQL).
 #              3. Configures VS Code (Quiet Install).
 #              4. Links VS Code to Gitea.
-#              5. Creates AI Demo Repo.
+#              5. Creates AI Demo Repo AND Clones it to VS Code.
+#              6. Installs Aider with "Zero-Nag" configuration.
 # Author: Tier-3 Support
 # ==============================================================================
 
@@ -185,16 +186,20 @@ if docker ps | grep -q "Code-Server"; then
     docker exec -u 0 -e DEBIAN_FRONTEND=noninteractive Code-Server bash -c "apt-get update -qq && apt-get install -y -qq python3-pip git > /dev/null"
     
     # 2. Install Aider (User)
-    # Using --break-system-packages because this is an isolated container environment
     if docker exec -u abc -e DEBIAN_FRONTEND=noninteractive Code-Server pip3 install aider-chat --break-system-packages > /dev/null 2>&1; then
         log_succ "Aider installed successfully."
         
-        # 3. Configure Shell Environment for Aider
+        # 3. Configure Shell Environment for Aider (Silencing & Wiring)
         docker exec -u abc Code-Server sh -c "grep -q OLLAMA_API_BASE /config/.bashrc || echo 'export OLLAMA_API_BASE=http://ollama-worker:11434' >> /config/.bashrc"
         docker exec -u abc Code-Server sh -c "grep -q AIDER_MODEL /config/.bashrc || echo 'export AIDER_MODEL=ollama/${TARGET_MODEL}' >> /config/.bashrc"
+        # Silence Telemetry and Update Checks
+        docker exec -u abc Code-Server sh -c "grep -q AIDER_ANALYTICS /config/.bashrc || echo 'export AIDER_ANALYTICS=false' >> /config/.bashrc"
+        docker exec -u abc Code-Server sh -c "grep -q AIDER_CHECK_UPDATE /config/.bashrc || echo 'export AIDER_CHECK_UPDATE=false' >> /config/.bashrc"
+        
+        # Ensure path
         docker exec -u abc Code-Server sh -c "grep -q 'PATH.*local/bin' /config/.bashrc || echo 'export PATH=\$PATH:\$HOME/.local/bin' >> /config/.bashrc"
         
-        log_info "Aider wired to http://ollama-worker:11434 using ${TARGET_MODEL}."
+        log_info "Aider configured (Silent Mode) using ${TARGET_MODEL}."
     else
         log_err "Aider installation failed."
     fi
@@ -203,7 +208,7 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 5. AI Workflow Injection
+# 5. AI Workflow & Repo Seeding
 # ------------------------------------------------------------------------------
 log_info "Setting up Gitea Actions Integration..."
 
@@ -226,6 +231,26 @@ if ! echo "$REPO_CHECK" | grep -q "\"id\":"; then
         exit 1
     fi
     log_succ "Repository created."
+fi
+
+# 6. Pre-Seed VS Code Workspace (Clone the Repo)
+log_info "Seeding VS Code Workspace..."
+if docker exec -u abc Code-Server test ! -d "/config/workspace/${REPO_NAME}"; then
+    # Use HTTP Basic Auth for initial clone to avoid SSH key verification prompts in scripts
+    # Note: Using Gitea internal hostname since Code-Server is on the same network
+    CLONE_URL="http://${TARGET_USER}:${EXISTING_PASS}@Gitea:3000/${TARGET_USER}/${REPO_NAME}.git"
+    
+    if docker exec -u abc Code-Server git clone "$CLONE_URL" "/config/workspace/${REPO_NAME}" > /dev/null 2>&1; then
+         log_succ "Repository cloned to /config/workspace/${REPO_NAME}."
+         
+         # Reset remote to SSH for user convenience later (optional, but nice)
+         # We need to map Gitea port 2222 if we do this, which is complex inside the container.
+         # Sticking to HTTP for now or user can update.
+    else
+         log_warn "Failed to clone repository into VS Code."
+    fi
+else
+    log_succ "Repository already exists in workspace."
 fi
 
 # Inject Workflow
@@ -272,4 +297,5 @@ echo "================================================"
 echo "Integration Complete. To use Aider:"
 echo "1. Open VS Code (Port 8443)"
 echo "2. Open Terminal ('Ctrl+\`')"
-echo "3. Type: aider"
+echo "3. Run: cd ${REPO_NAME}"
+echo "4. Run: aider"
