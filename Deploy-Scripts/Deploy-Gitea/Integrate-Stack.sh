@@ -1,10 +1,10 @@
 #!/bin/bash
 # ==============================================================================
 # File: Integrate-Stack.sh
-# Description: Day-2 Integration Patcher & Healer (Rev 7 - SQL Override).
-#              1. Syncs Gitea DB Password (CLI).
-#              2. Clears Password Change Flag (Direct SQL).
-#              3. Configures VS Code (Quiet Install).
+# Description: Day-2 Integration Patcher & Healer (Rev 8 - Cache Buster).
+#              1. Syncs Gitea DB Password & Flags via SQL.
+#              2. RESTARTS GITEA to flush application cache.
+#              3. Configures VS Code.
 #              4. Links VS Code to Gitea.
 #              5. Creates AI Demo Repo.
 # Author: Tier-3 Support
@@ -57,7 +57,7 @@ read -p "AI Model to use [$DEFAULT_MODEL]: " INPUT_MODEL
 TARGET_MODEL=${INPUT_MODEL:-$DEFAULT_MODEL}
 
 # ------------------------------------------------------------------------------
-# 2. Database Synchronization
+# 2. Database Synchronization & Cache Flush
 # ------------------------------------------------------------------------------
 log_info "Synchronizing User Database..."
 GITEA_URL="http://127.0.0.1:3000"
@@ -66,31 +66,30 @@ GITEA_URL="http://127.0.0.1:3000"
 USER_CHECK=$(docker exec -u 1000 Gitea gitea admin user list -c /data/gitea/conf/app.ini 2>&1)
 
 if echo "$USER_CHECK" | grep -q "$TARGET_USER"; then
-    log_info "User '$TARGET_USER' exists. Starting Atomic Sync..."
+    log_info "User '$TARGET_USER' exists. Injecting SQL Overrides..."
     
     # 1. Update Password (CLI handles hashing correctly)
     CMD_OUT=$(docker exec -u 1000 Gitea gitea admin user change-password -c /data/gitea/conf/app.ini --username "$TARGET_USER" --password "$EXISTING_PASS" 2>&1)
-    if [ $? -eq 0 ]; then
-        log_succ "Password synced via CLI."
-    else
-        log_warn "Password sync issue: $CMD_OUT"
-    fi
     
     # 2. SQL OVERRIDE: Clear 'Must Change Password' Flag & Set Email
-    # Bypassing CLI 'modify' command which is proving unstable across versions
-    log_info "Unlocking account via direct SQL..."
+    # Using lower(name) for case-insensitive match
+    # Quoting \"user\" because 'user' is a keyword in Postgres
+    SQL="UPDATE \"user\" SET email='$TARGET_EMAIL', must_change_password=false, is_admin=true, is_active=true WHERE lower(name)=lower('$TARGET_USER');"
     
-    # Update Email
-    docker exec -u 1000 Gitea gitea db sql -c /data/gitea/conf/app.ini --query "UPDATE \"user\" SET email='$TARGET_EMAIL' WHERE name='$TARGET_USER';" >/dev/null 2>&1
+    docker exec -u 1000 Gitea gitea db sql -c /data/gitea/conf/app.ini --query "$SQL" >/dev/null 2>&1
     
-    # Unlock Account
-    docker exec -u 1000 Gitea gitea db sql -c /data/gitea/conf/app.ini --query "UPDATE \"user\" SET must_change_password=false, is_admin=true, is_active=true WHERE name='$TARGET_USER';" >/dev/null 2>&1
+    # Verify the write
+    VERIFY_SQL="SELECT name, must_change_password FROM \"user\" WHERE lower(name)=lower('$TARGET_USER');"
+    VERIFY_OUT=$(docker exec -u 1000 Gitea gitea db sql -c /data/gitea/conf/app.ini --query "$VERIFY_SQL" 2>&1)
     
-    log_succ "Account forced to: Active, Admin, Unlocked."
+    if echo "$VERIFY_OUT" | grep -q "false"; then
+        log_succ "Database record updated (locked=false)."
+    else
+        log_warn "Database update might have failed. Verification output: $VERIFY_OUT"
+    fi
 
 else
     log_info "Creating new Admin user '$TARGET_USER'..."
-    # Creation usually works fine via CLI
     CMD_OUT=$(docker exec -u 1000 Gitea gitea admin user create -c /data/gitea/conf/app.ini --username "$TARGET_USER" --password "$EXISTING_PASS" --email "$TARGET_EMAIL" --admin --must-change-password=false 2>&1)
     if [ $? -eq 0 ]; then
         log_succ "User created."
@@ -99,6 +98,19 @@ else
         exit 1
     fi
 fi
+
+# 3. RESTART GITEA (Critical for Cache Flushing)
+log_info "Restarting Gitea to flush application cache..."
+docker restart Gitea
+
+log_info "Waiting for Gitea API..."
+for i in {1..30}; do
+    if docker exec Gitea curl -s -f http://127.0.0.1:3000/api/healthz >/dev/null 2>&1; then
+        log_succ "Gitea is back online."
+        break
+    fi
+    sleep 2
+done
 
 # ------------------------------------------------------------------------------
 # 3. Model Provisioning
@@ -135,14 +147,16 @@ if docker ps | grep -q "Code-Server"; then
 
     # API Upload
     log_info "Linking VS Code to Gitea..."
-    sleep 2
     
     # Pre-check keys
     EXISTING_KEYS=$(curl -s -u "${TARGET_USER}:${EXISTING_PASS}" "${GITEA_URL}/api/v1/user/keys")
     
-    # Validate API Access (Did the SQL unlock work?)
+    # Validate API Access (Did the Restart fix it?)
     if echo "$EXISTING_KEYS" | grep -q "change_password"; then
-         log_err "API Refused: Account still locked. SQL update may have failed."
+         log_err "API Refused: Account still locked. Cache flush failed or DB persistence issue."
+         exit 1
+    elif echo "$EXISTING_KEYS" | grep -q "Unauthorized"; then
+         log_err "API Refused: Invalid Credentials. Password sync failed."
          exit 1
     fi
 
@@ -168,7 +182,6 @@ if docker ps | grep -q "Code-Server"; then
     docker exec -u 0 -e DEBIAN_FRONTEND=noninteractive Code-Server bash -c "apt-get update -qq && apt-get install -y -qq python3-pip git > /dev/null"
     
     # 2. Install Aider (User)
-    # Using --break-system-packages because this is an isolated container environment
     if docker exec -u abc -e DEBIAN_FRONTEND=noninteractive Code-Server pip3 install aider-chat --break-system-packages > /dev/null 2>&1; then
         log_succ "Aider installed successfully."
         
