@@ -1,12 +1,12 @@
 #!/bin/bash
 # ==============================================================================
 # File: Integrate-Stack.sh
-# Description: Day-2 Integration Patcher & Healer (Rev 5 - Aider Enabled).
-#              1. Syncs Gitea DB Password.
-#              2. Configures VS Code Identity.
-#              3. Links VS Code to Gitea.
-#              4. Creates AI Demo Repo.
-#              5. Installs & Wires Aider inside VS Code.
+# Description: Day-2 Integration Patcher & Healer (Rev 6 - Atomic).
+#              1. Syncs Gitea DB Password (Atomic Operation).
+#              2. Clears Password Change Flag (Atomic Operation).
+#              3. Configures VS Code (Quiet Install).
+#              4. Links VS Code to Gitea.
+#              5. Creates AI Demo Repo.
 # Author: Tier-3 Support
 # ==============================================================================
 
@@ -66,26 +66,40 @@ GITEA_URL="http://127.0.0.1:3000"
 USER_CHECK=$(docker exec -u 1000 Gitea gitea admin user list -c /data/gitea/conf/app.ini 2>&1)
 
 if echo "$USER_CHECK" | grep -q "$TARGET_USER"; then
-    log_info "User '$TARGET_USER' exists. Ensuring Admin privileges and Password sync..."
+    log_info "User '$TARGET_USER' exists. Starting Atomic Sync..."
     
-    # 1. Update Password
-    docker exec -u 1000 Gitea gitea admin user change-password -c /data/gitea/conf/app.ini --username "$TARGET_USER" --password "$EXISTING_PASS" >/dev/null 2>&1
-    
-    # 2. CLEAR THE 'MUST CHANGE PASSWORD' FLAG
-    docker exec -u 1000 Gitea gitea admin user modify -c /data/gitea/conf/app.ini --username "$TARGET_USER" --must-change-password=false --admin --email "$TARGET_EMAIL" >/dev/null 2>&1
-    
+    # 1. Update Password (Critical)
+    CMD_OUT=$(docker exec -u 1000 Gitea gitea admin user change-password -c /data/gitea/conf/app.ini --username "$TARGET_USER" --password "$EXISTING_PASS" 2>&1)
     if [ $? -eq 0 ]; then
-        log_succ "User '$TARGET_USER' synchronized and unlocked."
+        log_succ "Password synced."
     else
-        log_err "Failed to modify user flags. API might fail."
+        log_warn "Password sync issue: $CMD_OUT"
     fi
+    
+    # 2. Clear 'Must Change Password' Flag (Critical - Isolated Command)
+    CMD_OUT=$(docker exec -u 1000 Gitea gitea admin user modify -c /data/gitea/conf/app.ini --username "$TARGET_USER" --must-change-password=false 2>&1)
+    if [ $? -eq 0 ]; then
+        log_succ "Account Unlocked (Flag Cleared)."
+    else
+        log_err "Failed to unlock account: $CMD_OUT"
+        # We continue, but expect API failure
+    fi
+
+    # 3. Update Email (Optional - May fail if duplicate)
+    CMD_OUT=$(docker exec -u 1000 Gitea gitea admin user modify -c /data/gitea/conf/app.ini --username "$TARGET_USER" --email "$TARGET_EMAIL" 2>&1)
+    if [ $? -eq 0 ]; then
+        log_succ "Email updated to $TARGET_EMAIL."
+    else
+        log_warn "Email update failed (Non-Critical): $CMD_OUT"
+    fi
+
 else
     log_info "Creating new Admin user '$TARGET_USER'..."
-    docker exec -u 1000 Gitea gitea admin user create -c /data/gitea/conf/app.ini --username "$TARGET_USER" --password "$EXISTING_PASS" --email "$TARGET_EMAIL" --admin --must-change-password=false >/dev/null 2>&1
+    CMD_OUT=$(docker exec -u 1000 Gitea gitea admin user create -c /data/gitea/conf/app.ini --username "$TARGET_USER" --password "$EXISTING_PASS" --email "$TARGET_EMAIL" --admin --must-change-password=false 2>&1)
     if [ $? -eq 0 ]; then
         log_succ "User created."
     else
-        log_err "User creation failed."
+        log_err "User creation failed: $CMD_OUT"
         exit 1
     fi
 fi
@@ -148,23 +162,19 @@ if docker ps | grep -q "Code-Server"; then
     # --- AIDER INSTALLATION ---
     log_info "Injecting Aider (AI Partner) into VS Code..."
     
-    # 1. Install Dependencies (Root)
-    # We use -qq to quiet apt
-    docker exec -u 0 Code-Server bash -c "apt-get update -qq && apt-get install -y -qq python3-pip git > /dev/null"
+    # 1. Install Dependencies (Root) - QUIET MODE
+    docker exec -u 0 -e DEBIAN_FRONTEND=noninteractive Code-Server bash -c "apt-get update -qq && apt-get install -y -qq python3-pip git > /dev/null"
     
     # 2. Install Aider (User)
     # Using --break-system-packages because this is an isolated container environment
-    docker exec -u abc Code-Server pip3 install aider-chat --break-system-packages > /dev/null 2>&1
-    
-    if [ $? -eq 0 ]; then
+    if docker exec -u abc Code-Server pip3 install aider-chat --break-system-packages > /dev/null 2>&1; then
         log_succ "Aider installed successfully."
         
         # 3. Configure Shell Environment for Aider
-        # We append to .bashrc so it persists across container restarts
-        docker exec -u abc Code-Server sh -c "echo 'export OLLAMA_API_BASE=http://ollama-worker:11434' >> /config/.bashrc"
-        docker exec -u abc Code-Server sh -c "echo 'export AIDER_MODEL=ollama/${TARGET_MODEL}' >> /config/.bashrc"
-        # Ensure path is correct for pip installs
-        docker exec -u abc Code-Server sh -c "echo 'export PATH=\$PATH:\$HOME/.local/bin' >> /config/.bashrc"
+        # Only append if not present
+        docker exec -u abc Code-Server sh -c "grep -q OLLAMA_API_BASE /config/.bashrc || echo 'export OLLAMA_API_BASE=http://ollama-worker:11434' >> /config/.bashrc"
+        docker exec -u abc Code-Server sh -c "grep -q AIDER_MODEL /config/.bashrc || echo 'export AIDER_MODEL=ollama/${TARGET_MODEL}' >> /config/.bashrc"
+        docker exec -u abc Code-Server sh -c "grep -q 'PATH.*local/bin' /config/.bashrc || echo 'export PATH=\$PATH:\$HOME/.local/bin' >> /config/.bashrc"
         
         log_info "Aider wired to http://ollama-worker:11434 using ${TARGET_MODEL}."
     else
@@ -237,11 +247,12 @@ if echo "$FILE_RESP" | grep -q "content"; then
 elif echo "$FILE_RESP" | grep -q "exists"; then
     log_succ "Workflow already exists."
 else
-    log_warn "Workflow injection failed (Repo might be empty)."
+    log_warn "Workflow injection failed (Repo might be empty/API error)."
+    # Don't dump raw HTML errors
 fi
 
 echo "================================================"
 echo "Integration Complete. To use Aider:"
 echo "1. Open VS Code (Port 8443)"
-echo "2. Open Terminal (`Ctrl+`)"
+echo "2. Open Terminal ('Ctrl+`')"
 echo "3. Type: aider"
