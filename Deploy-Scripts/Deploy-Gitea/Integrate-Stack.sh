@@ -1,16 +1,16 @@
 #!/bin/bash
 # ==============================================================================
 # File: Integrate-Stack.sh
-# Description: Day-2 Integration Patcher & Healer (Rev 2 - Verbose).
-#              1. Syncs Gitea DB Password to Vault (Fixes Auth Failures).
-#              2. Configures VS Code (SSH Keys/Git User).
-#              3. Links VS Code to Gitea (API Key Upload).
-#              4. Creates an AI-Workflow Demo Repo.
+# Description: Day-2 Integration Patcher & Healer (Rev 4 - Personalization).
+#              1. Interactive Identity & Model Wizard.
+#              2. Deep Credential Sync (Vault + DB + Flag Clearing).
+#              3. Workflow Injection with Dynamic Network Binding.
 # Author: Tier-3 Support
 # ==============================================================================
 
 STACK_DIR="/opt/Docker/Stacks/Gitea"
 SECRETS_DIR="${STACK_DIR}/secrets"
+ENV_FILE="${STACK_DIR}/.env"
 
 # ANSI Colors
 GREEN='\033[0;32m'
@@ -25,175 +25,197 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_err()  { echo -e "${RED}[ERR]${NC} $1"; }
 
 if [ "$EUID" -ne 0 ]; then
-    log_err "Root required (to access secrets/docker)."
+    log_err "Root required."
     exit 1
 fi
 
-# 1. Load & Sanitize Credentials
-log_info "Loading Credentials from Vault..."
-if [ ! -d "$SECRETS_DIR" ]; then
-    log_err "Secrets directory not found."
-    exit 1
+# ------------------------------------------------------------------------------
+# 1. Personalization Wizard
+# ------------------------------------------------------------------------------
+echo -e "${YELLOW}=== Stack Personalization ===${NC}"
+
+# Load existing defaults
+EXISTING_USER=$(cat "${SECRETS_DIR}/gitea_admin_username.txt" 2>/dev/null || echo "gitea_admin")
+EXISTING_PASS=$(cat "${SECRETS_DIR}/gitea_admin_password.txt" 2>/dev/null)
+
+read -p "Gitea Username [$EXISTING_USER]: " INPUT_USER
+TARGET_USER=${INPUT_USER:-$EXISTING_USER}
+
+read -p "Gitea Email [${TARGET_USER}@local.lan]: " INPUT_EMAIL
+TARGET_EMAIL=${INPUT_EMAIL:-"${TARGET_USER}@local.lan"}
+
+# Check if we need to update the vault
+if [ "$TARGET_USER" != "$EXISTING_USER" ]; then
+    log_info "Updating Vault with new username..."
+    echo -n "$TARGET_USER" > "${SECRETS_DIR}/gitea_admin_username.txt"
 fi
 
-# Use tr -d '\n' to strip hidden newlines
-ADMIN_USER=$(cat "${SECRETS_DIR}/gitea_admin_username.txt" | tr -d '\n')
-ADMIN_PASS=$(cat "${SECRETS_DIR}/gitea_admin_password.txt" | tr -d '\n')
+# Model Selection
+DEFAULT_MODEL="qwen2.5-coder:14b"
+read -p "AI Model to use [$DEFAULT_MODEL]: " INPUT_MODEL
+TARGET_MODEL=${INPUT_MODEL:-$DEFAULT_MODEL}
+
+# ------------------------------------------------------------------------------
+# 2. Database Synchronization
+# ------------------------------------------------------------------------------
+log_info "Synchronizing User Database..."
 GITEA_URL="http://127.0.0.1:3000"
 
-if [ -z "$ADMIN_USER" ] || [ -z "$ADMIN_PASS" ]; then
-    log_err "Credentials missing in vault."
-    exit 1
-fi
-
-# 2. Force Credential Sync (The Fix for 'invalid username/password')
-log_info "Synchronizing Database with Vault..."
-
-# Check if user exists first using explicit config path
+# Check if user exists
 USER_CHECK=$(docker exec -u 1000 Gitea gitea admin user list -c /data/gitea/conf/app.ini 2>&1)
 
-if echo "$USER_CHECK" | grep -q "$ADMIN_USER"; then
-    log_info "User '$ADMIN_USER' found in DB. Updating password..."
+if echo "$USER_CHECK" | grep -q "$TARGET_USER"; then
+    log_info "User '$TARGET_USER' exists. Ensuring Admin privileges and Password sync..."
     
-    # Capture output for debugging
-    CMD_OUT=$(docker exec -u 1000 Gitea gitea admin user change-password -c /data/gitea/conf/app.ini --username "$ADMIN_USER" --password "$ADMIN_PASS" 2>&1)
+    # 1. Update Password
+    docker exec -u 1000 Gitea gitea admin user change-password -c /data/gitea/conf/app.ini --username "$TARGET_USER" --password "$EXISTING_PASS" >/dev/null 2>&1
     
-    if [[ $? -eq 0 ]]; then
-        log_succ "Admin password forcibly synced."
+    # 2. CLEAR THE 'MUST CHANGE PASSWORD' FLAG (The Fix)
+    docker exec -u 1000 Gitea gitea admin user modify -c /data/gitea/conf/app.ini --username "$TARGET_USER" --must-change-password=false --admin --email "$TARGET_EMAIL" >/dev/null 2>&1
+    
+    if [ $? -eq 0 ]; then
+        log_succ "User '$TARGET_USER' synchronized and unlocked."
     else
-        log_err "Password sync failed!"
-        echo "   Debug Output: $CMD_OUT"
-        exit 1
+        log_err "Failed to modify user flags. API might fail."
     fi
 else
-    log_warn "User '$ADMIN_USER' NOT found in DB. Creating..."
-    
-    CMD_OUT=$(docker exec -u 1000 Gitea gitea admin user create -c /data/gitea/conf/app.ini --username "$ADMIN_USER" --password "$ADMIN_PASS" --email "${ADMIN_USER}@local.lan" --admin --must-change-password=false 2>&1)
-    
-    if [[ $? -eq 0 ]]; then
-        log_succ "Admin user created successfully."
+    log_info "Creating new Admin user '$TARGET_USER'..."
+    docker exec -u 1000 Gitea gitea admin user create -c /data/gitea/conf/app.ini --username "$TARGET_USER" --password "$EXISTING_PASS" --email "$TARGET_EMAIL" --admin --must-change-password=false >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        log_succ "User created."
     else
-        log_err "User creation failed!"
-        echo "   Debug Output: $CMD_OUT"
+        log_err "User creation failed."
         exit 1
     fi
 fi
 
-# 3. Configure Code-Server (VS Code)
-if docker ps | grep -q "Code-Server"; then
-    log_info "Configuring Code-Server Identity..."
-    
-    # Set Git Config (Global)
-    docker exec -u abc Code-Server git config --global user.name "$ADMIN_USER"
-    docker exec -u abc Code-Server git config --global user.email "${ADMIN_USER}@local.lan"
-    docker exec -u abc Code-Server git config --global init.defaultBranch main
-    log_succ "Git Global Config set."
-
-    # Generate SSH Key (Idempotent)
-    if ! docker exec -u abc Code-Server test -f /config/.ssh/id_ed25519; then
-        log_info "Generating SSH Keypair..."
-        docker exec -u abc Code-Server ssh-keygen -t ed25519 -C "${ADMIN_USER}@code-server" -f /config/.ssh/id_ed25519 -N "" >/dev/null 2>&1
-        log_succ "SSH Key Generated."
+# ------------------------------------------------------------------------------
+# 3. Model Provisioning
+# ------------------------------------------------------------------------------
+if docker ps | grep -q "Ollama-Worker"; then
+    log_info "Verifying AI Model '$TARGET_MODEL'..."
+    AVAILABLE=$(docker exec Ollama-Worker ollama list)
+    if echo "$AVAILABLE" | grep -q "$TARGET_MODEL"; then
+        log_succ "Model '$TARGET_MODEL' is already available."
     else
-        log_info "SSH Key already exists."
+        log_info "Pulling '$TARGET_MODEL' (This may take time)..."
+        # Run pull in background? No, we need it for the test.
+        if docker exec Ollama-Worker ollama pull "$TARGET_MODEL"; then
+            log_succ "Model pulled successfully."
+        else
+            log_err "Failed to pull model. Check network/storage."
+        fi
     fi
+fi
 
-    # Extract Public Key
+# ------------------------------------------------------------------------------
+# 4. VS Code Integration
+# ------------------------------------------------------------------------------
+if docker ps | grep -q "Code-Server"; then
+    log_info "Configuring VS Code Identity..."
+    docker exec -u abc Code-Server git config --global user.name "$TARGET_USER"
+    docker exec -u abc Code-Server git config --global user.email "$TARGET_EMAIL"
+    docker exec -u abc Code-Server git config --global init.defaultBranch main
+    
+    # Generate Key
+    if ! docker exec -u abc Code-Server test -f /config/.ssh/id_ed25519; then
+        docker exec -u abc Code-Server ssh-keygen -t ed25519 -C "${TARGET_EMAIL}" -f /config/.ssh/id_ed25519 -N "" >/dev/null 2>&1
+    fi
     PUB_KEY=$(docker exec -u abc Code-Server cat /config/.ssh/id_ed25519.pub)
-    
-    # 4. Link to Gitea via API
-    log_info "Registering SSH Key with Gitea..."
-    
-    # Wait for API availability
+
+    # API Upload
+    log_info "Linking VS Code to Gitea..."
     sleep 2
     
-    # Check if key exists (basic check)
-    KEY_CHECK=$(curl -s -u "${ADMIN_USER}:${ADMIN_PASS}" "${GITEA_URL}/api/v1/user/keys")
+    # Pre-check keys to avoid duplicates error
+    EXISTING_KEYS=$(curl -s -u "${TARGET_USER}:${EXISTING_PASS}" "${GITEA_URL}/api/v1/user/keys")
     
-    # Validate API Access first
-    if echo "$KEY_CHECK" | grep -q "Unauthorized" || echo "$KEY_CHECK" | grep -q "invalid"; then
-         log_err "API Authentication failed. The password sync above may have failed silently or DB/Vault mismatch persists."
-         exit 1
-    fi
-
-    if echo "$KEY_CHECK" | grep -q "Code-Server-Key"; then
-        log_warn "SSH Key 'Code-Server-Key' already registered."
+    if echo "$EXISTING_KEYS" | grep -q "Code-Server-Key"; then
+        log_succ "SSH Key already linked."
     else
-        # Post Key
         RESPONSE=$(curl -s -X POST "${GITEA_URL}/api/v1/user/keys" \
             -H "Content-Type: application/json" \
-            -u "${ADMIN_USER}:${ADMIN_PASS}" \
+            -u "${TARGET_USER}:${EXISTING_PASS}" \
             -d "{\"title\": \"Code-Server-Key\", \"key\": \"$PUB_KEY\", \"read_only\": false}")
             
         if echo "$RESPONSE" | grep -q "\"id\":"; then
-            log_succ "SSH Key successfully registered to Gitea user '$ADMIN_USER'."
+            log_succ "VS Code linked successfully."
         else
-            log_err "Failed to register key. API Response: $RESPONSE"
+            log_warn "Key registration failed. Response: $RESPONSE"
         fi
     fi
-else
-    log_warn "Code-Server container not found. Skipping integration."
 fi
 
-# 5. Create AI Demo Repository
-log_info "Creating AI-Enabled Demo Repository..."
+# ------------------------------------------------------------------------------
+# 5. AI Workflow Injection
+# ------------------------------------------------------------------------------
+log_info "Setting up AI Integration..."
+
+# Detect Network Name dynamically
+NET_NAME=$(docker inspect Ollama-Worker --format '{{range $k, $v := .NetworkSettings.Networks}}{{printf "%s\n" $k}}{{end}}' | head -n 1)
+log_info "Detected Network: $NET_NAME"
 
 REPO_NAME="ai-playground"
-REPO_CHECK=$(curl -s -u "${ADMIN_USER}:${ADMIN_PASS}" "${GITEA_URL}/api/v1/repos/${ADMIN_USER}/${REPO_NAME}")
+# Check if Repo Exists
+REPO_CHECK=$(curl -s -u "${TARGET_USER}:${EXISTING_PASS}" "${GITEA_URL}/api/v1/repos/${TARGET_USER}/${REPO_NAME}")
 
-if echo "$REPO_CHECK" | grep -q "\"id\":"; then
-    log_warn "Repository '$REPO_NAME' already exists."
-else
+if ! echo "$REPO_CHECK" | grep -q "\"id\":"; then
     # Create Repo
     CREATE_RESP=$(curl -s -X POST "${GITEA_URL}/api/v1/user/repos" \
         -H "Content-Type: application/json" \
-        -u "${ADMIN_USER}:${ADMIN_PASS}" \
+        -u "${TARGET_USER}:${EXISTING_PASS}" \
         -d "{\"name\": \"$REPO_NAME\", \"auto_init\": true, \"private\": false}")
         
-    if echo "$CREATE_RESP" | grep -q "\"id\":"; then
-        log_succ "Repository '$REPO_NAME' created."
-        
-        # 6. Inject AI Workflow
-        log_info "Injecting Ollama Workflow..."
-        
-        # We assume the internal hostname 'ollama-worker' and port 11434
-        # We use a very simple curl to prove connectivity in the pipeline
-        WORKFLOW_CONTENT=$(cat <<EOF
-name: AI Code Review
+    if ! echo "$CREATE_RESP" | grep -q "\"id\":"; then
+        log_err "Failed to create repository."
+        echo "Response: $CREATE_RESP"
+        exit 1
+    fi
+    log_succ "Repository created."
+fi
+
+# Inject Workflow
+log_info "Generating Workflow..."
+
+# Note: We inject the 'container' options to attach the job to the stack's network
+WORKFLOW_CONTENT=$(cat <<EOF
+name: AI Analysis
 on: [push]
 jobs:
-  ai-review:
+  code-review:
     runs-on: ubuntu-latest
+    container:
+      image: curlimages/curl:latest
+      options: --network ${NET_NAME}
     steps:
-      - name: Check Ollama Status
-        run: curl -s http://ollama-worker:11434/api/tags
-      - name: Ask AI to Review
+      - name: Probe AI
+        run: |
+          echo "Connecting to Ollama on ${NET_NAME}..."
+          curl -s -f http://ollama-worker:11434/api/tags
+      - name: Request Review
         run: |
           curl -X POST http://ollama-worker:11434/api/generate -d '{
-            "model": "tinyllama",
-            "prompt": "You are a code reviewer. Say 'Code looks good' if you receive this.",
+            "model": "${TARGET_MODEL}",
+            "prompt": "Review this code commit: Empty Init.",
             "stream": false
           }'
 EOF
 )
-        # Base64 encode content for API
-        B64_CONTENT=$(echo "$WORKFLOW_CONTENT" | base64 -w 0)
-        
-        # Commit File via API
-        FILE_RESP=$(curl -s -X POST "${GITEA_URL}/api/v1/repos/${ADMIN_USER}/${REPO_NAME}/contents/.gitea/workflows/ai-test.yaml" \
-            -H "Content-Type: application/json" \
-            -u "${ADMIN_USER}:${ADMIN_PASS}" \
-            -d "{\"content\": \"$B64_CONTENT\", \"message\": \"Add AI Workflow\", \"branch\": \"main\"}")
-            
-        if echo "$FILE_RESP" | grep -q "\"content\":"; then
-            log_succ "Workflow injected. Check the 'Actions' tab in Gitea!"
-        else
-            log_err "Failed to inject workflow. Response: $FILE_RESP"
-        fi
-    else
-        log_err "Failed to create repository. Response: $CREATE_RESP"
-    fi
+
+B64_CONTENT=$(echo "$WORKFLOW_CONTENT" | base64 -w 0)
+
+FILE_RESP=$(curl -s -X POST "${GITEA_URL}/api/v1/repos/${TARGET_USER}/${REPO_NAME}/contents/.gitea/workflows/ai-review.yaml" \
+    -H "Content-Type: application/json" \
+    -u "${TARGET_USER}:${EXISTING_PASS}" \
+    -d "{\"content\": \"$B64_CONTENT\", \"message\": \"Enable AI Review\", \"branch\": \"main\"}")
+
+if echo "$FILE_RESP" | grep -q "content"; then
+    log_succ "AI Workflow active using model '$TARGET_MODEL'."
+elif echo "$FILE_RESP" | grep -q "exists"; then
+    log_succ "Workflow already exists."
+else
+    log_warn "Workflow injection failed (Is the repo empty?)."
 fi
 
 echo "================================================"
-echo "Integration Patch Complete."
+echo "Setup Complete."
