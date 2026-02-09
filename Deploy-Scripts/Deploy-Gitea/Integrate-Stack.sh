@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # File: Integrate-Stack.sh
-# Description: Day-2 Integration Patcher & Healer.
+# Description: Day-2 Integration Patcher & Healer (Rev 2 - Verbose).
 #              1. Syncs Gitea DB Password to Vault (Fixes Auth Failures).
 #              2. Configures VS Code (SSH Keys/Git User).
 #              3. Links VS Code to Gitea (API Key Upload).
@@ -36,7 +36,7 @@ if [ ! -d "$SECRETS_DIR" ]; then
     exit 1
 fi
 
-# Use tr -d '\n' to strip hidden newlines that break Basic Auth headers
+# Use tr -d '\n' to strip hidden newlines
 ADMIN_USER=$(cat "${SECRETS_DIR}/gitea_admin_username.txt" | tr -d '\n')
 ADMIN_PASS=$(cat "${SECRETS_DIR}/gitea_admin_password.txt" | tr -d '\n')
 GITEA_URL="http://127.0.0.1:3000"
@@ -48,10 +48,35 @@ fi
 
 # 2. Force Credential Sync (The Fix for 'invalid username/password')
 log_info "Synchronizing Database with Vault..."
-if docker exec -u 1000 Gitea gitea admin user change-password --username "$ADMIN_USER" --password "$ADMIN_PASS" >/dev/null 2>&1; then
-    log_succ "Admin password forcibly synced to Vault value."
+
+# Check if user exists first using explicit config path
+USER_CHECK=$(docker exec -u 1000 Gitea gitea admin user list -c /data/gitea/conf/app.ini 2>&1)
+
+if echo "$USER_CHECK" | grep -q "$ADMIN_USER"; then
+    log_info "User '$ADMIN_USER' found in DB. Updating password..."
+    
+    # Capture output for debugging
+    CMD_OUT=$(docker exec -u 1000 Gitea gitea admin user change-password -c /data/gitea/conf/app.ini --username "$ADMIN_USER" --password "$ADMIN_PASS" 2>&1)
+    
+    if [[ $? -eq 0 ]]; then
+        log_succ "Admin password forcibly synced."
+    else
+        log_err "Password sync failed!"
+        echo "   Debug Output: $CMD_OUT"
+        exit 1
+    fi
 else
-    log_warn "Failed to sync password via CLI. API might fail if secrets are desynchronized."
+    log_warn "User '$ADMIN_USER' NOT found in DB. Creating..."
+    
+    CMD_OUT=$(docker exec -u 1000 Gitea gitea admin user create -c /data/gitea/conf/app.ini --username "$ADMIN_USER" --password "$ADMIN_PASS" --email "${ADMIN_USER}@local.lan" --admin --must-change-password=false 2>&1)
+    
+    if [[ $? -eq 0 ]]; then
+        log_succ "Admin user created successfully."
+    else
+        log_err "User creation failed!"
+        echo "   Debug Output: $CMD_OUT"
+        exit 1
+    fi
 fi
 
 # 3. Configure Code-Server (VS Code)
@@ -86,8 +111,8 @@ if docker ps | grep -q "Code-Server"; then
     KEY_CHECK=$(curl -s -u "${ADMIN_USER}:${ADMIN_PASS}" "${GITEA_URL}/api/v1/user/keys")
     
     # Validate API Access first
-    if echo "$KEY_CHECK" | grep -q "Unauthorized"; then
-         log_err "API Authentication failed despite sync. Check server logs."
+    if echo "$KEY_CHECK" | grep -q "Unauthorized" || echo "$KEY_CHECK" | grep -q "invalid"; then
+         log_err "API Authentication failed. The password sync above may have failed silently or DB/Vault mismatch persists."
          exit 1
     fi
 
