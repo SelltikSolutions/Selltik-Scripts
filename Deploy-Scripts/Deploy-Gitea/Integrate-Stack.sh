@@ -1,10 +1,10 @@
 #!/bin/bash
 # ==============================================================================
 # File: Integrate-Stack.sh
-# Description: Day-2 Integration Patcher & Healer (Rev 8 - Cache Buster).
-#              1. Syncs Gitea DB Password & Flags via SQL.
-#              2. RESTARTS GITEA to flush application cache.
-#              3. Configures VS Code.
+# Description: Day-2 Integration Patcher & Healer (Rev 9 - Direct Postgres).
+#              1. Syncs Gitea DB Password (CLI).
+#              2. Clears Password Change Flag (Direct Postgres SQL).
+#              3. Configures VS Code (Quiet Install).
 #              4. Links VS Code to Gitea.
 #              5. Creates AI Demo Repo.
 # Author: Tier-3 Support
@@ -38,6 +38,7 @@ echo -e "${YELLOW}=== Stack Integration & Personalization ===${NC}"
 # Load existing defaults
 EXISTING_USER=$(cat "${SECRETS_DIR}/gitea_admin_username.txt" 2>/dev/null || echo "gitea_admin")
 EXISTING_PASS=$(cat "${SECRETS_DIR}/gitea_admin_password.txt" 2>/dev/null)
+DB_PASS=$(cat "${SECRETS_DIR}/gitea_db_password.txt" 2>/dev/null)
 
 read -p "Gitea Username [$EXISTING_USER]: " INPUT_USER
 TARGET_USER=${INPUT_USER:-$EXISTING_USER}
@@ -57,7 +58,7 @@ read -p "AI Model to use [$DEFAULT_MODEL]: " INPUT_MODEL
 TARGET_MODEL=${INPUT_MODEL:-$DEFAULT_MODEL}
 
 # ------------------------------------------------------------------------------
-# 2. Database Synchronization & Cache Flush
+# 2. Database Synchronization
 # ------------------------------------------------------------------------------
 log_info "Synchronizing User Database..."
 GITEA_URL="http://127.0.0.1:3000"
@@ -72,17 +73,19 @@ if echo "$USER_CHECK" | grep -q "$TARGET_USER"; then
     CMD_OUT=$(docker exec -u 1000 Gitea gitea admin user change-password -c /data/gitea/conf/app.ini --username "$TARGET_USER" --password "$EXISTING_PASS" 2>&1)
     
     # 2. SQL OVERRIDE: Clear 'Must Change Password' Flag & Set Email
-    # Using lower(name) for case-insensitive match
-    # Quoting \"user\" because 'user' is a keyword in Postgres
-    SQL="UPDATE \"user\" SET email='$TARGET_EMAIL', must_change_password=false, is_admin=true, is_active=true WHERE lower(name)=lower('$TARGET_USER');"
+    # We execute directly against the DB container to bypass Gitea CLI versioning issues.
+    log_info "Connecting to Postgres (Gitea-DB) to force unlock..."
     
-    docker exec -u 1000 Gitea gitea db sql -c /data/gitea/conf/app.ini --query "$SQL" >/dev/null 2>&1
+    # "user" is a reserved keyword in Postgres, must be quoted
+    UPDATE_SQL="UPDATE \"user\" SET email='$TARGET_EMAIL', must_change_password=false, is_admin=true, is_active=true WHERE lower(name)=lower('$TARGET_USER');"
+    
+    docker exec -e PGPASSWORD="$DB_PASS" Gitea-DB psql -U gitea -d gitea -c "$UPDATE_SQL"
     
     # Verify the write
     VERIFY_SQL="SELECT name, must_change_password FROM \"user\" WHERE lower(name)=lower('$TARGET_USER');"
-    VERIFY_OUT=$(docker exec -u 1000 Gitea gitea db sql -c /data/gitea/conf/app.ini --query "$VERIFY_SQL" 2>&1)
+    VERIFY_OUT=$(docker exec -e PGPASSWORD="$DB_PASS" Gitea-DB psql -U gitea -d gitea -t -c "$VERIFY_SQL")
     
-    if echo "$VERIFY_OUT" | grep -q "false"; then
+    if echo "$VERIFY_OUT" | grep -q "f"; then
         log_succ "Database record updated (locked=false)."
     else
         log_warn "Database update might have failed. Verification output: $VERIFY_OUT"
