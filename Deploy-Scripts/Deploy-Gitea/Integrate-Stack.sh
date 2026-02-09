@@ -1,16 +1,17 @@
 #!/bin/bash
 # ==============================================================================
 # File: Integrate-Stack.sh
-# Description: Day-2 Integration Patcher & Healer (Rev 4 - Personalization).
-#              1. Interactive Identity & Model Wizard.
-#              2. Deep Credential Sync (Vault + DB + Flag Clearing).
-#              3. Workflow Injection with Dynamic Network Binding.
+# Description: Day-2 Integration Patcher & Healer (Rev 5 - Aider Enabled).
+#              1. Syncs Gitea DB Password.
+#              2. Configures VS Code Identity.
+#              3. Links VS Code to Gitea.
+#              4. Creates AI Demo Repo.
+#              5. Installs & Wires Aider inside VS Code.
 # Author: Tier-3 Support
 # ==============================================================================
 
 STACK_DIR="/opt/Docker/Stacks/Gitea"
 SECRETS_DIR="${STACK_DIR}/secrets"
-ENV_FILE="${STACK_DIR}/.env"
 
 # ANSI Colors
 GREEN='\033[0;32m'
@@ -25,14 +26,14 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_err()  { echo -e "${RED}[ERR]${NC} $1"; }
 
 if [ "$EUID" -ne 0 ]; then
-    log_err "Root required."
+    log_err "Root required (to access secrets/docker)."
     exit 1
 fi
 
 # ------------------------------------------------------------------------------
 # 1. Personalization Wizard
 # ------------------------------------------------------------------------------
-echo -e "${YELLOW}=== Stack Personalization ===${NC}"
+echo -e "${YELLOW}=== Stack Integration & Personalization ===${NC}"
 
 # Load existing defaults
 EXISTING_USER=$(cat "${SECRETS_DIR}/gitea_admin_username.txt" 2>/dev/null || echo "gitea_admin")
@@ -70,7 +71,7 @@ if echo "$USER_CHECK" | grep -q "$TARGET_USER"; then
     # 1. Update Password
     docker exec -u 1000 Gitea gitea admin user change-password -c /data/gitea/conf/app.ini --username "$TARGET_USER" --password "$EXISTING_PASS" >/dev/null 2>&1
     
-    # 2. CLEAR THE 'MUST CHANGE PASSWORD' FLAG (The Fix)
+    # 2. CLEAR THE 'MUST CHANGE PASSWORD' FLAG
     docker exec -u 1000 Gitea gitea admin user modify -c /data/gitea/conf/app.ini --username "$TARGET_USER" --must-change-password=false --admin --email "$TARGET_EMAIL" >/dev/null 2>&1
     
     if [ $? -eq 0 ]; then
@@ -99,7 +100,6 @@ if docker ps | grep -q "Ollama-Worker"; then
         log_succ "Model '$TARGET_MODEL' is already available."
     else
         log_info "Pulling '$TARGET_MODEL' (This may take time)..."
-        # Run pull in background? No, we need it for the test.
         if docker exec Ollama-Worker ollama pull "$TARGET_MODEL"; then
             log_succ "Model pulled successfully."
         else
@@ -109,7 +109,7 @@ if docker ps | grep -q "Ollama-Worker"; then
 fi
 
 # ------------------------------------------------------------------------------
-# 4. VS Code Integration
+# 4. VS Code Integration (Identity + Aider)
 # ------------------------------------------------------------------------------
 if docker ps | grep -q "Code-Server"; then
     log_info "Configuring VS Code Identity..."
@@ -127,7 +127,7 @@ if docker ps | grep -q "Code-Server"; then
     log_info "Linking VS Code to Gitea..."
     sleep 2
     
-    # Pre-check keys to avoid duplicates error
+    # Pre-check keys
     EXISTING_KEYS=$(curl -s -u "${TARGET_USER}:${EXISTING_PASS}" "${GITEA_URL}/api/v1/user/keys")
     
     if echo "$EXISTING_KEYS" | grep -q "Code-Server-Key"; then
@@ -144,19 +144,45 @@ if docker ps | grep -q "Code-Server"; then
             log_warn "Key registration failed. Response: $RESPONSE"
         fi
     fi
+
+    # --- AIDER INSTALLATION ---
+    log_info "Injecting Aider (AI Partner) into VS Code..."
+    
+    # 1. Install Dependencies (Root)
+    # We use -qq to quiet apt
+    docker exec -u 0 Code-Server bash -c "apt-get update -qq && apt-get install -y -qq python3-pip git > /dev/null"
+    
+    # 2. Install Aider (User)
+    # Using --break-system-packages because this is an isolated container environment
+    docker exec -u abc Code-Server pip3 install aider-chat --break-system-packages > /dev/null 2>&1
+    
+    if [ $? -eq 0 ]; then
+        log_succ "Aider installed successfully."
+        
+        # 3. Configure Shell Environment for Aider
+        # We append to .bashrc so it persists across container restarts
+        docker exec -u abc Code-Server sh -c "echo 'export OLLAMA_API_BASE=http://ollama-worker:11434' >> /config/.bashrc"
+        docker exec -u abc Code-Server sh -c "echo 'export AIDER_MODEL=ollama/${TARGET_MODEL}' >> /config/.bashrc"
+        # Ensure path is correct for pip installs
+        docker exec -u abc Code-Server sh -c "echo 'export PATH=\$PATH:\$HOME/.local/bin' >> /config/.bashrc"
+        
+        log_info "Aider wired to http://ollama-worker:11434 using ${TARGET_MODEL}."
+    else
+        log_err "Aider installation failed."
+    fi
+else
+    log_warn "Code-Server container not found. Skipping integration."
 fi
 
 # ------------------------------------------------------------------------------
 # 5. AI Workflow Injection
 # ------------------------------------------------------------------------------
-log_info "Setting up AI Integration..."
+log_info "Setting up Gitea Actions Integration..."
 
 # Detect Network Name dynamically
 NET_NAME=$(docker inspect Ollama-Worker --format '{{range $k, $v := .NetworkSettings.Networks}}{{printf "%s\n" $k}}{{end}}' | head -n 1)
-log_info "Detected Network: $NET_NAME"
 
 REPO_NAME="ai-playground"
-# Check if Repo Exists
 REPO_CHECK=$(curl -s -u "${TARGET_USER}:${EXISTING_PASS}" "${GITEA_URL}/api/v1/repos/${TARGET_USER}/${REPO_NAME}")
 
 if ! echo "$REPO_CHECK" | grep -q "\"id\":"; then
@@ -175,9 +201,8 @@ if ! echo "$REPO_CHECK" | grep -q "\"id\":"; then
 fi
 
 # Inject Workflow
-log_info "Generating Workflow..."
+log_info "Generating CI/CD Workflow..."
 
-# Note: We inject the 'container' options to attach the job to the stack's network
 WORKFLOW_CONTENT=$(cat <<EOF
 name: AI Analysis
 on: [push]
@@ -188,15 +213,13 @@ jobs:
       image: curlimages/curl:latest
       options: --network ${NET_NAME}
     steps:
-      - name: Probe AI
-        run: |
-          echo "Connecting to Ollama on ${NET_NAME}..."
-          curl -s -f http://ollama-worker:11434/api/tags
+      - name: Check Ollama Status
+        run: curl -s http://ollama-worker:11434/api/tags
       - name: Request Review
         run: |
           curl -X POST http://ollama-worker:11434/api/generate -d '{
             "model": "${TARGET_MODEL}",
-            "prompt": "Review this code commit: Empty Init.",
+            "prompt": "You are a code reviewer. Review this commit.",
             "stream": false
           }'
 EOF
@@ -210,12 +233,15 @@ FILE_RESP=$(curl -s -X POST "${GITEA_URL}/api/v1/repos/${TARGET_USER}/${REPO_NAM
     -d "{\"content\": \"$B64_CONTENT\", \"message\": \"Enable AI Review\", \"branch\": \"main\"}")
 
 if echo "$FILE_RESP" | grep -q "content"; then
-    log_succ "AI Workflow active using model '$TARGET_MODEL'."
+    log_succ "AI Workflow active."
 elif echo "$FILE_RESP" | grep -q "exists"; then
     log_succ "Workflow already exists."
 else
-    log_warn "Workflow injection failed (Is the repo empty?)."
+    log_warn "Workflow injection failed (Repo might be empty)."
 fi
 
 echo "================================================"
-echo "Setup Complete."
+echo "Integration Complete. To use Aider:"
+echo "1. Open VS Code (Port 8443)"
+echo "2. Open Terminal (`Ctrl+`)"
+echo "3. Type: aider"
