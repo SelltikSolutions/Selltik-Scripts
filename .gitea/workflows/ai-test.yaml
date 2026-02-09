@@ -1,0 +1,15 @@
+name: AI Code Review
+on: [push]
+jobs:
+  ai-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Ollama Status
+        run: curl -s http://ollama-worker:11434/api/tags
+      - name: Ask AI to Review
+        run: |
+          curl -X POST http://ollama-worker:11434/api/generate -d '{
+            "model": "tinyllama",
+            "prompt": "You are a code reviewer. Say 'Code looks good' if you receive this.",
+            "stream": false
+          }'
