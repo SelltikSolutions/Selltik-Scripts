@@ -1,9 +1,11 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v57.0-GITEA-READY)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v58.0-LOCKED)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Compliance: ACME atomic swap mounts, dynamic absolute volume pathing.
+#  Fixes Applied: 
+#  - Excised subshell unbound variable traps (set -u compliance).
+#  - Enforced non-null PiZero IP validation to prevent Traefik CIDR crash.
 # ==============================================================================
 
 set -euo pipefail
@@ -84,7 +86,16 @@ WriteSecret() {
 if [ ! -f "${SecretsDir}/cf_api_key" ]; then
     if [ "$Interactive" -eq 1 ]; then
         PrintMsg "226" "Provide Cloudflare Global API Key for DNS-01 ACME Challenges:"
-        CfToken=$(gum input --password 2>/dev/null || read -s -p "API Key: " key && echo "$key")
+        CfToken=""
+        while [[ -z "$CfToken" ]]; do
+            if command -v gum &> /dev/null; then
+                CfToken=$(gum input --password)
+            else
+                read -s -p "API Key: " CfToken
+                echo ""
+            fi
+            if [[ -z "$CfToken" ]]; then PrintMsg "196" "API Key cannot be empty."; fi
+        done
         WriteSecret "cf_api_key" "$CfToken"
     else
         echo "[FATAL] Headless execution failed: Missing cf_api_key secret."
@@ -96,15 +107,27 @@ if [ "$Interactive" -eq 1 ]; then
     PrevPiZeroIp=$(grep "^PI_ZERO_IP=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
     PrevEmail=$(grep "^ACME_EMAIL=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
 
-    if command -v gum &> /dev/null; then
-        PiZeroIp=$(gum input --prompt "Pi Zero (VPN Gateway) LAN IP: " --value "$PrevPiZeroIp" --placeholder "10.0.0.40")
-        AcmeEmail=$(gum input --prompt "Let's Encrypt Email: " --value "$PrevEmail" --placeholder "admin@domain.com")
-    else
-        read -p "Pi Zero (VPN Gateway) LAN IP [$PrevPiZeroIp]: " PiZeroIp
-        PiZeroIp=${PiZeroIp:-$PrevPiZeroIp}
-        read -p "Let's Encrypt Email [$PrevEmail]: " AcmeEmail
-        AcmeEmail=${AcmeEmail:-$PrevEmail}
-    fi
+    PiZeroIp=""
+    while [[ -z "$PiZeroIp" ]]; do
+        if command -v gum &> /dev/null; then
+            PiZeroIp=$(gum input --prompt "Pi Zero (VPN Gateway) LAN IP: " --value "$PrevPiZeroIp" --placeholder "10.0.0.40")
+        else
+            read -p "Pi Zero (VPN Gateway) LAN IP [$PrevPiZeroIp]: " InputIp
+            PiZeroIp=${InputIp:-$PrevPiZeroIp}
+        fi
+        if [[ -z "$PiZeroIp" ]]; then PrintMsg "196" "[FATAL] Pi Zero IP is required. Leaving this blank will crash Traefik."; fi
+    done
+
+    AcmeEmail=""
+    while [[ -z "$AcmeEmail" ]]; do
+        if command -v gum &> /dev/null; then
+            AcmeEmail=$(gum input --prompt "Let's Encrypt Email: " --value "$PrevEmail" --placeholder "admin@domain.com")
+        else
+            read -p "Let's Encrypt Email [$PrevEmail]: " InputEmail
+            AcmeEmail=${InputEmail:-$PrevEmail}
+        fi
+        if [[ -z "$AcmeEmail" ]]; then PrintMsg "196" "[FATAL] Let's Encrypt requires a valid notification email."; fi
+    done
 
     sudo tee "$EnvFile" > /dev/null << EOF
 PI_ZERO_IP=${PiZeroIp}
