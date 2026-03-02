@@ -1,22 +1,23 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v55.0-PROD)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v57.0-GITEA-READY)
 # ==============================================================================
-#  Fixes Applied: 
-#  - ACME storage migrated to writable directory mount for atomic swaps.
-#  - Sysctl dynamically probes for BBR to prevent script termination.
+#  Architecture: Centralized /opt/Docker GitOps Topology
+#  Compliance: ACME atomic swap mounts, dynamic absolute volume pathing.
 # ==============================================================================
 
 set -euo pipefail
 
 StackName="TraefikMonolith"
-BaseDir="/opt/${StackName}"
-ConfigDir="${BaseDir}/Config"
+BaseDir="/opt/Docker/Stacks/${StackName}"
+ConfigDir="/opt/Docker/Config"
 SecretsDir="${ConfigDir}/Secrets"
-LogsDir="${BaseDir}/Logs"
+LogsDir="/opt/Docker/Logs/${StackName}"
 EnvFile="${BaseDir}/Traefik.env"
 ComposeFile="${BaseDir}/DockerCompose.yml"
 LockFile="/var/lock/traefik_core.lock"
+
+sudo mkdir -p "$BaseDir" "$LogsDir"
 
 exec 200>"$LockFile"
 flock -n 200 || { echo "[FATAL] Another deployment instance is running."; exit 1; }
@@ -68,7 +69,7 @@ DetectOsFamily() {
 }
 DetectOsFamily
 
-sudo mkdir -p "$SecretsDir" "$LogsDir"
+sudo mkdir -p "$SecretsDir"
 sudo chmod 700 "$SecretsDir"
 
 WriteSecret() {
@@ -134,7 +135,7 @@ fi
 
 CronFile="/etc/cron.d/sovereign_updates"
 if [ ! -f "$CronFile" ]; then
-    CronExpr="0 3 * * 0 root $UpdateCmd && $UpgradeCmd && /opt/${StackName}/Deploy${StackName}.sh > /var/log/sovereign_updates.log 2>&1"
+    CronExpr="0 3 * * 0 root $UpdateCmd && $UpgradeCmd && /opt/Docker/Scripts/Deploy${StackName}.sh > /var/log/sovereign_updates.log 2>&1"
     echo "$CronExpr" | sudo tee "$CronFile" > /dev/null
     sudo chmod 644 "$CronFile"
 fi
@@ -161,7 +162,6 @@ TraefikAcmeDir="${ConfigDir}/TraefikAcme"
 sudo mkdir -p "${TraefikDir}" "${TraefikAcmeDir}"
 sudo touch "${LogsDir}/access.log"
 
-# STIG WARNING: Traefik requires strict 600 or 700 permissions on the ACME directory
 sudo chmod 700 "${TraefikAcmeDir}"
 
 sudo tee "${TraefikDir}/DynamicRules.yml" > /dev/null << EOF
@@ -207,7 +207,7 @@ networks:
 
 secrets:
   cf_api_key:
-    file: ./Config/Secrets/cf_api_key
+    file: ${SecretsDir}/cf_api_key
 
 services:
   DockerSocketProxy:
@@ -258,9 +258,9 @@ services:
     secrets:
       - cf_api_key
     volumes:
-      - ./Config/TraefikAcme:/etc/traefik/acme
-      - ./Config/Traefik/DynamicRules.yml:/etc/traefik/dynamic_rules.yml:ro
-      - ./Logs:/var/log/traefik
+      - ${ConfigDir}/TraefikAcme:/etc/traefik/acme
+      - ${ConfigDir}/Traefik/DynamicRules.yml:/etc/traefik/dynamic_rules.yml:ro
+      - ${LogsDir}:/var/log/traefik
     tmpfs:
       - /tmp
     command:
