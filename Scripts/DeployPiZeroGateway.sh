@@ -1,21 +1,22 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v55.0-PROD)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v57.0-GITEA-READY)
 # ==============================================================================
-#  Fixes Applied: 
-#  - Unbound PID relocated to dedicated tmpfs partition.
-#  - DNSSEC anchor delegated to writable host directory to solve EACCES crash.
+#  Architecture: Centralized /opt/Docker GitOps Topology
+#  Compliance: Zero-Trust bounding sets, isolated tmpfs, dynamic absolute paths.
 # ==============================================================================
 
 set -euo pipefail
 
 StackName="PiZeroGateway"
-BaseDir="/opt/${StackName}"
-ConfigDir="${BaseDir}/Config"
+BaseDir="/opt/Docker/Stacks/${StackName}"
+ConfigDir="/opt/Docker/Config"
 SecretsDir="${ConfigDir}/Secrets"
 EnvFile="${BaseDir}/Gateway.env"
 ComposeFile="${BaseDir}/DockerCompose.yml"
 LockFile="/var/lock/pizero_gateway.lock"
+
+sudo mkdir -p "$BaseDir"
 
 exec 200>"$LockFile"
 flock -n 200 || { echo "[FATAL] Another deployment instance is running."; exit 1; }
@@ -84,7 +85,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Production)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (GitOps Ready)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -159,7 +160,7 @@ fi
 
 CronFile="/etc/cron.d/sovereign_updates"
 if [ ! -f "$CronFile" ]; then
-    CronExpr="0 3 * * 0 root $UpdateCmd && $UpgradeCmd && /opt/${StackName}/Deploy${StackName}.sh > /var/log/sovereign_updates.log 2>&1"
+    CronExpr="0 3 * * 0 root $UpdateCmd && $UpgradeCmd && /opt/Docker/Scripts/Deploy${StackName}.sh > /var/log/sovereign_updates.log 2>&1"
     echo "$CronExpr" | sudo tee "$CronFile" > /dev/null
     sudo chmod 644 "$CronFile"
 fi
@@ -178,9 +179,8 @@ UnboundDir="${ConfigDir}/Unbound"
 UnboundKeysDir="${ConfigDir}/UnboundKeys"
 sudo mkdir -p "${UnboundDir}" "${UnboundKeysDir}"
 
-# STIG WARNING: Directory must be universally writable on the host so the unprivileged 
-# _unbound system user (UID varies) inside the container can safely generate the root.key
-sudo chmod 777 "${UnboundKeysDir}"
+sudo touch "${UnboundKeysDir}/root.key"
+sudo chmod 666 "${UnboundKeysDir}/root.key"
 
 if curl -sSL "https://www.internic.net/domain/named.root" -o "${UnboundDir}/RootHints.tmp"; then
     if grep -q "A.ROOT-SERVERS.NET" "${UnboundDir}/RootHints.tmp"; then
@@ -235,6 +235,7 @@ IMG_UNBOUND=$(ResolveImage "mvance/unbound:latest")
 
 sudo mkdir -p "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d"
 
+# Injecting absolute paths dynamically into the Docker Compose Volume definitions
 sudo tee "$ComposeFile" > /dev/null << EOF
 networks:
   VpnNetwork:
@@ -245,7 +246,7 @@ networks:
 
 secrets:
   pihole_pass:
-    file: ./Config/Secrets/pihole_pass
+    file: ${SecretsDir}/pihole_pass
 
 services:
   WireGuard:
@@ -254,6 +255,8 @@ services:
     networks:
       VpnNetwork:
         ipv4_address: 10.99.0.10
+    cap_drop:
+      - ALL
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
@@ -269,7 +272,7 @@ services:
       - ALLOWEDIPS=0.0.0.0/0
       - LOG_CONFS=false
     volumes:
-      - ./Config/WireGuard:/config
+      - ${ConfigDir}/WireGuard:/config
       - /lib/modules:/lib/modules:ro
     ports:
       - "\${WG_PORT}:51820/udp"
@@ -295,14 +298,15 @@ services:
     secrets:
       - pihole_pass
     volumes:
-      - ./Config/PiHole/etc-pihole:/etc/pihole
-      - ./Config/PiHole/etc-dnsmasq.d:/etc/dnsmasq.d
+      - ${ConfigDir}/PiHole/etc-pihole:/etc/pihole
+      - ${ConfigDir}/PiHole/etc-dnsmasq.d:/etc/dnsmasq.d
     ports:
       - "127.0.0.1:8080:80/tcp"
     cap_add:
       - NET_ADMIN
     depends_on:
-      - RecursiveDns
+      RecursiveDns:
+        condition: service_healthy
     restart: unless-stopped
 
   RecursiveDns:
@@ -323,9 +327,15 @@ services:
     tmpfs:
       - /opt/unbound/var/run
     volumes:
-      - ./Config/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
-      - ./Config/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
-      - ./Config/UnboundKeys:/opt/unbound/etc/unbound/keys
+      - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
+      - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
+      - ${ConfigDir}/UnboundKeys:/opt/unbound/etc/unbound/keys
+    healthcheck:
+      test: ["CMD-SHELL", "drill -p 53 cloudflare.com @127.0.0.1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
 EOF
 
