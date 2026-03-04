@@ -1,13 +1,13 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v62.0-STIG)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v63.0-SECURE-STIG)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
 #  STIG Compliance: 
-#  - V-235820: WireGuard SYS_MODULE stripped. Host kernel loads module.
+#  - V-235820: Modprobe failure trap enforced to prevent silent userspace fallback.
 #  - V-230302: Secrets permission scoped (444) for unprivileged daemon read.
-#  - V-224151: Unbound chroot restored via localized /dev tmpfs entropy overlay.
-#  - V-242417: PiHole NET_ADMIN stripped to least privilege (NET_BIND_SERVICE).
+#  - V-224151: Host entropy (/dev/urandom) mapped read-only into chroot jail.
+#  - V-242417: PiHole NET_RAW restored to prevent FTL daemon asphyxiation.
 #  - V-220934: IPv6 attack surface permanently disabled via sysctl.
 # ==============================================================================
 
@@ -90,7 +90,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (STIG Verified)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (STIG Final)"
 fi
 
 # STIG V-230302: Host directory strictly 700 to prevent path traversal
@@ -216,8 +216,11 @@ net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 sudo sysctl -p "$SysctlConf" > /dev/null 2>&1
 
-# STIG V-235820: Host pre-loads kernel module to prevent container injection.
-sudo modprobe wireguard 2>/dev/null || true
+# STIG V-235820: Hard failure trap. If kernel lacks wireguard, abort deployment.
+if ! sudo modprobe wireguard 2>/dev/null; then
+    PrintMsg "196" "[FATAL] Host kernel lacks wireguard module. Refusing to execute userspace fallback."
+    exit 1
+fi
 
 UnboundDir="${ConfigDir}/Unbound"
 sudo mkdir -p "${UnboundDir}"
@@ -235,7 +238,6 @@ else
     exit 1
 fi
 
-# STIG V-224151: chroot override removed; daemon isolated correctly.
 sudo tee "${UnboundDir}/UnboundConfig.conf" > /dev/null << EOF
 server:
     verbosity: 0
@@ -276,7 +278,7 @@ IMG_UNBOUND=$(ResolveImage "mvance/unbound:latest")
 
 sudo mkdir -p "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d"
 
-# Applying full suite of DISA STIG container mitigations.
+# Applying final layer of DISA STIG container mitigations.
 sudo tee "$ComposeFile" > /dev/null << EOF
 networks:
   VpnNetwork:
@@ -351,6 +353,7 @@ services:
       - ALL
     cap_add:
       - NET_BIND_SERVICE
+      - NET_RAW
       - CHOWN
       - SETUID
       - SETGID
@@ -377,11 +380,12 @@ services:
     tmpfs:
       - /opt/unbound/var/run
       - /opt/unbound/etc/unbound/keys
-      - /opt/unbound/etc/unbound/dev
     volumes:
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
-    entrypoint: ["/bin/sh", "-c", "cp -a /dev/random /dev/urandom /opt/unbound/etc/unbound/dev/ 2>/dev/null || true; unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || true; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
+      - /dev/urandom:/opt/unbound/etc/unbound/dev/urandom:ro
+      - /dev/random:/opt/unbound/etc/unbound/dev/random:ro
+    entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || true; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     healthcheck:
       test: ["CMD-SHELL", "nslookup cloudflare.com 127.0.0.1 || exit 1"]
       interval: 30s
