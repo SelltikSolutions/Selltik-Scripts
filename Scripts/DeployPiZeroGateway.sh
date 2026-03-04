@@ -1,12 +1,12 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v65.0-IRONCLAD)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v66.0-PERSISTENT)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
 #  Final STIG Fixes: 
-#  - CAP_CHOWN injected to Unbound to prevent EPERM entrypoint chown suicide.
-#  - Cron logging perfectly encapsulated in subshell to prevent silent apt rot.
-#  - Docker Secret locked to 600; s6-init handles privileged read during boot.
+#  - Cron variable interpolation escaped to prevent bash syntax fracture.
+#  - WireGuard CAP_NET_RAW injected to allow FwMark iptables socket binding.
+#  - Kernel module persistence explicitly routed to /etc/modules-load.d/
 # ==============================================================================
 
 set -euo pipefail
@@ -88,7 +88,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Ironclad Final)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Persistent Final)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -193,8 +193,9 @@ fi
 
 CronFile="/etc/cron.d/sovereign_updates"
 if [ ! -f "$CronFile" ]; then
-    # Subshell grouping enforces stdout/stderr capture for the entire sequence
-    CronExpr="0 3 * * 0 root /bin/bash -c '$UpdateCmd && $UpgradeCmd && /opt/Docker/Scripts/Deploy${StackName}.sh' > /var/log/sovereign_updates.log 2>&1"
+    # Double-quoted subshell ensures variables interpolate directly into the cron schedule 
+    # instead of passing raw, unresolvable strings to the system scheduler.
+    CronExpr="0 3 * * 0 root /bin/bash -c \"${UpdateCmd} && ${UpgradeCmd} && /opt/Docker/Scripts/Deploy${StackName}.sh\" > /var/log/sovereign_updates.log 2>&1"
     echo "$CronExpr" | sudo tee "$CronFile" > /dev/null
     sudo chmod 644 "$CronFile"
 fi
@@ -212,9 +213,12 @@ net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 sudo sysctl -p "$SysctlConf" > /dev/null 2>&1
 
+# Hard failure trap AND explicit reboot persistence for the routing module.
 if ! sudo modprobe wireguard 2>/dev/null; then
     PrintMsg "196" "[FATAL] Host kernel lacks wireguard module. Refusing to execute userspace fallback."
     exit 1
+else
+    echo "wireguard" | sudo tee /etc/modules-load.d/wireguard.conf > /dev/null
 fi
 
 UnboundDir="${ConfigDir}/Unbound"
@@ -297,6 +301,7 @@ services:
       - ALL
     cap_add:
       - NET_ADMIN
+      - NET_RAW
       - CHOWN
       - SETUID
       - SETGID
