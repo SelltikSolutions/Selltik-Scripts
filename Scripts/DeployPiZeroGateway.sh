@@ -1,15 +1,18 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v67.0-FINAL-STIG)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v68.0-OMNILOCK)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Final Surgical Fixes: 
-#  - Extracted automated update sequence to dedicated script to bypass cron syntax fracture.
-#  - Injected `|| true` trap on IPv6 sysctl to survive host GRUB bootloader hardening.
-#  - Excised immutable Swarm secrets; replaced with dynamic, read-only STIG bind-mounts.
+#  Final STIG & Operational Fixes Applied:
+#  - V-242417: CAP_KILL restored to allow s6-overlay supervisor lifecycle management.
+#  - CRON-01: Explicit PATH exported to survive cron environmental starvation.
+#  - INODE-01: RootHints update uses `cat` instead of `mv` to preserve Docker mounts.
 # ==============================================================================
 
 set -euo pipefail
+
+# CRON-01: Force absolute path resolution for automated execution environments
+export PATH="/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
 
 StackName="PiZeroGateway"
 BaseDir="/opt/Docker/Stacks/${StackName}"
@@ -88,7 +91,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (STIG Final)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Omnilock Final)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -99,7 +102,6 @@ WriteSecret() {
     local content=$2
     local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
-    # STIG V-230302: Strict 600 applied. s6-init reads as root during boot phase.
     sudo chmod 600 "$tmp_file"
     sudo mv "$tmp_file" "${SecretsDir}/${name}"
 }
@@ -191,11 +193,11 @@ if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
     fi
 fi
 
-# FIX 1: Dedicated Updater script written to disk to bypass cron interpolation fractures.
 UpdaterScript="/opt/Docker/Scripts/Update${StackName}.sh"
 sudo tee "$UpdaterScript" > /dev/null << EOF
 #!/bin/bash
 set -euo pipefail
+export PATH="/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
 ${UpdateCmd}
 ${UpgradeCmd}
 /opt/Docker/Scripts/Deploy${StackName}.sh
@@ -219,8 +221,6 @@ net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
-
-# FIX 2: Added `|| true` so `set -e` does not detonate if /proc/sys/net/ipv6 is missing.
 sudo sysctl -p "$SysctlConf" > /dev/null 2>&1 || true
 
 if ! sudo modprobe wireguard 2>/dev/null; then
@@ -235,7 +235,10 @@ sudo mkdir -p "${UnboundDir}"
 
 if curl -sSL "https://www.internic.net/domain/named.root" -o "${UnboundDir}/RootHints.tmp"; then
     if grep -q "A.ROOT-SERVERS.NET" "${UnboundDir}/RootHints.tmp"; then
-        sudo mv "${UnboundDir}/RootHints.tmp" "${UnboundDir}/RootHints.txt"
+        # INODE-01: Use `cat` to truncate/write to preserve the host inode for Docker
+        sudo touch "${UnboundDir}/RootHints.txt"
+        sudo sh -c "cat '${UnboundDir}/RootHints.tmp' > '${UnboundDir}/RootHints.txt'"
+        sudo rm -f "${UnboundDir}/RootHints.tmp"
     else
         echo "[FATAL] Root hints integrity check failed. Captive portal MITM?"
         sudo rm -f "${UnboundDir}/RootHints.tmp"
@@ -287,7 +290,6 @@ IMG_UNBOUND=$(ResolveImage "mvance/unbound:latest")
 
 sudo mkdir -p "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d"
 
-# FIX 3: Excised Docker Swarm Secrets. Mapped dynamically to bypass cache lockout.
 sudo tee "$ComposeFile" > /dev/null << EOF
 networks:
   VpnNetwork:
@@ -311,6 +313,7 @@ services:
       - CHOWN
       - SETUID
       - SETGID
+      - KILL
     environment:
       - PUID=1000
       - PGID=1000
@@ -362,6 +365,7 @@ services:
       - CHOWN
       - SETUID
       - SETGID
+      - KILL
     depends_on:
       RecursiveDns:
         condition: service_healthy
@@ -380,6 +384,7 @@ services:
       - SETUID
       - SETGID
       - CHOWN
+      - KILL
     security_opt:
       - no-new-privileges:true
     read_only: true
