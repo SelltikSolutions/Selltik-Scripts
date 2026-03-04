@@ -1,12 +1,12 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v70.0-APEX)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v71.0-VANGUARD)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Apex Edge-Case Fixes Applied:
-#  - BOOT-02: Healthcheck localized to INTERNAL_DOMAIN. Survives offline boots.
-#  - KERNEL-01: Static kernel bypass via `ip link` prevents modprobe false-positives.
-#  - CRON-02: IANA fetch softened. Fails gracefully to cache to prevent cron rot.
+#  Vanguard Edge-Case Fixes Applied:
+#  - HEALTH-01: Reverted to `drill` for Debian-slim compatibility; local query.
+#  - ENV-01: Silent extraction of WG_PORT/WG_PEERS prevents operational wipe.
+#  - CRON-03: Explicit Unbound restart added to Updater to force cache drop.
 # ==============================================================================
 
 set -euo pipefail
@@ -91,7 +91,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Apex Protocol)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Vanguard Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -136,6 +136,10 @@ if [ "$Interactive" -eq 1 ]; then
     PrevTraefikIp=$(grep "^TRAEFIK_IP=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
     PrevDomain=$(grep "^INTERNAL_DOMAIN=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
+    
+    # ENV-01: Silently extract and preserve operational VPN state to prevent wipe.
+    PrevWgPort=$(grep "^WG_PORT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "51820")
+    PrevWgPeers=$(grep "^WG_PEERS=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "3")
 
     TraefikIp=""
     while [[ -z "$TraefikIp" ]]; do
@@ -174,8 +178,8 @@ if [ "$Interactive" -eq 1 ]; then
 TRAEFIK_IP=${TraefikIp}
 WG_ENDPOINT=${WgEndpoint}
 INTERNAL_DOMAIN=${InternalDomain}
-WG_PORT=51820
-WG_PEERS=3
+WG_PORT=${PrevWgPort}
+WG_PEERS=${PrevWgPeers}
 TZ=UTC
 EOF
     sudo chmod 600 "$EnvFile"
@@ -207,6 +211,8 @@ export PATH="/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
 ${UpdateCmd}
 ${UpgradeCmd}
 /opt/Docker/Scripts/Deploy${StackName}.sh
+# CRON-03: Hard restart Unbound to flush RAM cache and ingest updated Root Hints
+cd /opt/Docker/Stacks/${StackName} && sudo docker compose restart UnboundDns
 EOF
 sudo chmod 700 "$UpdaterScript"
 
@@ -259,7 +265,6 @@ else
     sudo rm -f "${UnboundDir}/RootHints.tmp" || true
 fi
 
-# Fallback creation to prevent Docker from mounting a directory if cache is totally empty on day zero.
 if [ ! -f "${UnboundDir}/RootHints.txt" ]; then
     sudo touch "${UnboundDir}/RootHints.txt"
 fi
@@ -344,7 +349,6 @@ services:
       - ${ConfigDir}/WireGuard:/config
       - /lib/modules:/lib/modules:ro
     ports:
-      # PROXY-01: Explicitly pin to IPv4 to prevent docker-proxy EAFNOSUPPORT crash on GRUB-hardened hosts.
       - "0.0.0.0:\${WG_PORT}:51820/udp"
     sysctls:
       - net.ipv4.ip_forward=1
@@ -410,11 +414,10 @@ services:
     volumes:
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
-    # BOOT-01: Fallback \`touch\` injected. If unbound-anchor fails to reach IANA, the file still initializes, bypassing fatal EACCES boot-loop.
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || touch /opt/unbound/etc/unbound/keys/root.key; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     healthcheck:
-      # BOOT-02: Healthcheck targets local domain to prevent offline WAN startup death.
-      test: ["CMD-SHELL", "nslookup ${INTERNAL_DOMAIN} 127.0.0.1 || exit 1"]
+      # HEALTH-01: Corrected to `drill` with valid `@` nameserver syntax to survive slim-image tooling.
+      test: ["CMD-SHELL", "drill \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
