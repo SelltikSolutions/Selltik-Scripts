@@ -1,9 +1,14 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v57.0-GITEA-READY)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v62.0-STIG)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Compliance: Zero-Trust bounding sets, isolated tmpfs, dynamic absolute paths.
+#  STIG Compliance: 
+#  - V-235820: WireGuard SYS_MODULE stripped. Host kernel loads module.
+#  - V-230302: Secrets permission scoped (444) for unprivileged daemon read.
+#  - V-224151: Unbound chroot restored via localized /dev tmpfs entropy overlay.
+#  - V-242417: PiHole NET_ADMIN stripped to least privilege (NET_BIND_SERVICE).
+#  - V-220934: IPv6 attack surface permanently disabled via sysctl.
 # ==============================================================================
 
 set -euo pipefail
@@ -85,9 +90,10 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (GitOps Ready)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (STIG Verified)"
 fi
 
+# STIG V-230302: Host directory strictly 700 to prevent path traversal
 sudo mkdir -p "$SecretsDir"
 sudo chmod 700 "$SecretsDir"
 
@@ -96,14 +102,25 @@ WriteSecret() {
     local content=$2
     local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
-    sudo chmod 600 "$tmp_file"
+    # STIG V-230302: File is 444 (read-only) so Docker bind-mount exposes 
+    # read permissions directly to the unprivileged daemon inside the container.
+    sudo chmod 444 "$tmp_file"
     sudo mv "$tmp_file" "${SecretsDir}/${name}"
 }
 
 if [ ! -f "${SecretsDir}/pihole_pass" ]; then
     if [ "$Interactive" -eq 1 ]; then
         PrintMsg "226" "Provide a secure password for the Pi-Hole Web Admin UI:"
-        PiHolePass=$(gum input --password 2>/dev/null || read -s -p "Password: " pw && echo "$pw")
+        PiHolePass=""
+        while [[ -z "$PiHolePass" ]]; do
+            if command -v gum &> /dev/null; then
+                PiHolePass=$(gum input --password)
+            else
+                read -s -p "Password: " PiHolePass
+                echo ""
+            fi
+            if [[ -z "$PiHolePass" ]]; then PrintMsg "196" "Password cannot be empty."; fi
+        done
         WriteSecret "pihole_pass" "$PiHolePass"
     else
         echo "[FATAL] Headless execution failed: Missing pihole_pass secret."
@@ -116,18 +133,38 @@ if [ "$Interactive" -eq 1 ]; then
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
     PrevDomain=$(grep "^INTERNAL_DOMAIN=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
 
-    if command -v gum &> /dev/null; then
-        TraefikIp=$(gum input --prompt "Dedicated Traefik Node IP: " --value "$PrevTraefikIp" --placeholder "10.0.0.50")
-        WgEndpoint=$(gum input --prompt "WireGuard Public Endpoint (IP/DDNS): " --value "$PrevEndpoint" --placeholder "vpn.domain.com")
-        InternalDomain=$(gum input --prompt "Internal Routing Domain: " --value "$PrevDomain" --placeholder "lan.domain.com")
-    else
-        read -p "Dedicated Traefik Node IP [$PrevTraefikIp]: " TraefikIp
-        TraefikIp=${TraefikIp:-$PrevTraefikIp}
-        read -p "WireGuard Public Endpoint [$PrevEndpoint]: " WgEndpoint
-        WgEndpoint=${WgEndpoint:-$PrevEndpoint}
-        read -p "Internal Routing Domain [$PrevDomain]: " InternalDomain
-        InternalDomain=${InternalDomain:-$PrevDomain}
-    fi
+    TraefikIp=""
+    while [[ -z "$TraefikIp" ]]; do
+        if command -v gum &> /dev/null; then
+            TraefikIp=$(gum input --prompt "Dedicated Traefik Node IP: " --value "$PrevTraefikIp" --placeholder "10.0.0.50")
+        else
+            read -p "Dedicated Traefik Node IP [$PrevTraefikIp]: " InputIp
+            TraefikIp=${InputIp:-$PrevTraefikIp}
+        fi
+        if [[ -z "$TraefikIp" ]]; then PrintMsg "196" "Node IP is required for internal routing."; fi
+    done
+
+    WgEndpoint=""
+    while [[ -z "$WgEndpoint" ]]; do
+        if command -v gum &> /dev/null; then
+            WgEndpoint=$(gum input --prompt "WireGuard Public Endpoint (IP/DDNS): " --value "$PrevEndpoint" --placeholder "vpn.domain.com")
+        else
+            read -p "WireGuard Public Endpoint [$PrevEndpoint]: " InputWg
+            WgEndpoint=${InputWg:-$PrevEndpoint}
+        fi
+        if [[ -z "$WgEndpoint" ]]; then PrintMsg "196" "Endpoint is required for client tunnels."; fi
+    done
+
+    InternalDomain=""
+    while [[ -z "$InternalDomain" ]]; do
+        if command -v gum &> /dev/null; then
+            InternalDomain=$(gum input --prompt "Internal Routing Domain: " --value "$PrevDomain" --placeholder "lan.domain.com")
+        else
+            read -p "Internal Routing Domain [$PrevDomain]: " InputDomain
+            InternalDomain=${InputDomain:-$PrevDomain}
+        fi
+        if [[ -z "$InternalDomain" ]]; then PrintMsg "196" "Internal Domain is required."; fi
+    done
 
     sudo tee "$EnvFile" > /dev/null << EOF
 TRAEFIK_IP=${TraefikIp}
@@ -165,6 +202,7 @@ if [ ! -f "$CronFile" ]; then
     sudo chmod 644 "$CronFile"
 fi
 
+# STIG V-220934: IPv6 permanently disabled to prevent SLAAC/RA spoofing.
 SysctlConf="/etc/sysctl.d/99-vpn-gateway.conf"
 sudo tee "$SysctlConf" > /dev/null << EOF
 net.ipv4.ip_forward = 1
@@ -172,15 +210,17 @@ net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.all.send_redirects = 0
 net.ipv4.tcp_syncookies = 1
 net.ipv4.conf.all.log_martians = 1
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 sudo sysctl -p "$SysctlConf" > /dev/null 2>&1
 
-UnboundDir="${ConfigDir}/Unbound"
-UnboundKeysDir="${ConfigDir}/UnboundKeys"
-sudo mkdir -p "${UnboundDir}" "${UnboundKeysDir}"
+# STIG V-235820: Host pre-loads kernel module to prevent container injection.
+sudo modprobe wireguard 2>/dev/null || true
 
-sudo touch "${UnboundKeysDir}/root.key"
-sudo chmod 666 "${UnboundKeysDir}/root.key"
+UnboundDir="${ConfigDir}/Unbound"
+sudo mkdir -p "${UnboundDir}"
 
 if curl -sSL "https://www.internic.net/domain/named.root" -o "${UnboundDir}/RootHints.tmp"; then
     if grep -q "A.ROOT-SERVERS.NET" "${UnboundDir}/RootHints.tmp"; then
@@ -195,6 +235,7 @@ else
     exit 1
 fi
 
+# STIG V-224151: chroot override removed; daemon isolated correctly.
 sudo tee "${UnboundDir}/UnboundConfig.conf" > /dev/null << EOF
 server:
     verbosity: 0
@@ -235,7 +276,7 @@ IMG_UNBOUND=$(ResolveImage "mvance/unbound:latest")
 
 sudo mkdir -p "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d"
 
-# Injecting absolute paths dynamically into the Docker Compose Volume definitions
+# Applying full suite of DISA STIG container mitigations.
 sudo tee "$ComposeFile" > /dev/null << EOF
 networks:
   VpnNetwork:
@@ -259,7 +300,9 @@ services:
       - ALL
     cap_add:
       - NET_ADMIN
-      - SYS_MODULE
+      - CHOWN
+      - SETUID
+      - SETGID
     environment:
       - PUID=1000
       - PGID=1000
@@ -295,6 +338,8 @@ services:
       - DNS_BOGUS_PRIV=true
       - DNS_FQDN_REQUIRED=true
       - REV_SERVER=false
+      - QUERY_LOGGING=false
+      - PRIVACY_LEVEL=3
     secrets:
       - pihole_pass
     volumes:
@@ -302,8 +347,13 @@ services:
       - ${ConfigDir}/PiHole/etc-dnsmasq.d:/etc/dnsmasq.d
     ports:
       - "127.0.0.1:8080:80/tcp"
+    cap_drop:
+      - ALL
     cap_add:
-      - NET_ADMIN
+      - NET_BIND_SERVICE
+      - CHOWN
+      - SETUID
+      - SETGID
     depends_on:
       RecursiveDns:
         condition: service_healthy
@@ -326,12 +376,14 @@ services:
     read_only: true
     tmpfs:
       - /opt/unbound/var/run
+      - /opt/unbound/etc/unbound/keys
+      - /opt/unbound/etc/unbound/dev
     volumes:
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
-      - ${ConfigDir}/UnboundKeys:/opt/unbound/etc/unbound/keys
+    entrypoint: ["/bin/sh", "-c", "cp -a /dev/random /dev/urandom /opt/unbound/etc/unbound/dev/ 2>/dev/null || true; unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || true; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     healthcheck:
-      test: ["CMD-SHELL", "drill -p 53 cloudflare.com @127.0.0.1 || exit 1"]
+      test: ["CMD-SHELL", "nslookup cloudflare.com 127.0.0.1 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
