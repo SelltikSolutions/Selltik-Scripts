@@ -1,12 +1,12 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v68.0-OMNILOCK)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v69.0-TERMINUS)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Final STIG & Operational Fixes Applied:
-#  - V-242417: CAP_KILL restored to allow s6-overlay supervisor lifecycle management.
-#  - CRON-01: Explicit PATH exported to survive cron environmental starvation.
-#  - INODE-01: RootHints update uses `cat` instead of `mv` to preserve Docker mounts.
+#  Final STIG & Edge-Case Fixes Applied:
+#  - PROXY-01: Explicit 0.0.0.0 bind prevents IPv6 docker-proxy EAFNOSUPPORT crash.
+#  - BOOT-01: Fallback `touch` on unbound-anchor prevents fatal daemon EACCES loop.
+#  - INODE-02: pihole_pass secret utilizes `cat` truncation to preserve mount inodes.
 # ==============================================================================
 
 set -euo pipefail
@@ -91,7 +91,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Omnilock Final)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Terminus)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -102,8 +102,14 @@ WriteSecret() {
     local content=$2
     local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
-    sudo chmod 600 "$tmp_file"
-    sudo mv "$tmp_file" "${SecretsDir}/${name}"
+    
+    # INODE-02: Preserve secret inode to prevent Docker bind-mount detachment lockouts.
+    if [ ! -f "${SecretsDir}/${name}" ]; then
+        sudo touch "${SecretsDir}/${name}"
+        sudo chmod 600 "${SecretsDir}/${name}"
+    fi
+    sudo sh -c "cat '$tmp_file' > '${SecretsDir}/${name}'"
+    sudo rm -f "$tmp_file"
 }
 
 if [ ! -f "${SecretsDir}/pihole_pass" ]; then
@@ -329,7 +335,8 @@ services:
       - ${ConfigDir}/WireGuard:/config
       - /lib/modules:/lib/modules:ro
     ports:
-      - "\${WG_PORT}:51820/udp"
+      # PROXY-01: Explicitly pin to IPv4 to prevent docker-proxy EAFNOSUPPORT crash on GRUB-hardened hosts.
+      - "0.0.0.0:\${WG_PORT}:51820/udp"
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
@@ -394,7 +401,8 @@ services:
     volumes:
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
-    entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || true; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
+    # BOOT-01: Fallback \`touch\` injected. If unbound-anchor fails to reach IANA, the file still initializes, bypassing fatal EACCES boot-loop.
+    entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || touch /opt/unbound/etc/unbound/keys/root.key; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     healthcheck:
       test: ["CMD-SHELL", "nslookup cloudflare.com 127.0.0.1 || exit 1"]
       interval: 30s
