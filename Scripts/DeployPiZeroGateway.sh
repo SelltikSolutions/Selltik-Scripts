@@ -1,12 +1,12 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v69.0-TERMINUS)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v70.0-APEX)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Final STIG & Edge-Case Fixes Applied:
-#  - PROXY-01: Explicit 0.0.0.0 bind prevents IPv6 docker-proxy EAFNOSUPPORT crash.
-#  - BOOT-01: Fallback `touch` on unbound-anchor prevents fatal daemon EACCES loop.
-#  - INODE-02: pihole_pass secret utilizes `cat` truncation to preserve mount inodes.
+#  Apex Edge-Case Fixes Applied:
+#  - BOOT-02: Healthcheck localized to INTERNAL_DOMAIN. Survives offline boots.
+#  - KERNEL-01: Static kernel bypass via `ip link` prevents modprobe false-positives.
+#  - CRON-02: IANA fetch softened. Fails gracefully to cache to prevent cron rot.
 # ==============================================================================
 
 set -euo pipefail
@@ -91,7 +91,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Terminus)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Apex Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -229,30 +229,39 @@ net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 sudo sysctl -p "$SysctlConf" > /dev/null 2>&1 || true
 
-if ! sudo modprobe wireguard 2>/dev/null; then
-    PrintMsg "196" "[FATAL] Host kernel lacks wireguard module. Refusing to execute userspace fallback."
-    exit 1
-else
+# KERNEL-01: Safely test for dynamic module OR statically compiled capability.
+if sudo modinfo wireguard >/dev/null 2>&1 || [ -d /sys/module/wireguard ]; then
+    sudo modprobe wireguard 2>/dev/null || true
     echo "wireguard" | sudo tee /etc/modules-load.d/wireguard.conf > /dev/null
+elif sudo ip link add dev wg999 type wireguard 2>/dev/null; then
+    sudo ip link del dev wg999 2>/dev/null || true
+    if [ "$Interactive" -eq 1 ]; then PrintMsg "82" "[INFO] WireGuard is statically compiled. Bypassing modprobe."; fi
+else
+    PrintMsg "196" "[FATAL] Host kernel lacks wireguard capability. Refusing userspace fallback."
+    exit 1
 fi
 
 UnboundDir="${ConfigDir}/Unbound"
 sudo mkdir -p "${UnboundDir}"
 
-if curl -sSL "https://www.internic.net/domain/named.root" -o "${UnboundDir}/RootHints.tmp"; then
+# CRON-02: Soft fail logic to preserve cached root hints if WAN drops during 3AM cron run.
+if curl --connect-timeout 10 -sSL "https://www.internic.net/domain/named.root" -o "${UnboundDir}/RootHints.tmp"; then
     if grep -q "A.ROOT-SERVERS.NET" "${UnboundDir}/RootHints.tmp"; then
-        # INODE-01: Use `cat` to truncate/write to preserve the host inode for Docker
         sudo touch "${UnboundDir}/RootHints.txt"
         sudo sh -c "cat '${UnboundDir}/RootHints.tmp' > '${UnboundDir}/RootHints.txt'"
         sudo rm -f "${UnboundDir}/RootHints.tmp"
     else
-        echo "[FATAL] Root hints integrity check failed. Captive portal MITM?"
+        PrintMsg "196" "[WARNING] Root hints integrity check failed. Retaining cached file."
         sudo rm -f "${UnboundDir}/RootHints.tmp"
-        exit 1
     fi
 else
-    echo "[FATAL] Failed to download root hints. Network down?"
-    exit 1
+    PrintMsg "196" "[WARNING] Failed to download root hints. Network offline? Retaining cached file."
+    sudo rm -f "${UnboundDir}/RootHints.tmp" || true
+fi
+
+# Fallback creation to prevent Docker from mounting a directory if cache is totally empty on day zero.
+if [ ! -f "${UnboundDir}/RootHints.txt" ]; then
+    sudo touch "${UnboundDir}/RootHints.txt"
 fi
 
 sudo tee "${UnboundDir}/UnboundConfig.conf" > /dev/null << EOF
@@ -404,7 +413,8 @@ services:
     # BOOT-01: Fallback \`touch\` injected. If unbound-anchor fails to reach IANA, the file still initializes, bypassing fatal EACCES boot-loop.
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || touch /opt/unbound/etc/unbound/keys/root.key; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     healthcheck:
-      test: ["CMD-SHELL", "nslookup cloudflare.com 127.0.0.1 || exit 1"]
+      # BOOT-02: Healthcheck targets local domain to prevent offline WAN startup death.
+      test: ["CMD-SHELL", "nslookup ${INTERNAL_DOMAIN} 127.0.0.1 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
