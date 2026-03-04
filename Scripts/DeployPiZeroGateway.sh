@@ -1,15 +1,12 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v64.0-ABSOLUTE-ZERO)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v65.0-IRONCLAD)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  STIG Compliance & Final Surgical Fixes: 
-#  - V-235820: Modprobe failure trap enforced to prevent silent userspace fallback.
-#  - V-230302: Secrets permission scoped (444) for unprivileged daemon read.
-#  - V-224151: /dev volume mappings excised; native Docker entropy utilized.
-#  - V-242417: PiHole NET_RAW restored to prevent FTL daemon asphyxiation.
-#  - V-220934: IPv6 attack surface permanently disabled via sysctl.
-#  - PARADOX FIX: Unbound entrypoint chowns PID tmpfs to prevent EACCES crash.
+#  Final STIG Fixes: 
+#  - CAP_CHOWN injected to Unbound to prevent EPERM entrypoint chown suicide.
+#  - Cron logging perfectly encapsulated in subshell to prevent silent apt rot.
+#  - Docker Secret locked to 600; s6-init handles privileged read during boot.
 # ==============================================================================
 
 set -euo pipefail
@@ -91,10 +88,9 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Absolute Zero)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Ironclad Final)"
 fi
 
-# STIG V-230302: Host directory strictly 700 to prevent path traversal
 sudo mkdir -p "$SecretsDir"
 sudo chmod 700 "$SecretsDir"
 
@@ -103,9 +99,8 @@ WriteSecret() {
     local content=$2
     local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
-    # STIG V-230302: File is 444 (read-only) so Docker bind-mount exposes 
-    # read permissions directly to the unprivileged daemon inside the container.
-    sudo chmod 444 "$tmp_file"
+    # STIG V-230302: Strict 600 applied. s6-init reads as root during boot phase.
+    sudo chmod 600 "$tmp_file"
     sudo mv "$tmp_file" "${SecretsDir}/${name}"
 }
 
@@ -198,12 +193,12 @@ fi
 
 CronFile="/etc/cron.d/sovereign_updates"
 if [ ! -f "$CronFile" ]; then
-    CronExpr="0 3 * * 0 root $UpdateCmd && $UpgradeCmd && /opt/Docker/Scripts/Deploy${StackName}.sh > /var/log/sovereign_updates.log 2>&1"
+    # Subshell grouping enforces stdout/stderr capture for the entire sequence
+    CronExpr="0 3 * * 0 root /bin/bash -c '$UpdateCmd && $UpgradeCmd && /opt/Docker/Scripts/Deploy${StackName}.sh' > /var/log/sovereign_updates.log 2>&1"
     echo "$CronExpr" | sudo tee "$CronFile" > /dev/null
     sudo chmod 644 "$CronFile"
 fi
 
-# STIG V-220934: IPv6 permanently disabled to prevent SLAAC/RA spoofing.
 SysctlConf="/etc/sysctl.d/99-vpn-gateway.conf"
 sudo tee "$SysctlConf" > /dev/null << EOF
 net.ipv4.ip_forward = 1
@@ -217,7 +212,6 @@ net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 sudo sysctl -p "$SysctlConf" > /dev/null 2>&1
 
-# STIG V-235820: Hard failure trap. If kernel lacks wireguard, abort deployment.
 if ! sudo modprobe wireguard 2>/dev/null; then
     PrintMsg "196" "[FATAL] Host kernel lacks wireguard module. Refusing to execute userspace fallback."
     exit 1
@@ -280,7 +274,6 @@ IMG_UNBOUND=$(ResolveImage "mvance/unbound:latest")
 
 sudo mkdir -p "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d"
 
-# Applying final layer of DISA STIG container mitigations.
 sudo tee "$ComposeFile" > /dev/null << EOF
 networks:
   VpnNetwork:
@@ -376,6 +369,7 @@ services:
       - NET_BIND_SERVICE
       - SETUID
       - SETGID
+      - CHOWN
     security_opt:
       - no-new-privileges:true
     read_only: true
