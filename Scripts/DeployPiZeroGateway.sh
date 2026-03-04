@@ -1,12 +1,12 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v66.0-PERSISTENT)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v67.0-FINAL-STIG)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Final STIG Fixes: 
-#  - Cron variable interpolation escaped to prevent bash syntax fracture.
-#  - WireGuard CAP_NET_RAW injected to allow FwMark iptables socket binding.
-#  - Kernel module persistence explicitly routed to /etc/modules-load.d/
+#  Final Surgical Fixes: 
+#  - Extracted automated update sequence to dedicated script to bypass cron syntax fracture.
+#  - Injected `|| true` trap on IPv6 sysctl to survive host GRUB bootloader hardening.
+#  - Excised immutable Swarm secrets; replaced with dynamic, read-only STIG bind-mounts.
 # ==============================================================================
 
 set -euo pipefail
@@ -88,7 +88,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Persistent Final)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (STIG Final)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -191,14 +191,22 @@ if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
     fi
 fi
 
+# FIX 1: Dedicated Updater script written to disk to bypass cron interpolation fractures.
+UpdaterScript="/opt/Docker/Scripts/Update${StackName}.sh"
+sudo tee "$UpdaterScript" > /dev/null << EOF
+#!/bin/bash
+set -euo pipefail
+${UpdateCmd}
+${UpgradeCmd}
+/opt/Docker/Scripts/Deploy${StackName}.sh
+EOF
+sudo chmod 700 "$UpdaterScript"
+
 CronFile="/etc/cron.d/sovereign_updates"
-if [ ! -f "$CronFile" ]; then
-    # Double-quoted subshell ensures variables interpolate directly into the cron schedule 
-    # instead of passing raw, unresolvable strings to the system scheduler.
-    CronExpr="0 3 * * 0 root /bin/bash -c \"${UpdateCmd} && ${UpgradeCmd} && /opt/Docker/Scripts/Deploy${StackName}.sh\" > /var/log/sovereign_updates.log 2>&1"
-    echo "$CronExpr" | sudo tee "$CronFile" > /dev/null
-    sudo chmod 644 "$CronFile"
-fi
+sudo tee "$CronFile" > /dev/null << EOF
+0 3 * * 0 root $UpdaterScript > /var/log/sovereign_updates.log 2>&1
+EOF
+sudo chmod 644 "$CronFile"
 
 SysctlConf="/etc/sysctl.d/99-vpn-gateway.conf"
 sudo tee "$SysctlConf" > /dev/null << EOF
@@ -211,9 +219,10 @@ net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
-sudo sysctl -p "$SysctlConf" > /dev/null 2>&1
 
-# Hard failure trap AND explicit reboot persistence for the routing module.
+# FIX 2: Added `|| true` so `set -e` does not detonate if /proc/sys/net/ipv6 is missing.
+sudo sysctl -p "$SysctlConf" > /dev/null 2>&1 || true
+
 if ! sudo modprobe wireguard 2>/dev/null; then
     PrintMsg "196" "[FATAL] Host kernel lacks wireguard module. Refusing to execute userspace fallback."
     exit 1
@@ -278,6 +287,7 @@ IMG_UNBOUND=$(ResolveImage "mvance/unbound:latest")
 
 sudo mkdir -p "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d"
 
+# FIX 3: Excised Docker Swarm Secrets. Mapped dynamically to bypass cache lockout.
 sudo tee "$ComposeFile" > /dev/null << EOF
 networks:
   VpnNetwork:
@@ -285,10 +295,6 @@ networks:
     ipam:
       config:
         - subnet: 10.99.0.0/24
-
-secrets:
-  pihole_pass:
-    file: ${SecretsDir}/pihole_pass
 
 services:
   WireGuard:
@@ -342,9 +348,8 @@ services:
       - REV_SERVER=false
       - QUERY_LOGGING=false
       - PRIVACY_LEVEL=3
-    secrets:
-      - pihole_pass
     volumes:
+      - ${SecretsDir}/pihole_pass:/run/secrets/pihole_pass:ro
       - ${ConfigDir}/PiHole/etc-pihole:/etc/pihole
       - ${ConfigDir}/PiHole/etc-dnsmasq.d:/etc/dnsmasq.d
     ports:
