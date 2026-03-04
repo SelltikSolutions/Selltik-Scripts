@@ -1,12 +1,12 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v71.0-VANGUARD)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v72.0-AEGIS)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Vanguard Edge-Case Fixes Applied:
-#  - HEALTH-01: Reverted to `drill` for Debian-slim compatibility; local query.
-#  - ENV-01: Silent extraction of WG_PORT/WG_PEERS prevents operational wipe.
-#  - CRON-03: Explicit Unbound restart added to Updater to force cache drop.
+#  Aegis Edge-Case Fixes Applied:
+#  - UI-01: TUI escapes wrapped in `|| echo ""` to prevent `set -e` script suicide.
+#  - ROUTE-01: DNSMASQ_LISTENING=all injected to bridge WG/PiHole isolated subnets.
+#  - BOOT-03: Hardcoded IANA DS string fallback prevents Unbound 0-byte parsing crash.
 # ==============================================================================
 
 set -euo pipefail
@@ -91,7 +91,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Vanguard Protocol)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Aegis Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -117,10 +117,11 @@ if [ ! -f "${SecretsDir}/pihole_pass" ]; then
         PrintMsg "226" "Provide a secure password for the Pi-Hole Web Admin UI:"
         PiHolePass=""
         while [[ -z "$PiHolePass" ]]; do
+            # UI-01: Append || echo "" to safely absorb ESC inputs without aborting the script.
             if command -v gum &> /dev/null; then
-                PiHolePass=$(gum input --password)
+                PiHolePass=$(gum input --password || echo "")
             else
-                read -s -p "Password: " PiHolePass
+                read -s -p "Password: " PiHolePass || echo ""
                 echo ""
             fi
             if [[ -z "$PiHolePass" ]]; then PrintMsg "196" "Password cannot be empty."; fi
@@ -144,9 +145,9 @@ if [ "$Interactive" -eq 1 ]; then
     TraefikIp=""
     while [[ -z "$TraefikIp" ]]; do
         if command -v gum &> /dev/null; then
-            TraefikIp=$(gum input --prompt "Dedicated Traefik Node IP: " --value "$PrevTraefikIp" --placeholder "10.0.0.50")
+            TraefikIp=$(gum input --prompt "Dedicated Traefik Node IP: " --value "$PrevTraefikIp" --placeholder "10.0.0.50" || echo "")
         else
-            read -p "Dedicated Traefik Node IP [$PrevTraefikIp]: " InputIp
+            read -p "Dedicated Traefik Node IP [$PrevTraefikIp]: " InputIp || echo ""
             TraefikIp=${InputIp:-$PrevTraefikIp}
         fi
         if [[ -z "$TraefikIp" ]]; then PrintMsg "196" "Node IP is required for internal routing."; fi
@@ -155,9 +156,9 @@ if [ "$Interactive" -eq 1 ]; then
     WgEndpoint=""
     while [[ -z "$WgEndpoint" ]]; do
         if command -v gum &> /dev/null; then
-            WgEndpoint=$(gum input --prompt "WireGuard Public Endpoint (IP/DDNS): " --value "$PrevEndpoint" --placeholder "vpn.domain.com")
+            WgEndpoint=$(gum input --prompt "WireGuard Public Endpoint (IP/DDNS): " --value "$PrevEndpoint" --placeholder "vpn.domain.com" || echo "")
         else
-            read -p "WireGuard Public Endpoint [$PrevEndpoint]: " InputWg
+            read -p "WireGuard Public Endpoint [$PrevEndpoint]: " InputWg || echo ""
             WgEndpoint=${InputWg:-$PrevEndpoint}
         fi
         if [[ -z "$WgEndpoint" ]]; then PrintMsg "196" "Endpoint is required for client tunnels."; fi
@@ -166,9 +167,9 @@ if [ "$Interactive" -eq 1 ]; then
     InternalDomain=""
     while [[ -z "$InternalDomain" ]]; do
         if command -v gum &> /dev/null; then
-            InternalDomain=$(gum input --prompt "Internal Routing Domain: " --value "$PrevDomain" --placeholder "lan.domain.com")
+            InternalDomain=$(gum input --prompt "Internal Routing Domain: " --value "$PrevDomain" --placeholder "lan.domain.com" || echo "")
         else
-            read -p "Internal Routing Domain [$PrevDomain]: " InputDomain
+            read -p "Internal Routing Domain [$PrevDomain]: " InputDomain || echo ""
             InternalDomain=${InputDomain:-$PrevDomain}
         fi
         if [[ -z "$InternalDomain" ]]; then PrintMsg "196" "Internal Domain is required."; fi
@@ -349,6 +350,7 @@ services:
       - ${ConfigDir}/WireGuard:/config
       - /lib/modules:/lib/modules:ro
     ports:
+      # PROXY-01: Explicitly pin to IPv4 to prevent docker-proxy EAFNOSUPPORT crash on GRUB-hardened hosts.
       - "0.0.0.0:\${WG_PORT}:51820/udp"
     sysctls:
       - net.ipv4.ip_forward=1
@@ -371,6 +373,8 @@ services:
       - REV_SERVER=false
       - QUERY_LOGGING=false
       - PRIVACY_LEVEL=3
+      # ROUTE-01: Bridge WG client subnets (10.13.13.0/24) to Pi-Hole so FTL engine doesn't drop requests.
+      - DNSMASQ_LISTENING=all
     volumes:
       - ${SecretsDir}/pihole_pass:/run/secrets/pihole_pass:ro
       - ${ConfigDir}/PiHole/etc-pihole:/etc/pihole
@@ -414,9 +418,10 @@ services:
     volumes:
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
-    entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || touch /opt/unbound/etc/unbound/keys/root.key; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
+    # BOOT-03: Hardcoded IANA DS string fallback. Prevents 0-byte parsing crash if unbound-anchor fails during offline boot.
+    entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     healthcheck:
-      # HEALTH-01: Corrected to `drill` with valid `@` nameserver syntax to survive slim-image tooling.
+      # HEALTH-01: Corrected to \`drill\` with valid \`@\` nameserver syntax to survive slim-image tooling.
       test: ["CMD-SHELL", "drill \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
       interval: 30s
       timeout: 10s
