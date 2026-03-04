@@ -1,11 +1,9 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v58.0-LOCKED)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v59.0-PROD)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Fixes Applied: 
-#  - Excised subshell unbound variable traps (set -u compliance).
-#  - Enforced non-null PiZero IP validation to prevent Traefik CIDR crash.
+#  OpSec: Let's Encrypt Rate-Limit armor deployed via ACME Staging API.
 # ==============================================================================
 
 set -euo pipefail
@@ -216,6 +214,7 @@ ResolveImage() {
 IMG_SOCKET=$(ResolveImage "lscr.io/linuxserver/socket-proxy:latest")
 IMG_TRAEFIK=$(ResolveImage "traefik:latest")
 
+# OpSec Enforcement: ACME caserver injected for testing armor.
 sudo tee "$ComposeFile" > /dev/null << EOF
 networks:
   ProxyNetwork:
@@ -305,6 +304,7 @@ services:
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme/acme.json"
+      - "--certificatesresolvers.cloudflare.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
       - "--accesslog=true"
       - "--accesslog.filepath=/var/log/traefik/access.log"
       - "--accesslog.format=json"
@@ -326,6 +326,6 @@ sudo chmod 600 "$ComposeFile"
 if [ "$Interactive" -eq 0 ]; then
     cd "$BaseDir" && sudo docker compose --env-file Traefik.env up -d --remove-orphans
 elif [ "$Interactive" -eq 1 ]; then
-    PrintMsg "82" "✔ Traefik Core Staged."
+    PrintMsg "82" "✔ Traefik Core Staged (STAGING API ACTIVE)."
 fi
 exit 0
