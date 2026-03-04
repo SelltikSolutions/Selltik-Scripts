@@ -1,14 +1,15 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v63.0-SECURE-STIG)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v64.0-ABSOLUTE-ZERO)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  STIG Compliance: 
+#  STIG Compliance & Final Surgical Fixes: 
 #  - V-235820: Modprobe failure trap enforced to prevent silent userspace fallback.
 #  - V-230302: Secrets permission scoped (444) for unprivileged daemon read.
-#  - V-224151: Host entropy (/dev/urandom) mapped read-only into chroot jail.
+#  - V-224151: /dev volume mappings excised; native Docker entropy utilized.
 #  - V-242417: PiHole NET_RAW restored to prevent FTL daemon asphyxiation.
 #  - V-220934: IPv6 attack surface permanently disabled via sysctl.
+#  - PARADOX FIX: Unbound entrypoint chowns PID tmpfs to prevent EACCES crash.
 # ==============================================================================
 
 set -euo pipefail
@@ -90,7 +91,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (STIG Final)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Absolute Zero)"
 fi
 
 # STIG V-230302: Host directory strictly 700 to prevent path traversal
@@ -247,6 +248,7 @@ server:
     do-udp: yes
     do-tcp: yes
     do-ip6: no
+    chroot: ""
     pidfile: "/opt/unbound/var/run/unbound.pid"
     root-hints: "/opt/unbound/etc/unbound/root.hints"
     auto-trust-anchor-file: "/opt/unbound/etc/unbound/keys/root.key"
@@ -383,9 +385,7 @@ services:
     volumes:
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
-      - /dev/urandom:/opt/unbound/etc/unbound/dev/urandom:ro
-      - /dev/random:/opt/unbound/etc/unbound/dev/random:ro
-    entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || true; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
+    entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || true; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     healthcheck:
       test: ["CMD-SHELL", "nslookup cloudflare.com 127.0.0.1 || exit 1"]
       interval: 30s
