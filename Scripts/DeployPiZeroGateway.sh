@@ -1,9 +1,10 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v77.0-ECHELON)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v78.0-ZENITH)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Echelon Edge-Case Fixes Applied:
+#  Zenith Edge-Case Fixes Applied:
+#  - SYNC-01: Administrative lockout defused via conditional post-deployment daemon restart.
 #  - BOOT-04: Insulated PPA curl pipeline prevents set -e suicide during Day Zero offline deploy.
 #  - BOOT-05: Hardcoded Root Hint A-Record injected to prevent Unbound 0-byte syntax crash.
 #  - CRON-06: UpdaterScript atomic swap (.tmp to mv) prevents bash pointer decapitation.
@@ -95,7 +96,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Echelon Protocol)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Zenith Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -488,9 +489,17 @@ EOF
 sudo chown 0:0 "$ComposeFile"
 sudo chmod 600 "$ComposeFile"
 
+# SYNC-01: Handle Daemon Lifecycle Synchronization Post-Deployment
 if [ "$Interactive" -eq 0 ]; then
     cd "$BaseDir" && sudo docker compose --env-file Gateway.env up -d --remove-orphans
+    if [ "$RotateSecret" -eq 1 ]; then
+        sudo docker compose restart DnsSinkhole
+    fi
 elif [ "$Interactive" -eq 1 ]; then
     PrintMsg "82" "✔ Perimeter Staged."
+    if [ "$RotateSecret" -eq 1 ]; then
+        PrintMsg "196" "[WARNING] Cryptographic hash rotated. To flush the Pi-Hole state engine, execute:"
+        PrintMsg "196" "cd ${BaseDir} && sudo docker compose restart DnsSinkhole"
+    fi
 fi
 exit 0
