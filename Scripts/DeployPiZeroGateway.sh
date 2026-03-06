@@ -1,14 +1,14 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v73.0-MONOLITH)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v74.0-OBSIDIAN)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Monolith Edge-Case Fixes Applied:
+#  Obsidian Edge-Case Fixes Applied:
+#  - KERNEL-02: Netfilter iptables modules pre-loaded to prevent wg-quick crash.
+#  - SEC-01: Secure interactive credential rotation prompt breaks administrative lock-in.
+#  - CRON-04: 10-second thermal buffer prevents Docker socket race condition on ARMv6.
 #  - STATE-01: Unbound keys mapped persistently to host to preserve RFC 5011 timers.
 #  - CPU-01: Pi-Hole redundant DNSSEC disabled to prevent Pi Zero thermal exhaustion.
-#  - UI-01: TUI escapes wrapped in `|| echo ""` to prevent `set -e` script suicide.
-#  - ROUTE-01: DNSMASQ_LISTENING=all injected to bridge WG/PiHole isolated subnets.
-#  - BOOT-03: Hardcoded IANA DS string fallback prevents Unbound 0-byte parsing crash.
 # ==============================================================================
 
 set -euo pipefail
@@ -93,7 +93,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Monolith Protocol)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Obsidian Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -114,7 +114,22 @@ WriteSecret() {
     sudo rm -f "$tmp_file"
 }
 
-if [ ! -f "${SecretsDir}/pihole_pass" ]; then
+# SEC-01: Break administrative lock-in by safely prompting for credential rotation.
+RotateSecret=0
+if [ -f "${SecretsDir}/pihole_pass" ]; then
+    if [ "$Interactive" -eq 1 ]; then
+        if command -v gum &> /dev/null; then
+            gum confirm "Existing Pi-Hole secret found. Rotate credentials?" && RotateSecret=1 || RotateSecret=0
+        else
+            read -p "[INFO] Existing Pi-Hole secret found. Rotate credentials? [y/N]: " ConfirmRotate || echo ""
+            if [[ "${ConfirmRotate,,}" == "y" ]]; then RotateSecret=1; fi
+        fi
+    fi
+else
+    RotateSecret=1
+fi
+
+if [ "$RotateSecret" -eq 1 ]; then
     if [ "$Interactive" -eq 1 ]; then
         PrintMsg "226" "Provide a secure password for the Pi-Hole Web Admin UI:"
         PiHolePass=""
@@ -214,6 +229,8 @@ export PATH="/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
 ${UpdateCmd}
 ${UpgradeCmd}
 /opt/Docker/Scripts/Deploy${StackName}.sh
+# CRON-04: Thermal buffer injection. Prevents single-core CPU socket exhaustion after stack evaluation.
+sleep 10
 # CRON-03: Hard restart Unbound to flush RAM cache and ingest updated Root Hints
 cd /opt/Docker/Stacks/${StackName} && sudo docker compose restart UnboundDns
 EOF
@@ -238,13 +255,28 @@ net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 sudo sysctl -p "$SysctlConf" > /dev/null 2>&1 || true
 
-# KERNEL-01: Safely test for dynamic module OR statically compiled capability.
+# KERNEL-01 & KERNEL-02: Test module availability and persistently stage Netfilter components
 if sudo modinfo wireguard >/dev/null 2>&1 || [ -d /sys/module/wireguard ]; then
-    sudo modprobe wireguard 2>/dev/null || true
-    echo "wireguard" | sudo tee /etc/modules-load.d/wireguard.conf > /dev/null
+    for mod in wireguard iptable_nat iptable_mangle ip_tables; do
+        sudo modprobe "\$mod" 2>/dev/null || true
+    done
+    sudo tee /etc/modules-load.d/wireguard.conf > /dev/null << MODEOF
+wireguard
+iptable_nat
+iptable_mangle
+ip_tables
+MODEOF
 elif sudo ip link add dev wg999 type wireguard 2>/dev/null; then
     sudo ip link del dev wg999 2>/dev/null || true
     if [ "$Interactive" -eq 1 ]; then PrintMsg "82" "[INFO] WireGuard is statically compiled. Bypassing modprobe."; fi
+    for mod in iptable_nat iptable_mangle ip_tables; do
+        sudo modprobe "\$mod" 2>/dev/null || true
+    done
+    sudo tee /etc/modules-load.d/wireguard.conf > /dev/null << MODEOF
+iptable_nat
+iptable_mangle
+ip_tables
+MODEOF
 else
     PrintMsg "196" "[FATAL] Host kernel lacks wireguard capability. Refusing userspace fallback."
     exit 1
@@ -419,7 +451,6 @@ services:
     read_only: true
     tmpfs:
       - /opt/unbound/var/run
-      # STATE-01: Removed /opt/unbound/etc/unbound/keys from volatile tmpfs
     volumes:
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
@@ -428,7 +459,6 @@ services:
     # BOOT-03: Hardcoded IANA DS string fallback. Prevents 0-byte parsing crash if unbound-anchor fails during offline boot.
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     healthcheck:
-      # HEALTH-01: Corrected to \`drill\` with valid \`@\` nameserver syntax to survive slim-image tooling.
       test: ["CMD-SHELL", "drill \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
       interval: 30s
       timeout: 10s
