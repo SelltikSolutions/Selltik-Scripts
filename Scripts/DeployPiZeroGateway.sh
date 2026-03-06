@@ -1,14 +1,14 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v74.0-OBSIDIAN)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v75.0-SINGULARITY)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Obsidian Edge-Case Fixes Applied:
+#  Singularity Edge-Case Fixes Applied:
+#  - KERNEL-03: Variable interpolation fixed in modprobe array to ensure active loading.
+#  - CRON-05: Phantom legacy cron block amputated to prevent scheduler fragmentation.
 #  - KERNEL-02: Netfilter iptables modules pre-loaded to prevent wg-quick crash.
 #  - SEC-01: Secure interactive credential rotation prompt breaks administrative lock-in.
 #  - CRON-04: 10-second thermal buffer prevents Docker socket race condition on ARMv6.
-#  - STATE-01: Unbound keys mapped persistently to host to preserve RFC 5011 timers.
-#  - CPU-01: Pi-Hole redundant DNSSEC disabled to prevent Pi Zero thermal exhaustion.
 # ==============================================================================
 
 set -euo pipefail
@@ -93,7 +93,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Obsidian Protocol)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Singularity Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -221,6 +221,8 @@ if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
     fi
 fi
 
+# CRON-05: The phantom legacy cron block was excised from this location.
+
 UpdaterScript="/opt/Docker/Scripts/Update${StackName}.sh"
 sudo tee "$UpdaterScript" > /dev/null << EOF
 #!/bin/bash
@@ -255,10 +257,10 @@ net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 sudo sysctl -p "$SysctlConf" > /dev/null 2>&1 || true
 
-# KERNEL-01 & KERNEL-02: Test module availability and persistently stage Netfilter components
+# KERNEL-01, KERNEL-02, KERNEL-03: Test module availability, unescape modprobe variables, and persistently stage Netfilter.
 if sudo modinfo wireguard >/dev/null 2>&1 || [ -d /sys/module/wireguard ]; then
     for mod in wireguard iptable_nat iptable_mangle ip_tables; do
-        sudo modprobe "\$mod" 2>/dev/null || true
+        sudo modprobe "$mod" 2>/dev/null || true
     done
     sudo tee /etc/modules-load.d/wireguard.conf > /dev/null << MODEOF
 wireguard
@@ -270,7 +272,7 @@ elif sudo ip link add dev wg999 type wireguard 2>/dev/null; then
     sudo ip link del dev wg999 2>/dev/null || true
     if [ "$Interactive" -eq 1 ]; then PrintMsg "82" "[INFO] WireGuard is statically compiled. Bypassing modprobe."; fi
     for mod in iptable_nat iptable_mangle ip_tables; do
-        sudo modprobe "\$mod" 2>/dev/null || true
+        sudo modprobe "$mod" 2>/dev/null || true
     done
     sudo tee /etc/modules-load.d/wireguard.conf > /dev/null << MODEOF
 iptable_nat
