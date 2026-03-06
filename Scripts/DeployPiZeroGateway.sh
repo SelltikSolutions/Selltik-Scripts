@@ -1,14 +1,14 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v75.0-SINGULARITY)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v76.0-OBLIVION)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Singularity Edge-Case Fixes Applied:
+#  Oblivion Edge-Case Fixes Applied:
+#  - CRON-06: UpdaterScript atomic swap (.tmp to mv) prevents bash pointer decapitation.
+#  - APT-01: UpdateCmd insulated (|| true) to prevent 3rd-party PPA set -e suicide.
+#  - LOCK-01: Thermal buffer and restart enveloped in strict flock to prevent human race conditions.
 #  - KERNEL-03: Variable interpolation fixed in modprobe array to ensure active loading.
-#  - CRON-05: Phantom legacy cron block amputated to prevent scheduler fragmentation.
-#  - KERNEL-02: Netfilter iptables modules pre-loaded to prevent wg-quick crash.
 #  - SEC-01: Secure interactive credential rotation prompt breaks administrative lock-in.
-#  - CRON-04: 10-second thermal buffer prevents Docker socket race condition on ARMv6.
 # ==============================================================================
 
 set -euo pipefail
@@ -26,6 +26,7 @@ LockFile="/var/lock/pizero_gateway.lock"
 
 sudo mkdir -p "$BaseDir"
 
+# Primary Deployment Lock
 exec 200>"$LockFile"
 flock -n 200 || { echo "[FATAL] Another deployment instance is running."; exit 1; }
 [ "$EUID" -eq 0 ] || { echo "[FATAL] Elevated privileges required. Run with: sudo $0"; exit 1; }
@@ -93,7 +94,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Singularity Protocol)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Oblivion Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -221,22 +222,32 @@ if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
     fi
 fi
 
-# CRON-05: The phantom legacy cron block was excised from this location.
-
 UpdaterScript="/opt/Docker/Scripts/Update${StackName}.sh"
-sudo tee "$UpdaterScript" > /dev/null << EOF
+
+# CRON-06: Write to .tmp and use atomic swap to prevent bash in-place truncation decapitation.
+sudo tee "${UpdaterScript}.tmp" > /dev/null << EOF
 #!/bin/bash
 set -euo pipefail
 export PATH="/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
-${UpdateCmd}
-${UpgradeCmd}
+
+# APT-01: Insulate updates to prevent 3rd-party PPA failures from triggering set -e suicide.
+${UpdateCmd} || true
+${UpgradeCmd} || true
+
 /opt/Docker/Scripts/Deploy${StackName}.sh
-# CRON-04: Thermal buffer injection. Prevents single-core CPU socket exhaustion after stack evaluation.
-sleep 10
-# CRON-03: Hard restart Unbound to flush RAM cache and ingest updated Root Hints
-cd /opt/Docker/Stacks/${StackName} && sudo docker compose restart UnboundDns
+
+# LOCK-01: Encapsulate post-deployment buffer and restart inside the strict deployment lock.
+(
+    flock -w 60 200
+    # CRON-04: Thermal buffer injection. Prevents single-core CPU socket exhaustion after stack evaluation.
+    sleep 10
+    # CRON-03: Hard restart Unbound to flush RAM cache and ingest updated Root Hints.
+    cd /opt/Docker/Stacks/${StackName} && sudo docker compose restart UnboundDns
+) 200>"/var/lock/pizero_gateway.lock"
 EOF
-sudo chmod 700 "$UpdaterScript"
+
+sudo chmod 700 "${UpdaterScript}.tmp"
+sudo mv "${UpdaterScript}.tmp" "${UpdaterScript}"
 
 CronFile="/etc/cron.d/sovereign_updates"
 sudo tee "$CronFile" > /dev/null << EOF
@@ -257,7 +268,7 @@ net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 sudo sysctl -p "$SysctlConf" > /dev/null 2>&1 || true
 
-# KERNEL-01, KERNEL-02, KERNEL-03: Test module availability, unescape modprobe variables, and persistently stage Netfilter.
+# KERNEL-01, KERNEL-02, KERNEL-03: Test module availability, exact unescaped variables, and persistently stage Netfilter.
 if sudo modinfo wireguard >/dev/null 2>&1 || [ -d /sys/module/wireguard ]; then
     for mod in wireguard iptable_nat iptable_mangle ip_tables; do
         sudo modprobe "$mod" 2>/dev/null || true
