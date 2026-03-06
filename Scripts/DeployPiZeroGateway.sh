@@ -1,9 +1,11 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v78.0-ZENITH)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v79.0-ABSOLUTE)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Zenith Edge-Case Fixes Applied:
+#  Absolute Edge-Case Fixes Applied:
+#  - LOG-01: Strict 10m/3-file rotation bolted to all services to prevent SD card death.
+#  - STATE-02: Cryptographic fallback insulated to prevent truncation of RFC 5011 keys.
 #  - SYNC-01: Administrative lockout defused via conditional post-deployment daemon restart.
 #  - BOOT-04: Insulated PPA curl pipeline prevents set -e suicide during Day Zero offline deploy.
 #  - BOOT-05: Hardcoded Root Hint A-Record injected to prevent Unbound 0-byte syntax crash.
@@ -96,7 +98,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Zenith Protocol)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Absolute Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -410,6 +412,12 @@ services:
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
+    # LOG-01: Clamped JSON logging to prevent SD card exhaustion and NAND flash burn-in.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
   DnsSinkhole:
@@ -449,6 +457,12 @@ services:
     depends_on:
       RecursiveDns:
         condition: service_healthy
+    # LOG-01: Clamped JSON logging to prevent SD card exhaustion and NAND flash burn-in.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
   RecursiveDns:
@@ -475,14 +489,20 @@ services:
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
       # STATE-01: Persistently bound to host. Survives weekly cron restarts to fulfill RFC 5011 rollovers.
       - ${ConfigDir}/Unbound/Keys:/opt/unbound/etc/unbound/keys:rw
-    # BOOT-03: Hardcoded IANA DS string fallback. Prevents 0-byte parsing crash if unbound-anchor fails during offline boot.
-    entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
+    # STATE-02/BOOT-03: Hardcoded IANA DS string fallback safely checks for file size before overwriting RFC 5011 state.
+    entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     healthcheck:
       test: ["CMD-SHELL", "drill \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
+    # LOG-01: Clamped JSON logging to prevent SD card exhaustion and NAND flash burn-in.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 EOF
 
