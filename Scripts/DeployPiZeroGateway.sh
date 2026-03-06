@@ -1,14 +1,14 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v76.0-OBLIVION)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v77.0-ECHELON)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Oblivion Edge-Case Fixes Applied:
+#  Echelon Edge-Case Fixes Applied:
+#  - BOOT-04: Insulated PPA curl pipeline prevents set -e suicide during Day Zero offline deploy.
+#  - BOOT-05: Hardcoded Root Hint A-Record injected to prevent Unbound 0-byte syntax crash.
 #  - CRON-06: UpdaterScript atomic swap (.tmp to mv) prevents bash pointer decapitation.
 #  - APT-01: UpdateCmd insulated (|| true) to prevent 3rd-party PPA set -e suicide.
 #  - LOCK-01: Thermal buffer and restart enveloped in strict flock to prevent human race conditions.
-#  - KERNEL-03: Variable interpolation fixed in modprobe array to ensure active loading.
-#  - SEC-01: Secure interactive credential rotation prompt breaks administrative lock-in.
 # ==============================================================================
 
 set -euo pipefail
@@ -83,18 +83,19 @@ DetectOsFamily() {
 }
 DetectOsFamily
 
+# BOOT-04: Insulated UI dependency pipeline. Prevents fatal pipeline crashes if DNS is missing on Day Zero.
 if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
     if [[ "$PkgManager" == "apt-get" ]]; then
         sudo mkdir -p /etc/apt/keyrings
-        curl -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/charm.gpg
+        curl --connect-timeout 5 -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/charm.gpg || true
         echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list > /dev/null
-        eval "$UpdateCmd" > /dev/null
-        eval "$InstallCmd gum" > /dev/null
+        eval "$UpdateCmd" > /dev/null || true
+        eval "$InstallCmd gum" > /dev/null || true
     fi
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Oblivion Protocol)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Echelon Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -315,8 +316,12 @@ else
     sudo rm -f "${UnboundDir}/RootHints.tmp" || true
 fi
 
-if [ ! -f "${UnboundDir}/RootHints.txt" ]; then
-    sudo touch "${UnboundDir}/RootHints.txt"
+# BOOT-05: Check if file is 0-bytes or missing. Inject hardcoded fallback to prevent fatal syntax crash.
+if [ ! -s "${UnboundDir}/RootHints.txt" ]; then
+    sudo tee "${UnboundDir}/RootHints.txt" > /dev/null << EOF
+. 3600000 IN NS A.ROOT-SERVERS.NET.
+A.ROOT-SERVERS.NET. 3600000 A 198.41.0.4
+EOF
 fi
 
 sudo tee "${UnboundDir}/UnboundConfig.conf" > /dev/null << EOF
