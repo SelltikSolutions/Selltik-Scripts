@@ -1,9 +1,11 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v72.0-AEGIS)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v73.0-MONOLITH)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Aegis Edge-Case Fixes Applied:
+#  Monolith Edge-Case Fixes Applied:
+#  - STATE-01: Unbound keys mapped persistently to host to preserve RFC 5011 timers.
+#  - CPU-01: Pi-Hole redundant DNSSEC disabled to prevent Pi Zero thermal exhaustion.
 #  - UI-01: TUI escapes wrapped in `|| echo ""` to prevent `set -e` script suicide.
 #  - ROUTE-01: DNSMASQ_LISTENING=all injected to bridge WG/PiHole isolated subnets.
 #  - BOOT-03: Hardcoded IANA DS string fallback prevents Unbound 0-byte parsing crash.
@@ -91,7 +93,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Aegis Protocol)"
+    PrintMsg "212" "Sovereign Pi Zero Ingress Forge (Monolith Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -249,7 +251,9 @@ else
 fi
 
 UnboundDir="${ConfigDir}/Unbound"
-sudo mkdir -p "${UnboundDir}"
+UnboundKeysDir="${UnboundDir}/Keys"
+sudo mkdir -p "${UnboundDir}" "${UnboundKeysDir}"
+sudo chmod 755 "${UnboundKeysDir}"
 
 # CRON-02: Soft fail logic to preserve cached root hints if WAN drops during 3AM cron run.
 if curl --connect-timeout 10 -sSL "https://www.internic.net/domain/named.root" -o "${UnboundDir}/RootHints.tmp"; then
@@ -367,7 +371,8 @@ services:
       - TZ=UTC
       - WEBPASSWORD_FILE=/run/secrets/pihole_pass
       - PIHOLE_DNS_=10.99.0.11#53
-      - DNSSEC=true
+      # CPU-01: Redundant validation disabled. Unbound acts as the singular cryptographic perimeter.
+      - DNSSEC=false
       - DNS_BOGUS_PRIV=true
       - DNS_FQDN_REQUIRED=true
       - REV_SERVER=false
@@ -414,10 +419,12 @@ services:
     read_only: true
     tmpfs:
       - /opt/unbound/var/run
-      - /opt/unbound/etc/unbound/keys
+      # STATE-01: Removed /opt/unbound/etc/unbound/keys from volatile tmpfs
     volumes:
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
+      # STATE-01: Persistently bound to host. Survives weekly cron restarts to fulfill RFC 5011 rollovers.
+      - ${ConfigDir}/Unbound/Keys:/opt/unbound/etc/unbound/keys:rw
     # BOOT-03: Hardcoded IANA DS string fallback. Prevents 0-byte parsing crash if unbound-anchor fails during offline boot.
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     healthcheck:
