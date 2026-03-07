@@ -1,9 +1,10 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v79.0-ABSOLUTE)
+#  SOVEREIGN PI ZERO GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (v79.1-ABSOLUTE)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
 #  Absolute Edge-Case Fixes Applied:
+#  - ARCH-01: Verbose ARMv6 architectural deprecation warning implemented.
 #  - LOG-01: Strict 10m/3-file rotation bolted to all services to prevent SD card death.
 #  - STATE-02: Cryptographic fallback insulated to prevent truncation of RFC 5011 keys.
 #  - SYNC-01: Administrative lockout defused via conditional post-deployment daemon restart.
@@ -46,9 +47,24 @@ PrintMsg() {
     fi
 }
 
+# ARCH-01: Explicitly define the architectural limitation. Refuse to deploy legacy CVEs.
 Arch=$(uname -m)
 if [[ "$Arch" == "armv6l" ]]; then
-    echo "[FATAL] Original Pi Zero (ARMv6) detected. Modern images drop ARMv6."
+    PrintMsg "196" "========================================================================"
+    PrintMsg "196" "[FATAL ARCHITECTURE ERROR] Broadcom BCM2835 (ARMv6) Detected."
+    PrintMsg "196" "========================================================================"
+    PrintMsg "196" "You are attempting to deploy a Tier-3 Hardened Gateway on an original"
+    PrintMsg "196" "Raspberry Pi 1 or Pi Zero 1. The Docker ecosystem (Alpine, LinuxServer,"
+    PrintMsg "196" "Pi-Hole) universally deprecated 32-bit ARMv6 support years ago."
+    PrintMsg "196" ""
+    PrintMsg "196" "If this block is bypassed, modern images will trigger an unrecoverable"
+    PrintMsg "196" "kernel 'exec format error' and permanently crash the containers."
+    PrintMsg "196" "Downgrading to unsupported 2021 legacy images introduces hundreds of"
+    PrintMsg "196" "unpatched vulnerabilities, violating strict Zero-Trust mandates."
+    PrintMsg "196" ""
+    PrintMsg "226" "==> ACTION REQUIRED: Upgrade to a Raspberry Pi Zero 2 W (ARMv8/aarch64)"
+    PrintMsg "226" "                     or a standard Raspberry Pi 4/5."
+    PrintMsg "196" "========================================================================"
     exit 1
 fi
 
