@@ -1,12 +1,14 @@
 #!/bin/bash
 # ==============================================================================
-#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v1.0-APEX)
+#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v2.0-BASTION)
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress & VPN Topology
-#  All legacy v79 STIGs retained. New routing paradigms:
-#  - PROXY-02: Traefik ingests Pi-Hole Web UI internally. Port 8080 amputated.
-#  - DNS-02: Port 53 completely stripped from host to prevent Open Resolver attacks.
-#  - NET-01: Dual-overlay networking (VpnNetwork + ProxyNetwork) enforces isolation.
+#  Bastion Edge-Case Fixes Applied:
+#  - PROXY-03: DockerSocketProxy resurrected to air-gap Traefik from raw host socket.
+#  - ACME-01: DNS-01 Cloudflare challenge mandated. Port 80 exposure eliminated.
+#  - L7-01: DynamicRules.yml restored to enforce strict HSTS and XSS security headers.
+#  - CAP-01: Traefik stripped of default root capabilities (NET_BIND_SERVICE only).
+#  All legacy v79 STIGs (Thermal Buffers, IPv6 Netfilter, RFC 5011) retained.
 # ==============================================================================
 
 set -euo pipefail
@@ -69,7 +71,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Unified Sovereign Node Forge (Apex Protocol)"
+    PrintMsg "212" "Unified Sovereign Node Forge (Bastion Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -89,12 +91,12 @@ WriteSecret() {
 }
 
 RotateSecret=0
-if [ -f "${SecretsDir}/pihole_pass" ]; then
+if [ -f "${SecretsDir}/pihole_pass" ] && [ -f "${SecretsDir}/cf_api_key" ]; then
     if [ "$Interactive" -eq 1 ]; then
         if command -v gum &> /dev/null; then
-            gum confirm "Existing Pi-Hole secret found. Rotate credentials?" && RotateSecret=1 || RotateSecret=0
+            gum confirm "Existing secrets found. Rotate credentials?" && RotateSecret=1 || RotateSecret=0
         else
-            read -p "[INFO] Existing Pi-Hole secret found. Rotate credentials? [y/N]: " ConfirmRotate || echo ""
+            read -p "[INFO] Existing secrets found. Rotate credentials? [y/N]: " ConfirmRotate || echo ""
             if [[ "${ConfirmRotate,,}" == "y" ]]; then RotateSecret=1; fi
         fi
     fi
@@ -109,10 +111,21 @@ if [ "$RotateSecret" -eq 1 ]; then
         while [[ -z "$PiHolePass" ]]; do
             if command -v gum &> /dev/null; then PiHolePass=$(gum input --password || echo "")
             else read -s -p "Password: " PiHolePass || echo ""; echo ""; fi
+            if [[ -z "$PiHolePass" ]]; then PrintMsg "196" "Password cannot be empty."; fi
         done
         WriteSecret "pihole_pass" "$PiHolePass"
+
+        # ACME-01: Mandate Cloudflare Global API Key for DNS-01 challenges.
+        PrintMsg "226" "Provide your Cloudflare Global API Key (for DNS-01 Let's Encrypt):"
+        CfApiKey=""
+        while [[ -z "$CfApiKey" ]]; do
+            if command -v gum &> /dev/null; then CfApiKey=$(gum input --password || echo "")
+            else read -s -p "CF API Key: " CfApiKey || echo ""; echo ""; fi
+            if [[ -z "$CfApiKey" ]]; then PrintMsg "196" "API Key cannot be empty."; fi
+        done
+        WriteSecret "cf_api_key" "$CfApiKey"
     else
-        echo "[FATAL] Missing pihole_pass secret."; exit 1
+        echo "[FATAL] Missing required secrets (pihole_pass or cf_api_key)."; exit 1
     fi
 fi
 
@@ -218,12 +231,13 @@ fi
 
 # Traefik Core Setup
 TraefikDir="${ConfigDir}/Traefik"
-sudo mkdir -p "${TraefikDir}"
+sudo mkdir -p "${TraefikDir}/dynamic"
 if [ ! -f "${TraefikDir}/acme.json" ]; then
     sudo touch "${TraefikDir}/acme.json"
     sudo chmod 600 "${TraefikDir}/acme.json"
 fi
 
+# PROXY-03 & ACME-01: Connect Traefik to the filtered TCP socket proxy and enforce DNS-01 verification.
 sudo tee "${TraefikDir}/TraefikConfig.yml" > /dev/null << EOF
 api:
   dashboard: true
@@ -240,15 +254,40 @@ entryPoints:
     address: ":443"
 providers:
   docker:
-    endpoint: "unix:///var/run/docker.sock"
+    endpoint: "tcp://DockerSocketProxy:2375"
     exposedByDefault: false
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
 certificatesResolvers:
   letsencrypt:
     acme:
       email: "${ACME_EMAIL}"
       storage: /acme.json
-      httpChallenge:
-        entryPoint: web
+      dnsChallenge:
+        provider: cloudflare
+        resolvers:
+          - "1.1.1.1:53"
+          - "1.0.0.1:53"
+EOF
+
+# L7-01: Resurrect strict security headers for all internally routed web apps.
+sudo tee "${TraefikDir}/dynamic/DynamicRules.yml" > /dev/null << EOF
+http:
+  middlewares:
+    secure-headers:
+      headers:
+        sslRedirect: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 31536000
+        customFrameOptionsValue: SAMEORIGIN
+        customRequestHeaders:
+          X-Forwarded-Proto: https
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
 EOF
 
 UnboundDir="${ConfigDir}/Unbound"
@@ -302,6 +341,20 @@ server:
     local-data: "${INTERNAL_DOMAIN} A ${HOST_LAN_IP}"
 EOF
 
+ResolveImage() {
+    local img=$1
+    sudo docker pull "$img" >/dev/null 2>&1
+    local digest=$(sudo docker inspect --format='{{index .RepoDigests 0}}' "$img" 2>/dev/null || echo "")
+    if [[ -z "$digest" ]]; then echo "[FATAL] Failed to resolve SHA256 for $img."; exit 1; fi
+    echo "$digest"
+}
+
+IMG_PROXY=$(ResolveImage "lscr.io/linuxserver/socket-proxy:latest")
+IMG_TRAEFIK=$(ResolveImage "traefik:v3.0")
+IMG_WG=$(ResolveImage "lscr.io/linuxserver/wireguard:latest")
+IMG_PIHOLE=$(ResolveImage "pihole/pihole:latest")
+IMG_UNBOUND=$(ResolveImage "mvance/unbound:latest")
+
 sudo mkdir -p "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d"
 
 sudo tee "$ComposeFile" > /dev/null << EOF
@@ -316,29 +369,74 @@ networks:
     ipam:
       config:
         - subnet: 10.98.0.0/24
+  # PROXY-03: Isolated network for the read-only Docker socket TCP bridge.
+  SocketNetwork:
+    name: SocketNetwork
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.97.0.0/24
 
 services:
+  DockerSocketProxy:
+    image: ${IMG_PROXY}
+    container_name: DockerSocketProxy
+    networks:
+      - SocketNetwork
+    environment:
+      - TZ=UTC
+      - CONTAINERS=1
+      - POST=0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
   TraefikProxy:
-    image: traefik:v3.0
+    image: ${IMG_TRAEFIK}
     container_name: Traefik
     networks:
+      - SocketNetwork
       - ProxyNetwork
     security_opt:
       - no-new-privileges:true
+    # CAP-01: Eradicate default root capabilities. Restrict entirely to binding public HTTP/S ports.
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - SETUID
+      - SETGID
+      - CHOWN
+    environment:
+      - CF_API_EMAIL=\${ACME_EMAIL}
+      - CF_API_KEY_FILE=/run/secrets/cf_api_key
     ports:
       - "0.0.0.0:80:80/tcp"
       - "0.0.0.0:443:443/tcp"
     volumes:
       - /etc/localtime:/etc/localtime:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${ConfigDir}/Traefik/TraefikConfig.yml:/etc/traefik/traefik.yml:ro
+      - ${ConfigDir}/Traefik/dynamic:/etc/traefik/dynamic:ro
       - ${ConfigDir}/Traefik/acme.json:/acme.json:rw
+      - ${SecretsDir}/cf_api_key:/run/secrets/cf_api_key:ro
+    depends_on:
+      - DockerSocketProxy
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.api.rule=Host(\`traefik.\${INTERNAL_DOMAIN}\`)"
       - "traefik.http.routers.api.entrypoints=websecure"
       - "traefik.http.routers.api.tls.certresolver=letsencrypt"
       - "traefik.http.routers.api.service=api@internal"
+      - "traefik.http.routers.api.middlewares=secure-headers@file"
     logging:
       driver: "json-file"
       options:
@@ -347,7 +445,7 @@ services:
     restart: unless-stopped
 
   WireGuard:
-    image: lscr.io/linuxserver/wireguard:latest
+    image: ${IMG_WG}
     container_name: WireGuard
     networks:
       VpnNetwork:
@@ -388,7 +486,7 @@ services:
     restart: unless-stopped
 
   DnsSinkhole:
-    image: pihole/pihole:latest
+    image: ${IMG_PIHOLE}
     container_name: PiHole
     networks:
       VpnNetwork:
@@ -409,14 +507,14 @@ services:
       - ${SecretsDir}/pihole_pass:/run/secrets/pihole_pass:ro
       - ${ConfigDir}/PiHole/etc-pihole:/etc/pihole
       - ${ConfigDir}/PiHole/etc-dnsmasq.d:/etc/dnsmasq.d
-    # PROXY-02: Port 80 amputated from host. Web UI bridged entirely via internal ProxyNetwork.
-    # DNS-02: Port 53 amputated from host. Prevents systemd-resolved conflicts and Open Resolver traps.
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)"
       - "traefik.http.routers.pihole.entrypoints=websecure"
       - "traefik.http.routers.pihole.tls.certresolver=letsencrypt"
       - "traefik.http.services.pihole.loadbalancer.server.port=80"
+      # L7-01: Security headers enforced on the Pi-Hole ingress route.
+      - "traefik.http.routers.pihole.middlewares=secure-headers@file"
     cap_drop:
       - ALL
     cap_add:
@@ -437,7 +535,7 @@ services:
     restart: unless-stopped
 
   RecursiveDns:
-    image: mvance/unbound:latest
+    image: ${IMG_UNBOUND}
     container_name: UnboundDns
     networks:
       VpnNetwork:
@@ -479,11 +577,12 @@ sudo chmod 600 "$ComposeFile"
 
 if [ "$Interactive" -eq 0 ]; then
     cd "$BaseDir" && sudo docker compose --env-file Node.env up -d --remove-orphans
-    if [ "$RotateSecret" -eq 1 ]; then sudo docker compose restart DnsSinkhole; fi
+    if [ "$RotateSecret" -eq 1 ]; then sudo docker compose restart DnsSinkhole TraefikProxy; fi
 elif [ "$Interactive" -eq 1 ]; then
     PrintMsg "82" "✔ Perimeter Staged."
     if [ "$RotateSecret" -eq 1 ]; then
-        PrintMsg "196" "[WARNING] Cryptographic hash rotated. Execute: cd ${BaseDir} && sudo docker compose restart DnsSinkhole"
+        PrintMsg "196" "[WARNING] Cryptographic secrets rotated. Execute to flush daemons:"
+        PrintMsg "196" "cd ${BaseDir} && sudo docker compose restart DnsSinkhole TraefikProxy"
     fi
 fi
 exit 0
