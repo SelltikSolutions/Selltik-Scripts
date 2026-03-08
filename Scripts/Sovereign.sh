@@ -129,11 +129,18 @@ access_control() {
     # Ensure rules directory exists
     mkdir -p /etc/fapolicyd/rules.d
     
-    # If the rules directory is empty, try to populate with sample rules
+    # AGGRESSIVE RULE POPULATION
     if [ -z "$(ls -A /etc/fapolicyd/rules.d/)" ]; then
-        if [ -f /etc/fapolicyd/fapolicyd.rules ]; then
-            log "Populating rules.d from base rules file..."
+        log "rules.d is empty. Searching for baseline rules..."
+        if [ -f /usr/share/fapolicyd/sample.rules ]; then
+            cp /usr/share/fapolicyd/sample.rules /etc/fapolicyd/rules.d/10-default.rules
+        elif [ -f /etc/fapolicyd/fapolicyd.rules ]; then
             cp /etc/fapolicyd/fapolicyd.rules /etc/fapolicyd/rules.d/10-default.rules
+        else
+            log "No baseline rules found. Generating emergency permissive ruleset..."
+            # Minimal rule: allow everything so we don't lock ourselves out immediately
+            # This allows the daemon to start so we can then use 'fapolicyd-cli'
+            echo "allow perm=any all : all" > /etc/fapolicyd/rules.d/99-fallback.rules
         fi
     fi
 
@@ -144,14 +151,12 @@ access_control() {
     fi
 
     log "Compiling fapolicyd rules..."
-    # Your version of fagenrules doesn't support --update, just use it to load/compile
     /usr/sbin/fagenrules --load || true
     
     log "Starting fapolicyd..."
     systemctl daemon-reload
     if ! systemctl enable --now fapolicyd; then
         log "[!] fapolicyd failed to start. Reviewing debug logs..."
-        # If it still fails, the rules file might be physically missing or empty
         /usr/sbin/fapolicyd --debug || true
     else
         log "[+] fapolicyd is active."
@@ -223,6 +228,8 @@ EOF
 #!/bin/bash
 echo "[*] Re-sealing the fortress..."
 if systemctl is-active --quiet fapolicyd; then
+    # Use fagenrules to ensure the compiled ruleset is fresh
+    fagenrules --load
     fapolicyd-cli --update
 else
     echo "[!] fapolicyd is not running. Update skipped."
