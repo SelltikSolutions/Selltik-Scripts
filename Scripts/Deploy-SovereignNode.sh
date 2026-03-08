@@ -1,15 +1,14 @@
 #!/bin/bash
 # ==============================================================================
-#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v3.0-PHALANX)
+#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v4.0-VANGUARD)
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress & VPN Topology
-#  Phalanx Edge-Case Fixes Applied:
+#  Vanguard Edge-Case Fixes Applied:
+#  - OPSEC-01: CF_API_KEY purged. CF_DNS_API_TOKEN mandated to restrict blast radius.
+#  - FTL-01: Pi-Hole environment variables translated to v6 FTLCONF_ syntax.
+#  - L7-02: Traefik DynamicRules.yml modernized for v3 schema to prevent parsing crash.
 #  - PROXY-04: DockerSocketProxy NETWORKS=1 added to prevent API enumeration failure.
 #  - ROUTE-02: traefik.docker.network enforced to prevent multi-network 504 blackhole.
-#  - PROXY-03: DockerSocketProxy resurrected to air-gap Traefik from raw host socket.
-#  - ACME-01: DNS-01 Cloudflare challenge mandated. Port 80 exposure eliminated.
-#  - L7-01: DynamicRules.yml restored to enforce strict HSTS and XSS security headers.
-#  - CAP-01: Traefik stripped of default root capabilities (NET_BIND_SERVICE only).
 #  All legacy v79 STIGs (Thermal Buffers, IPv6 Netfilter, RFC 5011) retained.
 # ==============================================================================
 
@@ -73,7 +72,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Unified Sovereign Node Forge (Phalanx Protocol)"
+    PrintMsg "212" "Unified Sovereign Node Forge (Vanguard Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -93,7 +92,7 @@ WriteSecret() {
 }
 
 RotateSecret=0
-if [ -f "${SecretsDir}/pihole_pass" ] && [ -f "${SecretsDir}/cf_api_key" ]; then
+if [ -f "${SecretsDir}/pihole_pass" ] && [ -f "${SecretsDir}/cf_api_token" ]; then
     if [ "$Interactive" -eq 1 ]; then
         if command -v gum &> /dev/null; then
             gum confirm "Existing secrets found. Rotate credentials?" && RotateSecret=1 || RotateSecret=0
@@ -117,16 +116,17 @@ if [ "$RotateSecret" -eq 1 ]; then
         done
         WriteSecret "pihole_pass" "$PiHolePass"
 
-        PrintMsg "226" "Provide your Cloudflare Global API Key (for DNS-01 Let's Encrypt):"
-        CfApiKey=""
-        while [[ -z "$CfApiKey" ]]; do
-            if command -v gum &> /dev/null; then CfApiKey=$(gum input --password || echo "")
-            else read -s -p "CF API Key: " CfApiKey || echo ""; echo ""; fi
-            if [[ -z "$CfApiKey" ]]; then PrintMsg "196" "API Key cannot be empty."; fi
+        # OPSEC-01: Eliminate Global Key. Mandate Scoped API Token (Zone:DNS:Edit).
+        PrintMsg "226" "Provide your Scoped Cloudflare DNS API Token:"
+        CfApiToken=""
+        while [[ -z "$CfApiToken" ]]; do
+            if command -v gum &> /dev/null; then CfApiToken=$(gum input --password || echo "")
+            else read -s -p "CF Scoped Token: " CfApiToken || echo ""; echo ""; fi
+            if [[ -z "$CfApiToken" ]]; then PrintMsg "196" "API Token cannot be empty."; fi
         done
-        WriteSecret "cf_api_key" "$CfApiKey"
+        WriteSecret "cf_api_token" "$CfApiToken"
     else
-        echo "[FATAL] Missing required secrets (pihole_pass or cf_api_key)."; exit 1
+        echo "[FATAL] Missing required secrets (pihole_pass or cf_api_token)."; exit 1
     fi
 fi
 
@@ -270,22 +270,20 @@ certificatesResolvers:
           - "1.0.0.1:53"
 EOF
 
+# L7-02: Traefik v3 Schema. Legacy v2 keys purged to prevent syntax fracture.
 sudo tee "${TraefikDir}/dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
     secure-headers:
       headers:
-        sslRedirect: true
-        forceSTSHeader: true
+        stsSeconds: 31536000
         stsIncludeSubdomains: true
         stsPreload: true
-        stsSeconds: 31536000
-        customFrameOptionsValue: SAMEORIGIN
-        customRequestHeaders:
-          X-Forwarded-Proto: https
         contentTypeNosniff: true
-        browserXssFilter: true
         referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-Frame-Options: "SAMEORIGIN"
+          X-XSS-Protection: "1; mode=block"
 EOF
 
 UnboundDir="${ConfigDir}/Unbound"
@@ -415,8 +413,8 @@ services:
       - SETGID
       - CHOWN
     environment:
-      - CF_API_EMAIL=\${ACME_EMAIL}
-      - CF_API_KEY_FILE=/run/secrets/cf_api_key
+      # OPSEC-01: CF_API_EMAIL stripped from environment block to prevent acme.sh engine conflicts.
+      - CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token
     ports:
       - "0.0.0.0:80:80/tcp"
       - "0.0.0.0:443:443/tcp"
@@ -425,7 +423,7 @@ services:
       - ${ConfigDir}/Traefik/TraefikConfig.yml:/etc/traefik/traefik.yml:ro
       - ${ConfigDir}/Traefik/dynamic:/etc/traefik/dynamic:ro
       - ${ConfigDir}/Traefik/acme.json:/acme.json:rw
-      - ${SecretsDir}/cf_api_key:/run/secrets/cf_api_key:ro
+      - ${SecretsDir}/cf_api_token:/run/secrets/cf_api_token:ro
     depends_on:
       - DockerSocketProxy
     labels:
@@ -490,17 +488,16 @@ services:
       VpnNetwork:
         ipv4_address: 10.99.0.12
       ProxyNetwork:
+    # FTL-01: Translated environment block for modern v6 Pi-Hole ingestion.
     environment:
       - TZ=UTC
-      - WEBPASSWORD_FILE=/run/secrets/pihole_pass
-      - PIHOLE_DNS_=10.99.0.11#53
-      - DNSSEC=false
-      - DNS_BOGUS_PRIV=true
-      - DNS_FQDN_REQUIRED=true
-      - REV_SERVER=false
-      - QUERY_LOGGING=false
-      - PRIVACY_LEVEL=3
-      - DNSMASQ_LISTENING=all
+      - FTLCONF_webserver_api_password_FILE=/run/secrets/pihole_pass
+      - FTLCONF_dns_upstreams=10.99.0.11#53
+      - FTLCONF_dns_dnssec=false
+      - FTLCONF_dns_bogusPriv=true
+      - FTLCONF_dns_fqdnRequired=true
+      - FTLCONF_dns_listeningMode=ALL
+      - FTLCONF_misc_privacylevel=3
     volumes:
       - ${SecretsDir}/pihole_pass:/run/secrets/pihole_pass:ro
       - ${ConfigDir}/PiHole/etc-pihole:/etc/pihole
