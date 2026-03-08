@@ -126,22 +126,33 @@ access_control() {
     firecfg || true
     
     log "Fixing fapolicyd structural integrity..."
-    # Ensure rules directory exists (Fixes fagenrules error)
+    # Ensure rules directory exists
     mkdir -p /etc/fapolicyd/rules.d
     
     # If the rules directory is empty, try to populate with sample rules
     if [ -z "$(ls -A /etc/fapolicyd/rules.d/)" ]; then
         if [ -f /etc/fapolicyd/fapolicyd.rules ]; then
+            log "Populating rules.d from base rules file..."
             cp /etc/fapolicyd/fapolicyd.rules /etc/fapolicyd/rules.d/10-default.rules
         fi
     fi
 
-    log "Initializing fapolicyd trust database..."
-    fapolicyd-cli --update || true
+    # Ensure trust backend is not set to 'rpm' (which fails on Parrot)
+    if [ -f /etc/fapolicyd/fapolicyd.conf ]; then
+        log "Adjusting fapolicyd trust backend for Debian-based host..."
+        sed -i 's/^trust =.*/trust = file/' /etc/fapolicyd/fapolicyd.conf
+    fi
+
+    log "Compiling fapolicyd rules..."
+    # Your version of fagenrules doesn't support --update, just use it to load/compile
+    /usr/sbin/fagenrules --load || true
     
-    # Attempt to start service and log failure if it persists
+    log "Starting fapolicyd..."
+    systemctl daemon-reload
     if ! systemctl enable --now fapolicyd; then
-        log "[!] fapolicyd failed to start. Review journalctl -xeu fapolicyd.service"
+        log "[!] fapolicyd failed to start. Reviewing debug logs..."
+        # If it still fails, the rules file might be physically missing or empty
+        /usr/sbin/fapolicyd --debug || true
     else
         log "[+] fapolicyd is active."
     fi
@@ -211,7 +222,11 @@ EOF
     cat << EOF > "$SEAL_SCRIPT"
 #!/bin/bash
 echo "[*] Re-sealing the fortress..."
-fapolicyd-cli --update
+if systemctl is-active --quiet fapolicyd; then
+    fapolicyd-cli --update
+else
+    echo "[!] fapolicyd is not running. Update skipped."
+fi
 apt-get autoremove -y && apt-get clean
 echo "[+] Done. System integrity database updated."
 EOF
