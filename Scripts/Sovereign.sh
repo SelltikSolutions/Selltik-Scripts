@@ -11,6 +11,7 @@ IFS=$'\n\t'
 LOG_FILE="/var/log/phantom_sovereign.log"
 IO_SWITCH="/usr/local/bin/io-blackout"
 SEAL_SCRIPT="/usr/local/bin/seal-system"
+AUDIT_SCRIPT="/usr/local/bin/phantom-audit"
 
 header() {
     echo -e "\n\033[0;33m=== $1 ===\033[0m"
@@ -119,51 +120,57 @@ EOF
     systemctl reload NetworkManager || true
 }
 
-# --- 4. THE OUBLIETTE (CAGING) ---
+# --- 4. SSH PORT OBFUSCATION ---
+configure_ssh() {
+    header "SSH PORT SCRAMBLING"
+    echo "[1] Manual: Specify your own port"
+    echo "[2] Deception: Random with '22' prefix (e.g., 22XXX)"
+    echo "[3] Ghost: True Random Ephemeral (49152-65535)"
+    read -p "[?] Select SSH Port Strategy [1-3]: " SSH_CHOICE
+
+    local FINAL_PORT=2222
+    case "$SSH_CHOICE" in
+        1) read -p "[?] Enter desired SSH Port: " FINAL_PORT ;;
+        2) FINAL_PORT=$((22000 + RANDOM % 1000)) ;;
+        3) FINAL_PORT=$((49152 + RANDOM % 16383)) ;;
+        *) log "Invalid choice. Defaulting to 2222." ; FINAL_PORT=2222 ;;
+    esac
+
+    log "Configuring SSH on port $FINAL_PORT..."
+    sed -i "s/^#\?Port .*/Port $FINAL_PORT/" /etc/ssh/sshd_config
+    ufw limit "$FINAL_PORT"/tcp comment 'Hardened SSH'
+    systemctl restart ssh || true
+}
+
+# --- 5. THE OUBLIETTE (CAGING) ---
 access_control() {
     header "APPLICATION CAGING & GUARD"
     install_pkg firejail fapolicyd tripwire
     firecfg || true
     
     log "Fixing fapolicyd structural integrity..."
-    # Ensure rules directory exists
     mkdir -p /etc/fapolicyd/rules.d
     
-    # AGGRESSIVE RULE POPULATION
     if [ -z "$(ls -A /etc/fapolicyd/rules.d/)" ]; then
-        log "rules.d is empty. Searching for baseline rules..."
         if [ -f /usr/share/fapolicyd/sample.rules ]; then
             cp /usr/share/fapolicyd/sample.rules /etc/fapolicyd/rules.d/10-default.rules
-        elif [ -f /etc/fapolicyd/fapolicyd.rules ]; then
-            cp /etc/fapolicyd/fapolicyd.rules /etc/fapolicyd/rules.d/10-default.rules
         else
-            log "No baseline rules found. Generating emergency permissive ruleset..."
-            # Minimal rule: allow everything so we don't lock ourselves out immediately
-            # This allows the daemon to start so we can then use 'fapolicyd-cli'
+            log "Generating emergency permissive ruleset..."
             echo "allow perm=any all : all" > /etc/fapolicyd/rules.d/99-fallback.rules
         fi
     fi
 
-    # Ensure trust backend is not set to 'rpm' (which fails on Parrot)
     if [ -f /etc/fapolicyd/fapolicyd.conf ]; then
-        log "Adjusting fapolicyd trust backend for Debian-based host..."
         sed -i 's/^trust =.*/trust = file/' /etc/fapolicyd/fapolicyd.conf
     fi
 
     log "Compiling fapolicyd rules..."
     /usr/sbin/fagenrules --load || true
-    
-    log "Starting fapolicyd..."
     systemctl daemon-reload
-    if ! systemctl enable --now fapolicyd; then
-        log "[!] fapolicyd failed to start. Reviewing debug logs..."
-        /usr/sbin/fapolicyd --debug || true
-    else
-        log "[+] fapolicyd is active."
-    fi
+    systemctl enable --now fapolicyd || true
 }
 
-# --- 5. FORENSIC AMNESIA & TMPFS ---
+# --- 6. FORENSIC AMNESIA & TMPFS ---
 amnesiac_protocols() {
     header "FORENSIC ERASURE & VOLATILE STORAGE"
     install_pkg secure-delete
@@ -177,11 +184,7 @@ amnesiac_protocols() {
         sed -i 's/errors=remount-ro/errors=remount-ro,noatime,nodiratime/' /etc/fstab
     fi
     
-    # Reload daemon to recognize fstab changes
     systemctl daemon-reload
-    
-    log "Applying filesystem hardening (Selective remount)..."
-    # We target specific partitions to avoid Docker overlayfs conflicts
     mount -o remount / || true
     if mountpoint -q /home; then mount -o remount /home || true; fi
 
@@ -212,7 +215,7 @@ EOF
     systemctl enable ghost-sweep.service
 }
 
-# --- 6. PHYSICAL I/O & SEALING ---
+# --- 7. PHYSICAL I/O & SEALING ---
 physical_security() {
     header "PHYSICAL SECURITY & SEALING"
     cat << 'EOF' > "$IO_SWITCH"
@@ -228,7 +231,6 @@ EOF
 #!/bin/bash
 echo "[*] Re-sealing the fortress..."
 if systemctl is-active --quiet fapolicyd; then
-    # Use fagenrules to ensure the compiled ruleset is fresh
     fagenrules --load
     fapolicyd-cli --update
 else
@@ -240,10 +242,28 @@ EOF
     chmod +x "$SEAL_SCRIPT"
 }
 
+# --- 8. POST-DEPLOYMENT AUDIT ---
+deploy_audit() {
+    cat << 'EOF' > "$AUDIT_SCRIPT"
+#!/bin/bash
+echo -e "\n--- PHANTOMBYTE INTEGRITY AUDIT ---"
+check_val() {
+  val=$(sysctl -n $1 2>/dev/null || echo "ERR")
+  if [ "$val" == "$2" ]; then echo -e "[PASS] $1"; else echo -e "[FAIL] $1 (Got $val)"; fi
+}
+check_val kernel.sysrq 0
+check_val kernel.perf_event_paranoid 3
+check_val kernel.dmesg_restrict 1
+if systemctl is-active --quiet fapolicyd; then echo "[PASS] fapolicyd active"; else echo "[FAIL] fapolicyd dead"; fi
+if mount | grep -q "/tmp type tmpfs"; then echo "[PASS] Volatile /tmp"; else echo "[FAIL] Disk /tmp"; fi
+EOF
+    chmod +x "$AUDIT_SCRIPT"
+}
+
 # --- EXECUTION ---
 main() {
     clear
-    echo -e "\033[0;31m--- PHANTOMBYTE SOVEREIGN ENGINE: ANTI-FRAGILE DEPLOYMENT ---\033[0m"
+    echo -e "\033[0;31m--- PHANTOMBYTE SOVEREIGN ENGINE: FINAL DEPLOYMENT ---\033[0m"
     if [[ $EUID -ne 0 ]]; then
        echo -e "\033[0;31mError: Run with sudo.\033[0m"
        exit 1
@@ -251,11 +271,15 @@ main() {
     scramble_identity
     harden_hardware
     network_stealth
+    configure_ssh
     access_control
     amnesiac_protocols
     physical_security
+    deploy_audit
+    
     header "DEPLOYMENT SUCCESSFUL"
-    log "System sealed. The copy-paste warrior survives another day."
+    log "System sealed. Identity ghosted."
+    $AUDIT_SCRIPT
     echo -e "\033[0;32m[!] Reboot mandatory to apply GRUB/RAM-Disk mutations.\033[0m"
 }
 main
