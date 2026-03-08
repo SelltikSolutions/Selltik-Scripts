@@ -22,18 +22,19 @@ log() {
 
 # --- ANTI-FRAGILE PACKAGE MANAGER ---
 install_pkg() {
-    local PKGS="$*"
-    log "Targeting packages: $PKGS"
+    # Capture all arguments as individual packages
+    log "Targeting packages: $*"
     
     # Temporarily drop strict mode to handle 404 mirror errors gracefully
     set +e 
     apt-get update --fix-missing &>/dev/null
     
-    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y $PKGS; then
+    # Passing "$@" preserves each package as a separate argument even with modified IFS
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"; then
         log "[!] Standard install failed. Engaging aggressive --fix-missing fallback..."
-        if ! DEBIAN_FRONTEND=noninteractive apt-get install -y --fix-missing $PKGS; then
+        if ! DEBIAN_FRONTEND=noninteractive apt-get install -y --fix-missing "$@"; then
             echo -e "\033[0;31m[!] CRITICAL DEADLOCK: Upstream mirrors are broken beyond automated repair.\033[0m"
-            echo -e "\033[0;31m[!] Failed to install: $PKGS\033[0m"
+            echo -e "\033[0;31m[!] Failed to install: $*\033[0m"
             echo "[!] Fix /etc/apt/sources.list.d/parrot.list and re-run."
             exit 1
         fi
@@ -45,7 +46,7 @@ install_pkg() {
 # --- 1. L2/L3 IDENTITY SCRAMBLING ---
 scramble_identity() {
     header "L2/L3 IDENTITY ANONYMIZATION"
-    install_pkg "macchanger haveged rng-tools5"
+    install_pkg macchanger haveged rng-tools5
     
     systemctl enable --now haveged || true
 
@@ -110,7 +111,7 @@ EOF
 # --- 3. NETWORK STEALTH ---
 network_stealth() {
     header "NETWORK PERIMETER"
-    install_pkg "ufw"
+    install_pkg ufw
 
     ufw default deny incoming
     ufw default allow outgoing
@@ -132,7 +133,7 @@ EOF
 # --- 4. THE OUBLIETTE (CAGING) ---
 access_control() {
     header "APPLICATION CAGING & GUARD"
-    install_pkg "firejail fapolicyd tripwire"
+    install_pkg firejail fapolicyd tripwire
     
     firecfg || true
     systemctl enable --now fapolicyd || true
@@ -141,7 +142,7 @@ access_control() {
 # --- 5. FORENSIC AMNESIA & TMPFS ---
 amnesiac_protocols() {
     header "FORENSIC ERASURE & VOLATILE STORAGE"
-    install_pkg "secure-delete"
+    install_pkg secure-delete
     
     if ! grep -q "tmpfs /tmp" /etc/fstab; then
         echo "tmpfs /tmp tmpfs rw,nosuid,nodev,noexec,relatime,size=1G 0 0" >> /etc/fstab
