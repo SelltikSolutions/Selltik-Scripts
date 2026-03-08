@@ -125,10 +125,26 @@ access_control() {
     install_pkg firejail fapolicyd tripwire
     firecfg || true
     
-    # Critical: Initialize fapolicyd DB before starting the service
+    log "Fixing fapolicyd structural integrity..."
+    # Ensure rules directory exists (Fixes fagenrules error)
+    mkdir -p /etc/fapolicyd/rules.d
+    
+    # If the rules directory is empty, try to populate with sample rules
+    if [ -z "$(ls -A /etc/fapolicyd/rules.d/)" ]; then
+        if [ -f /etc/fapolicyd/fapolicyd.rules ]; then
+            cp /etc/fapolicyd/fapolicyd.rules /etc/fapolicyd/rules.d/10-default.rules
+        fi
+    fi
+
     log "Initializing fapolicyd trust database..."
     fapolicyd-cli --update || true
-    systemctl enable --now fapolicyd || true
+    
+    # Attempt to start service and log failure if it persists
+    if ! systemctl enable --now fapolicyd; then
+        log "[!] fapolicyd failed to start. Review journalctl -xeu fapolicyd.service"
+    else
+        log "[+] fapolicyd is active."
+    fi
 }
 
 # --- 5. FORENSIC AMNESIA & TMPFS ---
@@ -145,9 +161,13 @@ amnesiac_protocols() {
         sed -i 's/errors=remount-ro/errors=remount-ro,noatime,nodiratime/' /etc/fstab
     fi
     
-    # Reload daemon to recognize fstab changes before remounting
+    # Reload daemon to recognize fstab changes
     systemctl daemon-reload
-    mount -a -o remount || true
+    
+    log "Applying filesystem hardening (Selective remount)..."
+    # We target specific partitions to avoid Docker overlayfs conflicts
+    mount -o remount / || true
+    if mountpoint -q /home; then mount -o remount /home || true; fi
 
     for PROFILE in "/etc/profile" "/etc/skel/.bashrc" "/root/.bashrc"; do
         if ! grep -q "HISTSIZE=0" "$PROFILE" 2>/dev/null; then
