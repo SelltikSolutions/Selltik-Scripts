@@ -1,9 +1,11 @@
 #!/bin/bash
 # ==============================================================================
-#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v2.0-BASTION)
+#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v3.0-PHALANX)
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress & VPN Topology
-#  Bastion Edge-Case Fixes Applied:
+#  Phalanx Edge-Case Fixes Applied:
+#  - PROXY-04: DockerSocketProxy NETWORKS=1 added to prevent API enumeration failure.
+#  - ROUTE-02: traefik.docker.network enforced to prevent multi-network 504 blackhole.
 #  - PROXY-03: DockerSocketProxy resurrected to air-gap Traefik from raw host socket.
 #  - ACME-01: DNS-01 Cloudflare challenge mandated. Port 80 exposure eliminated.
 #  - L7-01: DynamicRules.yml restored to enforce strict HSTS and XSS security headers.
@@ -71,7 +73,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Unified Sovereign Node Forge (Bastion Protocol)"
+    PrintMsg "212" "Unified Sovereign Node Forge (Phalanx Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -115,7 +117,6 @@ if [ "$RotateSecret" -eq 1 ]; then
         done
         WriteSecret "pihole_pass" "$PiHolePass"
 
-        # ACME-01: Mandate Cloudflare Global API Key for DNS-01 challenges.
         PrintMsg "226" "Provide your Cloudflare Global API Key (for DNS-01 Let's Encrypt):"
         CfApiKey=""
         while [[ -z "$CfApiKey" ]]; do
@@ -229,7 +230,6 @@ else
     PrintMsg "196" "[FATAL] Host kernel lacks wireguard capability."; exit 1
 fi
 
-# Traefik Core Setup
 TraefikDir="${ConfigDir}/Traefik"
 sudo mkdir -p "${TraefikDir}/dynamic"
 if [ ! -f "${TraefikDir}/acme.json" ]; then
@@ -237,7 +237,6 @@ if [ ! -f "${TraefikDir}/acme.json" ]; then
     sudo chmod 600 "${TraefikDir}/acme.json"
 fi
 
-# PROXY-03 & ACME-01: Connect Traefik to the filtered TCP socket proxy and enforce DNS-01 verification.
 sudo tee "${TraefikDir}/TraefikConfig.yml" > /dev/null << EOF
 api:
   dashboard: true
@@ -271,7 +270,6 @@ certificatesResolvers:
           - "1.0.0.1:53"
 EOF
 
-# L7-01: Resurrect strict security headers for all internally routed web apps.
 sudo tee "${TraefikDir}/dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -369,7 +367,6 @@ networks:
     ipam:
       config:
         - subnet: 10.98.0.0/24
-  # PROXY-03: Isolated network for the read-only Docker socket TCP bridge.
   SocketNetwork:
     name: SocketNetwork
     internal: true
@@ -386,6 +383,8 @@ services:
     environment:
       - TZ=UTC
       - CONTAINERS=1
+      # PROXY-04: API endpoint authorized so Traefik can securely resolve container overlay IPs.
+      - NETWORKS=1
       - POST=0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -408,7 +407,6 @@ services:
       - ProxyNetwork
     security_opt:
       - no-new-privileges:true
-    # CAP-01: Eradicate default root capabilities. Restrict entirely to binding public HTTP/S ports.
     cap_drop:
       - ALL
     cap_add:
@@ -513,8 +511,9 @@ services:
       - "traefik.http.routers.pihole.entrypoints=websecure"
       - "traefik.http.routers.pihole.tls.certresolver=letsencrypt"
       - "traefik.http.services.pihole.loadbalancer.server.port=80"
-      # L7-01: Security headers enforced on the Pi-Hole ingress route.
       - "traefik.http.routers.pihole.middlewares=secure-headers@file"
+      # ROUTE-02: Explicitly map traffic to the Proxy bridge. Bypasses multi-network 504 timeouts.
+      - "traefik.docker.network=ProxyNetwork"
     cap_drop:
       - ALL
     cap_add:
