@@ -1,9 +1,10 @@
 #!/bin/bash
 # ==============================================================================
-#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v6.0-IRONCLAD)
+#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v7.0-IMMORTAL)
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress & VPN Topology
-#  Ironclad Edge-Case Fixes Applied:
+#  Immortal Edge-Case Fixes Applied:
+#  - AUTH-01: Cryptographic BasicAuth bolted to Traefik Dashboard to defeat Stolen Key Paradox.
 #  - ROUTE-03: Host LAN IP dependency eradicated. Unbound hairpinned to Traefik internal IP.
 #  - NET-02: Traefik bound to VpnNetwork (10.99.0.13) to keep routing entirely inside overlay.
 #  - ZTRUST-03: ipAllowList constrained to a strict /32 pinhole to defeat docker-proxy SNAT illusion.
@@ -72,7 +73,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Unified Sovereign Node Forge (Ironclad Protocol)"
+    PrintMsg "212" "Unified Sovereign Node Forge (Immortal Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -92,7 +93,8 @@ WriteSecret() {
 }
 
 RotateSecret=0
-if [ -f "${SecretsDir}/pihole_pass" ] && [ -f "${SecretsDir}/cf_api_token" ]; then
+# AUTH-01: Added traefik_auth to the secret verification blockade.
+if [ -f "${SecretsDir}/pihole_pass" ] && [ -f "${SecretsDir}/cf_api_token" ] && [ -f "${SecretsDir}/traefik_auth" ]; then
     if [ "$Interactive" -eq 1 ]; then
         if command -v gum &> /dev/null; then
             gum confirm "Existing secrets found. Rotate credentials?" && RotateSecret=1 || RotateSecret=0
@@ -124,8 +126,19 @@ if [ "$RotateSecret" -eq 1 ]; then
             if [[ -z "$CfApiToken" ]]; then PrintMsg "196" "API Token cannot be empty."; fi
         done
         WriteSecret "cf_api_token" "$CfApiToken"
+
+        # AUTH-01: Demand Traefik Admin password and hash securely via native openssl.
+        PrintMsg "226" "Provide a secure password for the Traefik Admin Dashboard:"
+        TraefikPass=""
+        while [[ -z "$TraefikPass" ]]; do
+            if command -v gum &> /dev/null; then TraefikPass=$(gum input --password || echo "")
+            else read -s -p "Traefik Password: " TraefikPass || echo ""; echo ""; fi
+            if [[ -z "$TraefikPass" ]]; then PrintMsg "196" "Password cannot be empty."; fi
+        done
+        TraefikHash="admin:$(openssl passwd -apr1 "$TraefikPass")"
+        WriteSecret "traefik_auth" "$TraefikHash"
     else
-        echo "[FATAL] Missing required secrets (pihole_pass or cf_api_token)."; exit 1
+        echo "[FATAL] Missing required secrets (pihole_pass, cf_api_token, or traefik_auth)."; exit 1
     fi
 fi
 
@@ -154,7 +167,6 @@ if [ "$Interactive" -eq 1 ]; then
         else read -p "Let's Encrypt Email [$PrevEmail]: " InputEmail || echo ""; AcmeEmail=${InputEmail:-$PrevEmail}; fi
     done
 
-    # ROUTE-03: Physical HOST_LAN_IP has been entirely eradicated.
     sudo tee "$EnvFile" > /dev/null << EOF
 WG_ENDPOINT=${WgEndpoint}
 INTERNAL_DOMAIN=${InternalDomain}
@@ -267,7 +279,7 @@ certificatesResolvers:
           - "1.0.0.1:53"
 EOF
 
-# ZTRUST-03: Mathematically strict /32 pinhole. Eliminates docker-proxy SNAT vulnerabilities.
+# AUTH-01 & ZTRUST-03: BasicAuth forged to read from persistent secret. IP Whitelist retained.
 sudo tee "${TraefikDir}/dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -286,6 +298,9 @@ http:
         sourceRange:
           - "10.13.13.0/24" # WireGuard Native Client Subnet
           - "10.99.0.10/32" # WireGuard Container MASQUERADE Route
+    traefik-auth:
+      basicAuth:
+        usersFile: "/run/secrets/traefik_auth"
 EOF
 
 UnboundDir="${ConfigDir}/Unbound"
@@ -312,7 +327,6 @@ A.ROOT-SERVERS.NET. 3600000 A 198.41.0.4
 EOF
 fi
 
-# ROUTE-03: Hairpin Unbound resolution strictly to Traefik's internal overlay IP (10.99.0.13).
 sudo tee "${UnboundDir}/UnboundConfig.conf" > /dev/null << EOF
 server:
     verbosity: 0
@@ -402,7 +416,6 @@ services:
   TraefikProxy:
     image: ${IMG_TRAEFIK}
     container_name: Traefik
-    # NET-02: Traefik explicitly bridged to VpnNetwork to capture internal Hairpin routing.
     networks:
       SocketNetwork:
       ProxyNetwork:
@@ -428,6 +441,8 @@ services:
       - ${ConfigDir}/Traefik/dynamic:/etc/traefik/dynamic:ro
       - ${ConfigDir}/Traefik/acme.json:/acme.json:rw
       - ${SecretsDir}/cf_api_token:/run/secrets/cf_api_token:ro
+      # AUTH-01: Persistent cryptographic secret mapped into proxy container.
+      - ${SecretsDir}/traefik_auth:/run/secrets/traefik_auth:ro
     depends_on:
       - DockerSocketProxy
     labels:
@@ -436,7 +451,8 @@ services:
       - "traefik.http.routers.api.entrypoints=websecure"
       - "traefik.http.routers.api.tls.certresolver=letsencrypt"
       - "traefik.http.routers.api.service=api@internal"
-      - "traefik.http.routers.api.middlewares=secure-headers@file,vpn-whitelist@file"
+      # AUTH-01 & ZTRUST-03: Layer 7 Double-Lock enforced on the administrative perimeter.
+      - "traefik.http.routers.api.middlewares=secure-headers@file,vpn-whitelist@file,traefik-auth@file"
     logging:
       driver: "json-file"
       options:
