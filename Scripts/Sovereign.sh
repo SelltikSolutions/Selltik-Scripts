@@ -22,24 +22,18 @@ log() {
 
 # --- ANTI-FRAGILE PACKAGE MANAGER ---
 install_pkg() {
-    # Capture all arguments as individual packages
     log "Targeting packages: $*"
-    
-    # Temporarily drop strict mode to handle 404 mirror errors gracefully
     set +e 
     apt-get update --fix-missing &>/dev/null
-    
-    # Passing "$@" preserves each package as a separate argument even with modified IFS
     if ! DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"; then
         log "[!] Standard install failed. Engaging aggressive --fix-missing fallback..."
         if ! DEBIAN_FRONTEND=noninteractive apt-get install -y --fix-missing "$@"; then
             echo -e "\033[0;31m[!] CRITICAL DEADLOCK: Upstream mirrors are broken beyond automated repair.\033[0m"
             echo -e "\033[0;31m[!] Failed to install: $*\033[0m"
-            echo "[!] Fix /etc/apt/sources.list.d/parrot.list and re-run."
             exit 1
         fi
     fi
-    set -e # Re-engage strict mode
+    set -e 
     log "[+] Packages acquired and installed."
 }
 
@@ -47,7 +41,6 @@ install_pkg() {
 scramble_identity() {
     header "L2/L3 IDENTITY ANONYMIZATION"
     install_pkg macchanger haveged rng-tools5
-    
     systemctl enable --now haveged || true
 
     cat << 'EOF' > /usr/local/bin/phantom-hostname-gen
@@ -76,13 +69,11 @@ ExecStart=/usr/local/bin/phantom-hostname-gen
 WantedBy=multi-user.target
 EOF
     systemctl enable phantom-hostname.service
-    log "L3 Randomizer written to disk."
 }
 
 # --- 2. KERNEL & HARDWARE HARDENING ---
 harden_hardware() {
     header "KERNEL & CPU HARDENING"
-    
     PARAMS="nosmt l1tf=full,force mds=full,nosmt spec_store_bypass_disable=on spectre_v2=on page_poison=1 slub_debug=P page_alloc.shuffle=1"
     if ! grep -q "page_poison=1" /etc/default/grub; then
         sed -i "s/GRUB_CMDLINE_LINUX_DEFAULT=\"/GRUB_CMDLINE_LINUX_DEFAULT=\"$PARAMS /" /etc/default/grub
@@ -105,14 +96,12 @@ fs.protected_regular=2
 kernel.perf_event_paranoid=3
 EOF
     sysctl -p /etc/sysctl.d/99-phantom.conf
-    log "Kernel parameters sealed."
 }
 
 # --- 3. NETWORK STEALTH ---
 network_stealth() {
     header "NETWORK PERIMETER"
     install_pkg ufw
-
     ufw default deny incoming
     ufw default allow outgoing
     ufw deny 22/tcp || true
@@ -134,8 +123,11 @@ EOF
 access_control() {
     header "APPLICATION CAGING & GUARD"
     install_pkg firejail fapolicyd tripwire
-    
     firecfg || true
+    
+    # Critical: Initialize fapolicyd DB before starting the service
+    log "Initializing fapolicyd trust database..."
+    fapolicyd-cli --update || true
     systemctl enable --now fapolicyd || true
 }
 
@@ -152,6 +144,9 @@ amnesiac_protocols() {
     if ! grep -q "noatime" /etc/fstab; then
         sed -i 's/errors=remount-ro/errors=remount-ro,noatime,nodiratime/' /etc/fstab
     fi
+    
+    # Reload daemon to recognize fstab changes before remounting
+    systemctl daemon-reload
     mount -a -o remount || true
 
     for PROFILE in "/etc/profile" "/etc/skel/.bashrc" "/root/.bashrc"; do
@@ -184,7 +179,6 @@ EOF
 # --- 6. PHYSICAL I/O & SEALING ---
 physical_security() {
     header "PHYSICAL SECURITY & SEALING"
-    
     cat << 'EOF' > "$IO_SWITCH"
 #!/bin/bash
 case "$1" in
@@ -208,22 +202,18 @@ EOF
 main() {
     clear
     echo -e "\033[0;31m--- PHANTOMBYTE SOVEREIGN ENGINE: ANTI-FRAGILE DEPLOYMENT ---\033[0m"
-    
     if [[ $EUID -ne 0 ]]; then
        echo -e "\033[0;31mError: Run with sudo.\033[0m"
        exit 1
     fi
-
     scramble_identity
     harden_hardware
     network_stealth
     access_control
     amnesiac_protocols
     physical_security
-
     header "DEPLOYMENT SUCCESSFUL"
     log "System sealed. The copy-paste warrior survives another day."
     echo -e "\033[0;32m[!] Reboot mandatory to apply GRUB/RAM-Disk mutations.\033[0m"
 }
-
 main
