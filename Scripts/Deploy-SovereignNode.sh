@@ -1,14 +1,14 @@
 #!/bin/bash
 # ==============================================================================
-#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v5.0-TERMINUS)
+#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v6.0-IRONCLAD)
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress & VPN Topology
-#  Terminus Edge-Case Fixes Applied:
+#  Ironclad Edge-Case Fixes Applied:
+#  - ROUTE-03: Host LAN IP dependency eradicated. Unbound hairpinned to Traefik internal IP.
+#  - NET-02: Traefik bound to VpnNetwork (10.99.0.13) to keep routing entirely inside overlay.
+#  - ZTRUST-03: ipAllowList constrained to a strict /32 pinhole to defeat docker-proxy SNAT illusion.
 #  - ZTRUST-01: Pi-Hole FTL v6 CSRF whitelist injected to prevent 403 lockouts.
-#  - ZTRUST-02: Strict ipAllowList middleware forged to seal Traefik from physical LAN/WAN.
 #  - OPSEC-01: CF_API_KEY purged. CF_DNS_API_TOKEN mandated to restrict blast radius.
-#  - FTL-01: Pi-Hole environment variables translated to v6 FTLCONF_ syntax.
-#  - L7-02: Traefik DynamicRules.yml modernized for v3 schema to prevent parsing crash.
 #  All legacy v79 STIGs (Thermal Buffers, IPv6 Netfilter, RFC 5011) retained.
 # ==============================================================================
 
@@ -72,7 +72,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Unified Sovereign Node Forge (Terminus Protocol)"
+    PrintMsg "212" "Unified Sovereign Node Forge (Ironclad Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -116,7 +116,6 @@ if [ "$RotateSecret" -eq 1 ]; then
         done
         WriteSecret "pihole_pass" "$PiHolePass"
 
-        # OPSEC-01: Eliminate Global Key. Mandate Scoped API Token (Zone:DNS:Edit).
         PrintMsg "226" "Provide your Scoped Cloudflare DNS API Token:"
         CfApiToken=""
         while [[ -z "$CfApiToken" ]]; do
@@ -137,8 +136,6 @@ if [ "$Interactive" -eq 1 ]; then
     PrevWgPort=$(grep "^WG_PORT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "51820")
     PrevWgPeers=$(grep "^WG_PEERS=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "3")
 
-    HostLanIp=$(hostname -I | awk '{print $1}')
-
     WgEndpoint=""
     while [[ -z "$WgEndpoint" ]]; do
         if command -v gum &> /dev/null; then WgEndpoint=$(gum input --prompt "WireGuard Public Endpoint (IP/DDNS): " --value "$PrevEndpoint" || echo "")
@@ -157,8 +154,8 @@ if [ "$Interactive" -eq 1 ]; then
         else read -p "Let's Encrypt Email [$PrevEmail]: " InputEmail || echo ""; AcmeEmail=${InputEmail:-$PrevEmail}; fi
     done
 
+    # ROUTE-03: Physical HOST_LAN_IP has been entirely eradicated.
     sudo tee "$EnvFile" > /dev/null << EOF
-HOST_LAN_IP=${HostLanIp}
 WG_ENDPOINT=${WgEndpoint}
 INTERNAL_DOMAIN=${InternalDomain}
 ACME_EMAIL=${AcmeEmail}
@@ -270,8 +267,7 @@ certificatesResolvers:
           - "1.0.0.1:53"
 EOF
 
-# L7-02: Traefik v3 Schema. Legacy keys purged.
-# ZTRUST-02: Strict ipAllowList middleware forged to reject any traffic outside the VPN/Docker subnets.
+# ZTRUST-03: Mathematically strict /32 pinhole. Eliminates docker-proxy SNAT vulnerabilities.
 sudo tee "${TraefikDir}/dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -288,10 +284,8 @@ http:
     vpn-whitelist:
       ipAllowList:
         sourceRange:
-          - "10.13.13.0/24" # WireGuard Client Subnet
-          - "10.99.0.0/24"  # Internal VpnNetwork Bridge
-          - "10.98.0.0/24"  # Internal ProxyNetwork Bridge
-          - "10.97.0.0/24"  # Internal SocketNetwork Bridge
+          - "10.13.13.0/24" # WireGuard Native Client Subnet
+          - "10.99.0.10/32" # WireGuard Container MASQUERADE Route
 EOF
 
 UnboundDir="${ConfigDir}/Unbound"
@@ -318,6 +312,7 @@ A.ROOT-SERVERS.NET. 3600000 A 198.41.0.4
 EOF
 fi
 
+# ROUTE-03: Hairpin Unbound resolution strictly to Traefik's internal overlay IP (10.99.0.13).
 sudo tee "${UnboundDir}/UnboundConfig.conf" > /dev/null << EOF
 server:
     verbosity: 0
@@ -342,7 +337,7 @@ server:
     access-control: 127.0.0.0/8 allow
     access-control: 10.99.0.0/24 allow
     local-zone: "${INTERNAL_DOMAIN}" redirect
-    local-data: "${INTERNAL_DOMAIN} A ${HOST_LAN_IP}"
+    local-data: "${INTERNAL_DOMAIN} A 10.99.0.13"
 EOF
 
 ResolveImage() {
@@ -389,7 +384,6 @@ services:
     environment:
       - TZ=UTC
       - CONTAINERS=1
-      # PROXY-04: API endpoint authorized so Traefik can securely resolve container overlay IPs.
       - NETWORKS=1
       - POST=0
     volumes:
@@ -408,9 +402,12 @@ services:
   TraefikProxy:
     image: ${IMG_TRAEFIK}
     container_name: Traefik
+    # NET-02: Traefik explicitly bridged to VpnNetwork to capture internal Hairpin routing.
     networks:
-      - SocketNetwork
-      - ProxyNetwork
+      SocketNetwork:
+      ProxyNetwork:
+      VpnNetwork:
+        ipv4_address: 10.99.0.13
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -421,7 +418,6 @@ services:
       - SETGID
       - CHOWN
     environment:
-      # OPSEC-01: CF_API_EMAIL stripped from environment block to prevent acme.sh engine conflicts.
       - CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token
     ports:
       - "0.0.0.0:80:80/tcp"
@@ -440,7 +436,6 @@ services:
       - "traefik.http.routers.api.entrypoints=websecure"
       - "traefik.http.routers.api.tls.certresolver=letsencrypt"
       - "traefik.http.routers.api.service=api@internal"
-      # ZTRUST-02: Strict IP Whitelist prevents Dashboard hemorrhage on physical LAN.
       - "traefik.http.routers.api.middlewares=secure-headers@file,vpn-whitelist@file"
     logging:
       driver: "json-file"
@@ -497,7 +492,6 @@ services:
       VpnNetwork:
         ipv4_address: 10.99.0.12
       ProxyNetwork:
-    # FTL-01 & ZTRUST-01: Translated environment block for modern v6 Pi-Hole with CSRF proxy whitelisting.
     environment:
       - TZ=UTC
       - FTLCONF_webserver_api_password_FILE=/run/secrets/pihole_pass
@@ -518,9 +512,7 @@ services:
       - "traefik.http.routers.pihole.entrypoints=websecure"
       - "traefik.http.routers.pihole.tls.certresolver=letsencrypt"
       - "traefik.http.services.pihole.loadbalancer.server.port=80"
-      # ROUTE-02: Explicitly map traffic to the Proxy bridge.
       - "traefik.docker.network=ProxyNetwork"
-      # ZTRUST-02: Strict IP Whitelist bolted to the web app ingress route.
       - "traefik.http.routers.pihole.middlewares=secure-headers@file,vpn-whitelist@file"
     cap_drop:
       - ALL
