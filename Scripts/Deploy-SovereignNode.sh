@@ -1,8 +1,10 @@
 #!/bin/bash
 # ==============================================================================
-#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v8.6-SUBNET-MASK-FIX)
+#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v8.7-PROXY-TRANSPLANT)
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress & VPN Topology
+#  Proxy Transplant Edge-Case Fixes Applied:
+#  - PROXY-08: Transplanted lscr.io wrapper with tecnativa upstream to prevent HAProxy Api-Version header stripping and Traefik v3 fallback panics.
 #  Subnet Mask Fixes Applied:
 #  - ROUTE-02: Appended /24 CIDR to INTERNAL_SUBNET to repair malformed iptables MASQUERADE rule.
 #  Omnidirectional Bind Edge-Case Fixes Applied:
@@ -30,7 +32,16 @@
 #  - PROXY-06: PING=1 added to Socket Proxy.
 #  Eclipse/Resurgence Edge-Case Fixes Applied:
 #  - DOCKER-02: Traefik v3 'version' schema violation reverted.
-#  - PROXY-05: VERSION=1 and EVENTS=1 injected to authorize proxy telemetry.
+#  - PROXY-05: VERSION=1 and EVENTS=1 injected.
+#  Final Edge-Case Fixes Applied:
+#  - DOCKER-01: PascalCase constraint dropped for docker-compose.yml.
+#  - VAR-01: Split-brain interpolation eradicated.
+#  - CAP-02: SYS_MODULE & DAC_OVERRIDE restored to WireGuard.
+#  - SEC-02: Decoupled secret rotation engine.
+#  - TTY-01: Shifted Interactive check from stdout to stdin.
+#  - AUTH-01: Cryptographic BasicAuth bolted to Traefik Dashboard.
+#  - ROUTE-03: Host LAN IP dependency eradicated.
+#  - ZTRUST-03: ipAllowList constrained to a strict /32 pinhole.
 # ==============================================================================
 
 set -euo pipefail
@@ -93,7 +104,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Unified Sovereign Node Forge (Subnet Mask Protocol)"
+    PrintMsg "212" "Unified Sovereign Node Forge (Proxy Transplant Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -401,7 +412,8 @@ ResolveImage() {
     echo "$digest"
 }
 
-IMG_PROXY=$(ResolveImage "lscr.io/linuxserver/socket-proxy:latest")
+# PROXY-08: Transplanted proxy image from LSIO to Tecnativa upstream to resolve HTTP header stripping
+IMG_PROXY=$(ResolveImage "tecnativa/docker-socket-proxy:latest")
 IMG_TRAEFIK=$(ResolveImage "traefik:v3.0")
 IMG_WG=$(ResolveImage "lscr.io/linuxserver/wireguard:latest")
 IMG_PIHOLE=$(ResolveImage "pihole/pihole:latest")
@@ -435,7 +447,6 @@ services:
     networks:
       - SocketNetwork
     environment:
-      - TZ=UTC
       - CONTAINERS=1
       - NETWORKS=1
       - VERSION=1
@@ -543,7 +554,6 @@ services:
       - SERVERPORT=${WG_PORT}
       - PEERS=${WG_PEERS}
       - PEERDNS=10.99.0.12
-      # ROUTE-02: /24 CIDR appended to prevent malformed masquerade routing.
       - INTERNAL_SUBNET=10.13.13.0/24
       - ALLOWEDIPS=0.0.0.0/0
       - LOG_CONFS=false
