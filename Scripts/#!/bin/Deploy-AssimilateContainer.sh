@@ -1,16 +1,13 @@
 #!/bin/bash
 # ==============================================================================
-#  ALIEN CONTAINER ASSIMILATION UTILITY (v2.0-DYNAMIC-TARGETING)
+#  ALIEN CONTAINER ASSIMILATION UTILITY (v3.0-DISTRIBUTED-SATELLITE)
 # ==============================================================================
 #  Architecture: Decoupled Diagnostic & Manifest Generator
 #  Purpose: Scans the Docker Socket for unassimilated containers and generates
 #           Traefik Integration Manifests. 
-#  Update: Now interrogates the host environment to dynamically target either
-#          the Unified Sovereign Node or the Split-Horizon Traefik Monolith.
+#  Update: Now fully decoupled to support Remote Satellite Nodes (NAS, dedicated
+#          compute servers) without requiring local gateway presence.
 #  Prime Directive: Read-Only. Never modifies existing infrastructure.
-#
-#  SECURITY WARNING: Do not copy-paste this blindly into environments outside
-#  the Sovereign architecture.
 # ==============================================================================
 
 # Enforce strict error handling to prevent silent, catastrophic failures
@@ -41,12 +38,13 @@ if [ "$Interactive" -eq 1 ]; then
     echo ""
     PrintMsg "212" "Select the target deployment architecture for assimilation:"
     if command -v gum &> /dev/null; then
-        choice=$(gum choose "1) Unified Sovereign Node (Single-Node)" "2) Dedicated Traefik Monolith (Split-Horizon)")
+        choice=$(gum choose "1) Unified Sovereign Node (Single-Node)" "2) Dedicated Traefik Monolith (Split-Horizon)" "3) Remote Satellite Node (NAS / Dedicated Service Host)")
         machine_choice=${choice:0:1}
     else
         echo "1) Unified Sovereign Node (Single-Node)"
         echo "2) Dedicated Traefik Monolith (Split-Horizon)"
-        read -p "Select architecture (1-2): " machine_choice || echo ""
+        echo "3) Remote Satellite Node (NAS / Dedicated Service Host)"
+        read -p "Select architecture (1-3): " machine_choice || echo ""
     fi
 
     case "$machine_choice" in
@@ -54,11 +52,19 @@ if [ "$Interactive" -eq 1 ]; then
             StackName="SovereignNode"
             EnvFileName="Node.env"
             ProxyNetworkName="SovereignNode_ProxyNetwork"
+            IsSatellite=0
             ;;
         2)
             StackName="TraefikMonolith"
             EnvFileName="Traefik.env"
             ProxyNetworkName="ProxyNetwork"
+            IsSatellite=0
+            ;;
+        3)
+            StackName="SatelliteNode"
+            EnvFileName="Satellite.env"
+            ProxyNetworkName="ProxyNetwork"
+            IsSatellite=1
             ;;
         *)
             PrintMsg "196" "[FATAL] Invalid architecture selection. Aborting to prevent routing corruption."
@@ -74,11 +80,19 @@ BaseDir="/opt/Docker/Stacks/${StackName}"
 EnvFile="${BaseDir}/${EnvFileName}"
 ManifestDir="${BaseDir}/IntegrationManifests"
 
-# SEC-01: Verify Sovereign Node State. Refuse to run if the core perimeter is missing.
+sudo mkdir -p "$BaseDir"
+
+# SEC-01: Verify Sovereign Node State or Initialize Satellite State.
 if [ ! -f "$EnvFile" ]; then
-    PrintMsg "196" "[FATAL] Environment file not found at $EnvFile."
-    PrintMsg "196" "The core perimeter must be deployed on this machine before assimilation can occur."
-    exit 1
+    if [ "$IsSatellite" -eq 1 ]; then
+        PrintMsg "226" "[INFO] Initializing new Remote Satellite state at $EnvFile..."
+        sudo touch "$EnvFile"
+        sudo chmod 600 "$EnvFile"
+    else
+        PrintMsg "196" "[FATAL] Environment file not found at $EnvFile."
+        PrintMsg "196" "The core perimeter must be deployed on this machine before assimilation can occur."
+        exit 1
+    fi
 fi
 
 # Source the environment variables safely (temporarily disable nounset for missing vars)
@@ -86,7 +100,7 @@ set +u
 source "$EnvFile"
 set -u
 
-# Ensure INTERNAL_DOMAIN exists (TraefikMonolith might lack it natively)
+# Ensure INTERNAL_DOMAIN exists
 if [ -z "${INTERNAL_DOMAIN:-}" ]; then
     PrintMsg "226" "[WARNING] INTERNAL_DOMAIN is missing from your active environment."
     if [ "$Interactive" -eq 1 ]; then
@@ -102,6 +116,22 @@ if [ -z "${INTERNAL_DOMAIN:-}" ]; then
         PrintMsg "196" "[FATAL] INTERNAL_DOMAIN missing. Headless abort."
         exit 1
     fi
+fi
+
+# If Satellite, allow custom proxy network name override
+if [ "$IsSatellite" -eq 1 ] && [ -z "${SATELLITE_PROXY_NET:-}" ]; then
+    if [ "$Interactive" -eq 1 ]; then
+        if command -v gum &> /dev/null; then
+            SATELLITE_PROXY_NET=$(gum input --prompt "Enter target proxy network name on this node: " --value "$ProxyNetworkName")
+        else
+            read -p "Enter target proxy network name on this node [$ProxyNetworkName]: " input_net
+            SATELLITE_PROXY_NET=${input_net:-$ProxyNetworkName}
+        fi
+        echo "SATELLITE_PROXY_NET=${SATELLITE_PROXY_NET}" | sudo tee -a "$EnvFile" > /dev/null
+        ProxyNetworkName="$SATELLITE_PROXY_NET"
+    fi
+elif [ "$IsSatellite" -eq 1 ] && [ -n "${SATELLITE_PROXY_NET:-}" ]; then
+    ProxyNetworkName="$SATELLITE_PROXY_NET"
 fi
 
 # Ensure the output directory exists
@@ -230,6 +260,11 @@ ScanForeignContainers() {
 # 3. Paste the networks and labels sections below into your service definition.
 # 4. Replace <PORT> with the actual internal listening port of your application.
 # 5. Re-run 'docker compose up -d' on your original stack.
+# 
+# SATELLITE NODE WARNING:
+# If this is running on a remote NAS or server, Traefik will NOT see these labels 
+# unless Traefik is configured to connect to this machine's Docker Socket via 
+# a remote provider array in its core configuration.
 # ==============================================================================
 
 networks:
