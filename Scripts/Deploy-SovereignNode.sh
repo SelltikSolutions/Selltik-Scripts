@@ -1,10 +1,11 @@
 #!/bin/bash
 # ==============================================================================
-#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v8.7-PROXY-TRANSPLANT)
+#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v8.8-LTS-DETERMINISM)
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress & VPN Topology
-#  Proxy Transplant Edge-Case Fixes Applied:
-#  - PROXY-08: Transplanted lscr.io wrapper with tecnativa upstream to prevent HAProxy Api-Version header stripping and Traefik v3 fallback panics.
+#  LTS Determinism Edge-Case Fixes Applied:
+#  - TRAEFIK-01: Downgraded to v2.11 LTS to restore manual API version pinning, bypassing proxy auto-negotiation panic.
+#  - PROXY-09: Reverted to lscr.io socket proxy for architectural consistency.
 #  Subnet Mask Fixes Applied:
 #  - ROUTE-02: Appended /24 CIDR to INTERNAL_SUBNET to repair malformed iptables MASQUERADE rule.
 #  Omnidirectional Bind Edge-Case Fixes Applied:
@@ -12,7 +13,6 @@
 #  FTL Stabilization Edge-Case Fixes Applied:
 #  - CAP-05: SETFCAP, IPC_LOCK, SYS_RESOURCE injected to prevent init script setcap suicide.
 #  - ENV-01: Hybrid v5/v6 Pi-Hole environment variables implemented for forward compatibility.
-#  - HEALTH-04: Custom healthcheck excised in favor of Pi-Hole native image healthcheck.
 #  S6-Overlay Override Edge-Case Fixes Applied:
 #  - CAP-04: Restored DAC_OVERRIDE, FOWNER, and SYS_CHROOT.
 #  - HEALTH-03: Hardened Pi-Hole healthcheck using native pi.hole internal record via dig.
@@ -20,25 +20,17 @@
 #  - CAP-03: Restored NET_ADMIN and SYS_NICE to Pi-Hole.
 #  - SEC-03: Relaxed secret bind-mounts to 644.
 #  DAG Restored Edge-Case Fixes Applied:
-#  - DAG-02: Restored RecursiveDns service block previously truncated.
-#  Synchronized Boot Edge-Case Fixes Applied:
 #  - DAG-01: Global Dependency Directed Acyclic Graph (DAG) enforced.
-#  Gated Boot Edge-Case Fixes Applied:
 #  - BOOT-01: Healthcheck Gating injected.
 #  Info Pinhole Edge-Case Fixes Applied:
 #  - PROXY-07: INFO=1 added to Socket Proxy.
 #  SDK Override Edge-Case Fixes Applied:
-#  - DOCKER-03: DOCKER_API_VERSION=1.44 injected into Traefik env.
 #  - PROXY-06: PING=1 added to Socket Proxy.
-#  Eclipse/Resurgence Edge-Case Fixes Applied:
-#  - DOCKER-02: Traefik v3 'version' schema violation reverted.
-#  - PROXY-05: VERSION=1 and EVENTS=1 injected.
 #  Final Edge-Case Fixes Applied:
 #  - DOCKER-01: PascalCase constraint dropped for docker-compose.yml.
 #  - VAR-01: Split-brain interpolation eradicated.
 #  - CAP-02: SYS_MODULE & DAC_OVERRIDE restored to WireGuard.
 #  - SEC-02: Decoupled secret rotation engine.
-#  - TTY-01: Shifted Interactive check from stdout to stdin.
 #  - AUTH-01: Cryptographic BasicAuth bolted to Traefik Dashboard.
 #  - ROUTE-03: Host LAN IP dependency eradicated.
 #  - ZTRUST-03: ipAllowList constrained to a strict /32 pinhole.
@@ -104,7 +96,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Unified Sovereign Node Forge (Proxy Transplant Protocol)"
+    PrintMsg "212" "Unified Sovereign Node Forge (LTS Determinism Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -412,9 +404,10 @@ ResolveImage() {
     echo "$digest"
 }
 
-# PROXY-08: Transplanted proxy image from LSIO to Tecnativa upstream to resolve HTTP header stripping
-IMG_PROXY=$(ResolveImage "tecnativa/docker-socket-proxy:latest")
-IMG_TRAEFIK=$(ResolveImage "traefik:v3.0")
+# PROXY-09: Reverted to linuxserver wrapper. The proxy was not the root cause.
+IMG_PROXY=$(ResolveImage "lscr.io/linuxserver/socket-proxy:latest")
+# TRAEFIK-01: Downgraded to v2.11 LTS. This explicitly re-enables the --providers.docker.version flag.
+IMG_TRAEFIK=$(ResolveImage "traefik:v2.11")
 IMG_WG=$(ResolveImage "lscr.io/linuxserver/wireguard:latest")
 IMG_PIHOLE=$(ResolveImage "pihole/pihole:latest")
 IMG_UNBOUND=$(ResolveImage "mvance/unbound:latest")
@@ -447,6 +440,7 @@ services:
     networks:
       - SocketNetwork
     environment:
+      - TZ=UTC
       - CONTAINERS=1
       - NETWORKS=1
       - VERSION=1
@@ -492,7 +486,6 @@ services:
       - CHOWN
     environment:
       - CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token
-      - DOCKER_API_VERSION=1.44
     ports:
       - "0.0.0.0:80:80/tcp"
       - "0.0.0.0:443:443/tcp"
@@ -503,6 +496,9 @@ services:
       - ${ConfigDir}/Traefik/acme.json:/acme.json:rw
       - ${SecretsDir}/cf_api_token:/run/secrets/cf_api_token:ro
       - ${SecretsDir}/traefik_auth:/run/secrets/traefik_auth:ro
+    # TRAEFIK-01: The v2.11 LTS override. We mathematically force the Go SDK to 1.44, skipping auto-negotiation.
+    command:
+      - "--providers.docker.version=1.44"
     depends_on:
       DockerSocketProxy:
         condition: service_healthy
