@@ -1,24 +1,32 @@
 #!/bin/bash
 # ==============================================================================
-#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v8.8-LTS-DETERMINISM)
+#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v9.2-VERBOSE-ASSIMILATION)
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress & VPN Topology
+#  Verbose Assimilation Edge-Case Fixes Applied:
+#  - ROUTE-09: Verbose STIG documentation injected directly into the CLI prompt for the 4-Tier Exposure Matrix to prevent accidental WAN exposure.
+#  Dynamic Assimilation Edge-Case Fixes Applied:
+#  - ROUTE-07: Docker socket interrogation added to detect existing label states on alien containers.
+#  - ROUTE-08: Interactive 4-Tier Exposure Matrix (STIG VPN-Only, BasicAuth, Public, Internal).
+#  Assimilation Edge-Case Fixes Applied:
+#  - ROUTE-05: Local daemon scanning implemented to detect alien containers.
+#  - ROUTE-06: Automated generation of custom Traefik Integration Manifests.
 #  LTS Determinism Edge-Case Fixes Applied:
-#  - TRAEFIK-01: Downgraded to v2.11 LTS to restore manual API version pinning, bypassing proxy auto-negotiation panic.
+#  - TRAEFIK-01: Downgraded to v2.11 LTS to restore manual API version pinning.
 #  - PROXY-09: Reverted to lscr.io socket proxy for architectural consistency.
 #  Encapsulation Edge-Case Fixes Applied:
-#  - SEC-04: Secrets encapsulated into Stack BaseDir. Pre-populated .gitignore to prevent GitOps leak.
-#  - ROUTE-04: WhoamiTest baseline service injected as a Rosetta Stone for future deployments.
+#  - SEC-04: Secrets encapsulated into Stack BaseDir. Pre-populated .gitignore.
+#  - ROUTE-04: WhoamiTest baseline service injected as a Rosetta Stone.
 #  Subnet Mask Fixes Applied:
-#  - ROUTE-02: Appended /24 CIDR to INTERNAL_SUBNET to repair malformed iptables MASQUERADE rule.
+#  - ROUTE-02: Appended /24 CIDR to INTERNAL_SUBNET.
 #  Omnidirectional Bind Edge-Case Fixes Applied:
 #  - BIND-01: Injected DNSMASQ_LISTENING and FTLCONF_dns_listeningMode.
 #  FTL Stabilization Edge-Case Fixes Applied:
-#  - CAP-05: SETFCAP, IPC_LOCK, SYS_RESOURCE injected to prevent init script setcap suicide.
-#  - ENV-01: Hybrid v5/v6 Pi-Hole environment variables implemented for forward compatibility.
+#  - CAP-05: SETFCAP, IPC_LOCK, SYS_RESOURCE injected.
+#  - ENV-01: Hybrid v5/v6 Pi-Hole environment variables implemented.
 #  S6-Overlay Override Edge-Case Fixes Applied:
 #  - CAP-04: Restored DAC_OVERRIDE, FOWNER, and SYS_CHROOT.
-#  - HEALTH-03: Hardened Pi-Hole healthcheck using native pi.hole internal record via dig.
+#  - HEALTH-03: Hardened Pi-Hole healthcheck using native pi.hole internal record.
 #  FTL Resuscitation Edge-Case Fixes Applied:
 #  - CAP-03: Restored NET_ADMIN and SYS_NICE to Pi-Hole.
 #  - SEC-03: Relaxed secret bind-mounts to 644.
@@ -35,7 +43,6 @@
 #  - CAP-02: SYS_MODULE & DAC_OVERRIDE restored to WireGuard.
 #  - SEC-02: Decoupled secret rotation engine.
 #  - AUTH-01: Cryptographic BasicAuth bolted to Traefik Dashboard.
-#  - ROUTE-03: Host LAN IP dependency eradicated.
 #  - ZTRUST-03: ipAllowList constrained to a strict /32 pinhole.
 # ==============================================================================
 
@@ -104,7 +111,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Unified Sovereign Node Forge (Encapsulation Protocol)"
+    PrintMsg "212" "Unified Sovereign Node Forge (Verbose Assimilation Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -416,15 +423,158 @@ ResolveImage() {
     echo "$digest"
 }
 
-# PROXY-09: Reverted to linuxserver wrapper. The proxy was not the root cause.
 IMG_PROXY=$(ResolveImage "lscr.io/linuxserver/socket-proxy:latest")
-# TRAEFIK-01: Downgraded to v2.11 LTS. This explicitly re-enables the --providers.docker.version flag.
 IMG_TRAEFIK=$(ResolveImage "traefik:v2.11")
 IMG_WG=$(ResolveImage "lscr.io/linuxserver/wireguard:latest")
 IMG_PIHOLE=$(ResolveImage "pihole/pihole:latest")
 IMG_UNBOUND=$(ResolveImage "mvance/unbound:latest")
 
 sudo mkdir -p "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d"
+
+# ROUTE-07/08/09: Dynamic Assimilation Engine with Verbose STIG Explanations.
+ScanForeignContainers() {
+    if ! command -v docker &> /dev/null; then return; fi
+
+    local foreign_containers
+    foreign_containers=$(sudo docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($2) != stack && $1 != "" {print $1}')
+
+    if [ -n "$foreign_containers" ]; then
+        PrintMsg "214" "========================================================================"
+        PrintMsg "214" "ALIEN CONTAINERS DETECTED"
+        PrintMsg "214" "Found containers operating outside the Sovereign Node perimeter."
+        PrintMsg "214" "========================================================================"
+        echo ""
+        
+        local manifest_dir="${BaseDir}/IntegrationManifests"
+        sudo mkdir -p "$manifest_dir"
+        
+        for container in $foreign_containers; do
+            local clean_name=$(echo "$container" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
+            local manifest_file="${manifest_dir}/${clean_name}_integration.yml"
+            
+            local has_traefik=$(sudo docker inspect --format='{{index .Config.Labels "traefik.enable"}}' "$container" 2>/dev/null || echo "")
+            local current_middlewares=$(sudo docker inspect --format='{{index .Config.Labels "traefik.http.routers.'$clean_name'.middlewares"}}' "$container" 2>/dev/null || echo "")
+            
+            local needs_update=1
+            
+            if [ "$has_traefik" == "true" ]; then
+                if [[ "$current_middlewares" == *"vpn-whitelist"* ]] || [[ "$current_middlewares" == *"traefik-auth"* ]]; then
+                    PrintMsg "82" "[$container] -> Verified. Sovereign Node armor is active. Skipping."
+                    needs_update=0
+                else
+                    PrintMsg "196" "[$container] -> WARNING: Legacy or insecure Traefik labels detected."
+                    if [ "$Interactive" -eq 1 ]; then
+                        if command -v gum &> /dev/null; then
+                            gum confirm "Generate updated Integration Manifest for $container?" && needs_update=1 || needs_update=0
+                        else
+                            read -p "Update labels for $container? [y/N]: " conf || echo ""
+                            [[ "${conf,,}" == "y" ]] && needs_update=1 || needs_update=0
+                        fi
+                    fi
+                fi
+            else
+                PrintMsg "226" "[$container] -> Unassimilated. No Traefik routing found."
+                if [ "$Interactive" -eq 1 ]; then
+                    if command -v gum &> /dev/null; then
+                        gum confirm "Assimilate $container into the Sovereign Node?" && needs_update=1 || needs_update=0
+                    else
+                        read -p "Assimilate $container? [y/N]: " conf || echo ""
+                        [[ "${conf,,}" == "y" ]] && needs_update=1 || needs_update=0
+                    fi
+                fi
+            fi
+
+            if [ "$needs_update" -eq 1 ]; then
+                local posture_choice="1"
+                local mw_string=""
+                
+                if [ "$Interactive" -eq 1 ]; then
+                    echo ""
+                    PrintMsg "214" "------------------------------------------------------------------------"
+                    PrintMsg "214" " EXPOSURE POSTURE MATRIX FOR: [$container]"
+                    PrintMsg "214" "------------------------------------------------------------------------"
+                    PrintMsg "118" " [1] VPN-Only (Absolute Air-Gap) [STIG DEFAULT]"
+                    PrintMsg "240" "     Middlewares: secure-headers@file, vpn-whitelist@file"
+                    PrintMsg "240" "     Behavior:    Traffic MUST originate from the WireGuard tunnel."
+                    PrintMsg "240" "                  Instantly drops all public internet WAN traffic with a 403 Forbidden."
+                    echo ""
+                    PrintMsg "226" " [2] BasicAuth (Password Wall)"
+                    PrintMsg "240" "     Middlewares: secure-headers@file, traefik-auth@file"
+                    PrintMsg "240" "     Behavior:    Accessible from the public internet (if port 443 is forwarded),"
+                    PrintMsg "240" "                  but strictly enforces your cryptographic HTTP Basic Authentication."
+                    echo ""
+                    PrintMsg "196" " [3] Fully Public (NO ARMOR - EXTREME DANGER)"
+                    PrintMsg "240" "     Middlewares: secure-headers@file"
+                    PrintMsg "240" "     Behavior:    Bare-metal exposure to the public internet. No IP whitelisting."
+                    PrintMsg "240" "                  No passwords. Bots and scanners will hit this immediately."
+                    echo ""
+                    PrintMsg "244" " [4] Internal Backend (Completely Ignored)"
+                    PrintMsg "240" "     Behavior:    Container is completely hidden from Traefik. Perfect for internal"
+                    PrintMsg "240" "                  backend databases (Postgres, Redis) that do not need a domain."
+                    PrintMsg "214" "------------------------------------------------------------------------"
+                    echo ""
+
+                    if command -v gum &> /dev/null; then
+                        local choice=$(gum choose "1) VPN-Only" "2) BasicAuth" "3) Fully Public" "4) Internal Backend")
+                        posture_choice=${choice:0:1}
+                    else
+                        read -p "Select posture for [$container] (1-4): " posture_choice || echo ""
+                    fi
+                fi
+                
+                case "$posture_choice" in
+                    1) mw_string="secure-headers@file,vpn-whitelist@file" ;;
+                    2) mw_string="secure-headers@file,traefik-auth@file" ;;
+                    3) mw_string="secure-headers@file" ;;
+                    4) 
+                        PrintMsg "240" "[$container] -> Marked as internal. No manifest generated."
+                        continue 
+                        ;;
+                    *) mw_string="secure-headers@file,vpn-whitelist@file" ;;
+                esac
+                
+                sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
+# ==============================================================================
+# TRAEFIK INTEGRATION MANIFEST FOR: $container
+# ==============================================================================
+# POSTURE: Option $posture_choice
+# MIDDLEWARES: $mw_string
+# ==============================================================================
+# INSTRUCTIONS:
+# 1. Open the original docker-compose.yml file where '$container' is defined.
+# 2. Add 'ProxyNetwork' to your bottom networks block.
+# 3. Paste the networks and labels sections below into your service definition.
+# 4. Replace <PORT> with the actual internal listening port of your application.
+# 5. Re-run 'docker compose up -d' on your original stack.
+# ==============================================================================
+
+networks:
+  ProxyNetwork:
+    external: true
+    name: SovereignNode_ProxyNetwork
+
+services:
+  $container:
+    # ... existing image/volumes ...
+    networks:
+      - ProxyNetwork
+      # - your_existing_internal_network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${clean_name}.rule=Host(\`${clean_name}.${INTERNAL_DOMAIN}\`)"
+      - "traefik.http.routers.${clean_name}.entrypoints=websecure"
+      - "traefik.http.routers.${clean_name}.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${clean_name}.loadbalancer.server.port=<PORT>"
+      - "traefik.http.routers.${clean_name}.middlewares=${mw_string}"
+      - "traefik.docker.network=SovereignNode_ProxyNetwork"
+MANIFEST_EOF
+                PrintMsg "82" "✔ Manifest generated: ${manifest_dir}/${clean_name}_integration.yml"
+            fi
+        done
+    fi
+}
+
+ScanForeignContainers
 
 sudo tee "$ComposeFile" > /dev/null << EOF
 networks:
@@ -434,7 +584,7 @@ networks:
       config:
         - subnet: 10.99.0.0/24
   ProxyNetwork:
-    name: ProxyNetwork
+    name: SovereignNode_ProxyNetwork
     ipam:
       config:
         - subnet: 10.98.0.0/24
@@ -508,7 +658,6 @@ services:
       - ${ConfigDir}/Traefik/acme.json:/acme.json:rw
       - ./Secrets/cf_api_token:/run/secrets/cf_api_token:ro
       - ./Secrets/traefik_auth:/run/secrets/traefik_auth:ro
-    # TRAEFIK-01: The v2.11 LTS override. We mathematically force the Go SDK to 1.44, skipping auto-negotiation.
     command:
       - "--providers.docker.version=1.44"
     depends_on:
@@ -621,7 +770,7 @@ services:
       - "traefik.http.routers.pihole.entrypoints=websecure"
       - "traefik.http.routers.pihole.tls.certresolver=letsencrypt"
       - "traefik.http.services.pihole.loadbalancer.server.port=80"
-      - "traefik.docker.network=ProxyNetwork"
+      - "traefik.docker.network=SovereignNode_ProxyNetwork"
       - "traefik.http.routers.pihole.middlewares=secure-headers@file,vpn-whitelist@file"
     cap_drop:
       - ALL
@@ -688,7 +837,6 @@ services:
         max-file: "3"
     restart: unless-stopped
 
-  # ROUTE-04: Baseline testing service. Use these labels as the Rosetta Stone for future deployments.
   WhoamiTest:
     image: traefik/whoami:latest
     container_name: WhoamiTest
@@ -699,7 +847,6 @@ services:
       - "traefik.http.routers.whoami.rule=Host(\`whoami.${INTERNAL_DOMAIN}\`)"
       - "traefik.http.routers.whoami.entrypoints=websecure"
       - "traefik.http.routers.whoami.tls.certresolver=letsencrypt"
-      # This middleware array enforces the STIG secure headers AND your Traefik Admin password wall.
       - "traefik.http.routers.whoami.middlewares=secure-headers@file,traefik-auth@file"
     restart: unless-stopped
 EOF
