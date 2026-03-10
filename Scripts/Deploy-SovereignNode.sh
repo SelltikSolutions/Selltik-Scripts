@@ -1,16 +1,36 @@
 #!/bin/bash
 # ==============================================================================
-#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v7.0-IMMORTAL)
+#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + UNBOUND (v8.6-SUBNET-MASK-FIX)
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress & VPN Topology
-#  Immortal Edge-Case Fixes Applied:
-#  - AUTH-01: Cryptographic BasicAuth bolted to Traefik Dashboard to defeat Stolen Key Paradox.
-#  - ROUTE-03: Host LAN IP dependency eradicated. Unbound hairpinned to Traefik internal IP.
-#  - NET-02: Traefik bound to VpnNetwork (10.99.0.13) to keep routing entirely inside overlay.
-#  - ZTRUST-03: ipAllowList constrained to a strict /32 pinhole to defeat docker-proxy SNAT illusion.
-#  - ZTRUST-01: Pi-Hole FTL v6 CSRF whitelist injected to prevent 403 lockouts.
-#  - OPSEC-01: CF_API_KEY purged. CF_DNS_API_TOKEN mandated to restrict blast radius.
-#  All legacy v79 STIGs (Thermal Buffers, IPv6 Netfilter, RFC 5011) retained.
+#  Subnet Mask Fixes Applied:
+#  - ROUTE-02: Appended /24 CIDR to INTERNAL_SUBNET to repair malformed iptables MASQUERADE rule.
+#  Omnidirectional Bind Edge-Case Fixes Applied:
+#  - BIND-01: Injected DNSMASQ_LISTENING and FTLCONF_dns_listeningMode.
+#  FTL Stabilization Edge-Case Fixes Applied:
+#  - CAP-05: SETFCAP, IPC_LOCK, SYS_RESOURCE injected to prevent init script setcap suicide.
+#  - ENV-01: Hybrid v5/v6 Pi-Hole environment variables implemented for forward compatibility.
+#  - HEALTH-04: Custom healthcheck excised in favor of Pi-Hole native image healthcheck.
+#  S6-Overlay Override Edge-Case Fixes Applied:
+#  - CAP-04: Restored DAC_OVERRIDE, FOWNER, and SYS_CHROOT.
+#  - HEALTH-03: Hardened Pi-Hole healthcheck using native pi.hole internal record via dig.
+#  FTL Resuscitation Edge-Case Fixes Applied:
+#  - CAP-03: Restored NET_ADMIN and SYS_NICE to Pi-Hole.
+#  - SEC-03: Relaxed secret bind-mounts to 644.
+#  DAG Restored Edge-Case Fixes Applied:
+#  - DAG-02: Restored RecursiveDns service block previously truncated.
+#  Synchronized Boot Edge-Case Fixes Applied:
+#  - DAG-01: Global Dependency Directed Acyclic Graph (DAG) enforced.
+#  Gated Boot Edge-Case Fixes Applied:
+#  - BOOT-01: Healthcheck Gating injected.
+#  Info Pinhole Edge-Case Fixes Applied:
+#  - PROXY-07: INFO=1 added to Socket Proxy.
+#  SDK Override Edge-Case Fixes Applied:
+#  - DOCKER-03: DOCKER_API_VERSION=1.44 injected into Traefik env.
+#  - PROXY-06: PING=1 added to Socket Proxy.
+#  Eclipse/Resurgence Edge-Case Fixes Applied:
+#  - DOCKER-02: Traefik v3 'version' schema violation reverted.
+#  - PROXY-05: VERSION=1 and EVENTS=1 injected to authorize proxy telemetry.
 # ==============================================================================
 
 set -euo pipefail
@@ -22,7 +42,7 @@ BaseDir="/opt/Docker/Stacks/${StackName}"
 ConfigDir="/opt/Docker/Config"
 SecretsDir="${ConfigDir}/Secrets"
 EnvFile="${BaseDir}/Node.env"
-ComposeFile="${BaseDir}/DockerCompose.yml"
+ComposeFile="${BaseDir}/docker-compose.yml"
 LockFile="/var/lock/sovereign_node.lock"
 
 sudo mkdir -p "$BaseDir"
@@ -31,7 +51,7 @@ exec 200>"$LockFile"
 flock -n 200 || { echo "[FATAL] Another deployment instance is running."; exit 1; }
 [ "$EUID" -eq 0 ] || { echo "[FATAL] Elevated privileges required. Run with: sudo $0"; exit 1; }
 
-Interactive=$([ -t 1 ] && echo 1 || echo 0)
+Interactive=$([ -t 0 ] && echo 1 || echo 0)
 
 PrintMsg() {
     local color=$1
@@ -73,7 +93,7 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Unified Sovereign Node Forge (Immortal Protocol)"
+    PrintMsg "212" "Unified Sovereign Node Forge (Subnet Mask Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
@@ -86,28 +106,28 @@ WriteSecret() {
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
     if [ ! -f "${SecretsDir}/${name}" ]; then
         sudo touch "${SecretsDir}/${name}"
-        sudo chmod 600 "${SecretsDir}/${name}"
+        sudo chmod 644 "${SecretsDir}/${name}"
     fi
     sudo sh -c "cat '$tmp_file' > '${SecretsDir}/${name}'"
+    sudo chmod 644 "${SecretsDir}/${name}"
     sudo rm -f "$tmp_file"
 }
 
 RotateSecret=0
-# AUTH-01: Added traefik_auth to the secret verification blockade.
-if [ -f "${SecretsDir}/pihole_pass" ] && [ -f "${SecretsDir}/cf_api_token" ] && [ -f "${SecretsDir}/traefik_auth" ]; then
+if [ -f "${SecretsDir}/pihole_pass" ] || [ -f "${SecretsDir}/cf_api_token" ] || [ -f "${SecretsDir}/traefik_auth" ]; then
     if [ "$Interactive" -eq 1 ]; then
         if command -v gum &> /dev/null; then
-            gum confirm "Existing secrets found. Rotate credentials?" && RotateSecret=1 || RotateSecret=0
+            gum confirm "Existing secrets found. Force rotate ALL credentials?" && RotateSecret=1 || RotateSecret=0
         else
-            read -p "[INFO] Existing secrets found. Rotate credentials? [y/N]: " ConfirmRotate || echo ""
+            read -p "[INFO] Existing secrets found. Force rotate ALL credentials? [y/N]: " ConfirmRotate || echo ""
             if [[ "${ConfirmRotate,,}" == "y" ]]; then RotateSecret=1; fi
         fi
     fi
-else
-    RotateSecret=1
 fi
 
-if [ "$RotateSecret" -eq 1 ]; then
+sudo chmod 644 "${SecretsDir}/"* 2>/dev/null || true
+
+if [ ! -f "${SecretsDir}/pihole_pass" ] || [ "$RotateSecret" -eq 1 ]; then
     if [ "$Interactive" -eq 1 ]; then
         PrintMsg "226" "Provide a secure password for the Pi-Hole Web Admin UI:"
         PiHolePass=""
@@ -117,7 +137,15 @@ if [ "$RotateSecret" -eq 1 ]; then
             if [[ -z "$PiHolePass" ]]; then PrintMsg "196" "Password cannot be empty."; fi
         done
         WriteSecret "pihole_pass" "$PiHolePass"
+    else
+        PrintMsg "196" "[WARNING] Headless Mode: Auto-generating secure Pi-Hole password."
+        PiHolePass=$(openssl rand -base64 24)
+        WriteSecret "pihole_pass" "$PiHolePass"
+    fi
+fi
 
+if [ ! -f "${SecretsDir}/cf_api_token" ] || [ "$RotateSecret" -eq 1 ]; then
+    if [ "$Interactive" -eq 1 ]; then
         PrintMsg "226" "Provide your Scoped Cloudflare DNS API Token:"
         CfApiToken=""
         while [[ -z "$CfApiToken" ]]; do
@@ -126,8 +154,14 @@ if [ "$RotateSecret" -eq 1 ]; then
             if [[ -z "$CfApiToken" ]]; then PrintMsg "196" "API Token cannot be empty."; fi
         done
         WriteSecret "cf_api_token" "$CfApiToken"
+    else
+        echo "[FATAL] Headless execution failed. cf_api_token is missing and cannot be auto-generated."
+        exit 1
+    fi
+fi
 
-        # AUTH-01: Demand Traefik Admin password and hash securely via native openssl.
+if [ ! -f "${SecretsDir}/traefik_auth" ] || [ "$RotateSecret" -eq 1 ]; then
+    if [ "$Interactive" -eq 1 ]; then
         PrintMsg "226" "Provide a secure password for the Traefik Admin Dashboard:"
         TraefikPass=""
         while [[ -z "$TraefikPass" ]]; do
@@ -138,7 +172,12 @@ if [ "$RotateSecret" -eq 1 ]; then
         TraefikHash="admin:$(openssl passwd -apr1 "$TraefikPass")"
         WriteSecret "traefik_auth" "$TraefikHash"
     else
-        echo "[FATAL] Missing required secrets (pihole_pass, cf_api_token, or traefik_auth)."; exit 1
+        PrintMsg "196" "[WARNING] Headless Mode: Auto-generating Traefik BasicAuth password."
+        TraefikPass=$(openssl rand -base64 24)
+        TraefikHash="admin:$(openssl passwd -apr1 "$TraefikPass")"
+        WriteSecret "traefik_auth" "$TraefikHash"
+        PrintMsg "226" "Traefik Auto-Password: $TraefikPass"
+        PrintMsg "196" "^^^ SAVE THIS IMMEDIATELY. IT WILL NOT BE LOGGED. ^^^"
     fi
 fi
 
@@ -250,6 +289,7 @@ sudo tee "${TraefikDir}/TraefikConfig.yml" > /dev/null << EOF
 api:
   dashboard: true
   insecure: false
+ping: {}
 entryPoints:
   web:
     address: ":80"
@@ -279,7 +319,6 @@ certificatesResolvers:
           - "1.0.0.1:53"
 EOF
 
-# AUTH-01 & ZTRUST-03: BasicAuth forged to read from persistent secret. IP Whitelist retained.
 sudo tee "${TraefikDir}/dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -296,8 +335,8 @@ http:
     vpn-whitelist:
       ipAllowList:
         sourceRange:
-          - "10.13.13.0/24" # WireGuard Native Client Subnet
-          - "10.99.0.10/32" # WireGuard Container MASQUERADE Route
+          - "10.13.13.0/24"
+          - "10.99.0.10/32"
     traefik-auth:
       basicAuth:
         usersFile: "/run/secrets/traefik_auth"
@@ -399,6 +438,10 @@ services:
       - TZ=UTC
       - CONTAINERS=1
       - NETWORKS=1
+      - VERSION=1
+      - EVENTS=1
+      - PING=1
+      - INFO=1
       - POST=0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -406,6 +449,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2375/version || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 2s
     logging:
       driver: "json-file"
       options:
@@ -432,6 +481,7 @@ services:
       - CHOWN
     environment:
       - CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token
+      - DOCKER_API_VERSION=1.44
     ports:
       - "0.0.0.0:80:80/tcp"
       - "0.0.0.0:443:443/tcp"
@@ -441,17 +491,24 @@ services:
       - ${ConfigDir}/Traefik/dynamic:/etc/traefik/dynamic:ro
       - ${ConfigDir}/Traefik/acme.json:/acme.json:rw
       - ${SecretsDir}/cf_api_token:/run/secrets/cf_api_token:ro
-      # AUTH-01: Persistent cryptographic secret mapped into proxy container.
       - ${SecretsDir}/traefik_auth:/run/secrets/traefik_auth:ro
     depends_on:
-      - DockerSocketProxy
+      DockerSocketProxy:
+        condition: service_healthy
+      DnsSinkhole:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.api.rule=Host(\`traefik.\${INTERNAL_DOMAIN}\`)"
+      - "traefik.http.routers.api.rule=Host(\`traefik.${INTERNAL_DOMAIN}\`)"
       - "traefik.http.routers.api.entrypoints=websecure"
       - "traefik.http.routers.api.tls.certresolver=letsencrypt"
       - "traefik.http.routers.api.service=api@internal"
-      # AUTH-01 & ZTRUST-03: Layer 7 Double-Lock enforced on the administrative perimeter.
       - "traefik.http.routers.api.middlewares=secure-headers@file,vpn-whitelist@file,traefik-auth@file"
     logging:
       driver: "json-file"
@@ -471,6 +528,9 @@ services:
     cap_add:
       - NET_ADMIN
       - NET_RAW
+      - SYS_MODULE
+      - DAC_OVERRIDE
+      - FOWNER
       - CHOWN
       - SETUID
       - SETGID
@@ -479,21 +539,31 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=UTC
-      - SERVERURL=\${WG_ENDPOINT}
-      - SERVERPORT=\${WG_PORT}
-      - PEERS=\${WG_PEERS}
+      - SERVERURL=${WG_ENDPOINT}
+      - SERVERPORT=${WG_PORT}
+      - PEERS=${WG_PEERS}
       - PEERDNS=10.99.0.12
-      - INTERNAL_SUBNET=10.13.13.0
+      # ROUTE-02: /24 CIDR appended to prevent malformed masquerade routing.
+      - INTERNAL_SUBNET=10.13.13.0/24
       - ALLOWEDIPS=0.0.0.0/0
       - LOG_CONFS=false
     volumes:
       - ${ConfigDir}/WireGuard:/config
       - /lib/modules:/lib/modules:ro
     ports:
-      - "0.0.0.0:\${WG_PORT}:51820/udp"
+      - "0.0.0.0:${WG_PORT}:51820/udp"
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
+    depends_on:
+      DnsSinkhole:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wg", "show", "wg0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     logging:
       driver: "json-file"
       options:
@@ -510,21 +580,26 @@ services:
       ProxyNetwork:
     environment:
       - TZ=UTC
+      - WEBPASSWORD_FILE=/run/secrets/pihole_pass
+      - PIHOLE_DNS_=10.99.0.11#53
+      - DNSSEC=false
+      - DNS_BOGUS_PRIV=true
+      - DNS_FQDN_REQUIRED=true
+      - DNSMASQ_LISTENING=all
       - FTLCONF_webserver_api_password_FILE=/run/secrets/pihole_pass
       - FTLCONF_dns_upstreams=10.99.0.11#53
       - FTLCONF_dns_dnssec=false
       - FTLCONF_dns_bogusPriv=true
       - FTLCONF_dns_fqdnRequired=true
+      - FTLCONF_webserver_domain=pihole.${INTERNAL_DOMAIN}
       - FTLCONF_dns_listeningMode=ALL
-      - FTLCONF_misc_privacylevel=3
-      - FTLCONF_webserver_domain=pihole.\${INTERNAL_DOMAIN}
     volumes:
       - ${SecretsDir}/pihole_pass:/run/secrets/pihole_pass:ro
       - ${ConfigDir}/PiHole/etc-pihole:/etc/pihole
       - ${ConfigDir}/PiHole/etc-dnsmasq.d:/etc/dnsmasq.d
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)"
+      - "traefik.http.routers.pihole.rule=Host(\`pihole.${INTERNAL_DOMAIN}\`)"
       - "traefik.http.routers.pihole.entrypoints=websecure"
       - "traefik.http.routers.pihole.tls.certresolver=letsencrypt"
       - "traefik.http.services.pihole.loadbalancer.server.port=80"
@@ -535,9 +610,18 @@ services:
     cap_add:
       - NET_BIND_SERVICE
       - NET_RAW
+      - NET_ADMIN
+      - SYS_NICE
+      - DAC_OVERRIDE
+      - FOWNER
+      - SYS_CHROOT
       - CHOWN
       - SETUID
       - SETGID
+      - SETFCAP
+      - IPC_LOCK
+      - SYS_RESOURCE
+      - AUDIT_WRITE
       - KILL
     depends_on:
       RecursiveDns:
@@ -574,7 +658,7 @@ services:
       - ${ConfigDir}/Unbound/Keys:/opt/unbound/etc/unbound/keys:rw
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys /opt/unbound/var/run 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     healthcheck:
-      test: ["CMD-SHELL", "drill \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
+      test: ["CMD-SHELL", "drill ${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
