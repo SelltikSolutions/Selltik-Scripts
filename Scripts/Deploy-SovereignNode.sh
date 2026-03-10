@@ -6,6 +6,9 @@
 #  LTS Determinism Edge-Case Fixes Applied:
 #  - TRAEFIK-01: Downgraded to v2.11 LTS to restore manual API version pinning, bypassing proxy auto-negotiation panic.
 #  - PROXY-09: Reverted to lscr.io socket proxy for architectural consistency.
+#  Encapsulation Edge-Case Fixes Applied:
+#  - SEC-04: Secrets encapsulated into Stack BaseDir. Pre-populated .gitignore to prevent GitOps leak.
+#  - ROUTE-04: WhoamiTest baseline service injected as a Rosetta Stone for future deployments.
 #  Subnet Mask Fixes Applied:
 #  - ROUTE-02: Appended /24 CIDR to INTERNAL_SUBNET to repair malformed iptables MASQUERADE rule.
 #  Omnidirectional Bind Edge-Case Fixes Applied:
@@ -43,12 +46,17 @@ export PATH="/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
 StackName="SovereignNode"
 BaseDir="/opt/Docker/Stacks/${StackName}"
 ConfigDir="/opt/Docker/Config"
-SecretsDir="${ConfigDir}/Secrets"
+SecretsDir="${BaseDir}/Secrets"
 EnvFile="${BaseDir}/Node.env"
 ComposeFile="${BaseDir}/docker-compose.yml"
 LockFile="/var/lock/sovereign_node.lock"
 
 sudo mkdir -p "$BaseDir"
+
+# SEC-04: Silent migration of legacy global secrets to the encapsulated stack directory.
+if [ -d "/opt/Docker/Config/Secrets" ] && [ ! -d "${SecretsDir}" ]; then
+    sudo mv /opt/Docker/Config/Secrets "${SecretsDir}"
+fi
 
 exec 200>"$LockFile"
 flock -n 200 || { echo "[FATAL] Another deployment instance is running."; exit 1; }
@@ -96,11 +104,15 @@ if [ "$Interactive" -eq 1 ] && ! command -v gum &> /dev/null; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrintMsg "212" "Unified Sovereign Node Forge (LTS Determinism Protocol)"
+    PrintMsg "212" "Unified Sovereign Node Forge (Encapsulation Protocol)"
 fi
 
 sudo mkdir -p "$SecretsDir"
 sudo chmod 700 "$SecretsDir"
+
+# SEC-04: Pre-populate .gitignore to prevent catastrophic repository leaks.
+echo "*" | sudo tee "${SecretsDir}/.gitignore" > /dev/null
+sudo chmod 600 "${SecretsDir}/.gitignore"
 
 WriteSecret() {
     local name=$1
@@ -494,8 +506,8 @@ services:
       - ${ConfigDir}/Traefik/TraefikConfig.yml:/etc/traefik/traefik.yml:ro
       - ${ConfigDir}/Traefik/dynamic:/etc/traefik/dynamic:ro
       - ${ConfigDir}/Traefik/acme.json:/acme.json:rw
-      - ${SecretsDir}/cf_api_token:/run/secrets/cf_api_token:ro
-      - ${SecretsDir}/traefik_auth:/run/secrets/traefik_auth:ro
+      - ./Secrets/cf_api_token:/run/secrets/cf_api_token:ro
+      - ./Secrets/traefik_auth:/run/secrets/traefik_auth:ro
     # TRAEFIK-01: The v2.11 LTS override. We mathematically force the Go SDK to 1.44, skipping auto-negotiation.
     command:
       - "--providers.docker.version=1.44"
@@ -600,7 +612,7 @@ services:
       - FTLCONF_webserver_domain=pihole.${INTERNAL_DOMAIN}
       - FTLCONF_dns_listeningMode=ALL
     volumes:
-      - ${SecretsDir}/pihole_pass:/run/secrets/pihole_pass:ro
+      - ./Secrets/pihole_pass:/run/secrets/pihole_pass:ro
       - ${ConfigDir}/PiHole/etc-pihole:/etc/pihole
       - ${ConfigDir}/PiHole/etc-dnsmasq.d:/etc/dnsmasq.d
     labels:
@@ -674,6 +686,21 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    restart: unless-stopped
+
+  # ROUTE-04: Baseline testing service. Use these labels as the Rosetta Stone for future deployments.
+  WhoamiTest:
+    image: traefik/whoami:latest
+    container_name: WhoamiTest
+    networks:
+      - ProxyNetwork
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whoami.rule=Host(\`whoami.${INTERNAL_DOMAIN}\`)"
+      - "traefik.http.routers.whoami.entrypoints=websecure"
+      - "traefik.http.routers.whoami.tls.certresolver=letsencrypt"
+      # This middleware array enforces the STIG secure headers AND your Traefik Admin password wall.
+      - "traefik.http.routers.whoami.middlewares=secure-headers@file,traefik-auth@file"
     restart: unless-stopped
 EOF
 
