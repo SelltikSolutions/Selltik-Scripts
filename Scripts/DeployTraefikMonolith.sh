@@ -1,8 +1,11 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v62.2-TTY-REMEDIATION)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v62.3-SCOPE-REMEDIATION)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
+#  Scope Fixes Applied:
+#  - BOOT-07: Encapsulated Scorched Earth protocol into a function to resolve
+#             the fatal 'local' variable scope syntax error.
 #  TTY Fixes Applied:
 #  - BOOT-06: Interactive check shifted from stdout (-t 1) to stdin (-t 0) to 
 #             prevent false headless aborts during chained sudo executions.
@@ -249,27 +252,33 @@ elif systemctl is-active --quiet chronyd; then
     sudo systemctl restart chronyd
 fi
 
-if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
-    AlienContainers=$(sudo docker ps -a --format '{{.ID}}|{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($3) != stack {print $1 " (" $2 ")"}')
-    if [ -n "$AlienContainers" ]; then
-        PrintMsg "196" "Rogue containers detected outside the Monolith perimeter:"
-        echo "$AlienContainers"
-        local do_nuke=0
-        if command -v gum &> /dev/null; then
-            gum confirm "Execute Scorched Earth? (DESTROY all listed alien containers permanently)" && do_nuke=1 || do_nuke=0
-        else
-            read -p "Execute Scorched Earth? [y/N]: " conf || echo ""
-            [[ "${conf,,}" == "y" ]] && do_nuke=1 || do_nuke=0
-        fi
+# BOOT-07: Encapsulated Scorched Earth protocol to prevent 'local' scope syntax errors
+EnforceScorchedEarth() {
+    if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
+        local AlienContainers
+        AlienContainers=$(sudo docker ps -a --format '{{.ID}}|{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($3) != stack {print $1 " (" $2 ")"}')
+        if [ -n "$AlienContainers" ]; then
+            PrintMsg "196" "Rogue containers detected outside the Monolith perimeter:"
+            echo "$AlienContainers"
+            local do_nuke=0
+            if command -v gum &> /dev/null; then
+                gum confirm "Execute Scorched Earth? (DESTROY all listed alien containers permanently)" && do_nuke=1 || do_nuke=0
+            else
+                read -p "Execute Scorched Earth? [y/N]: " conf || echo ""
+                [[ "${conf,,}" == "y" ]] && do_nuke=1 || do_nuke=0
+            fi
 
-        if [ "$do_nuke" -eq 1 ]; then
-            PrintMsg "196" "Executing Scorched Earth."
-            echo "$AlienContainers" | awk '{print $1}' | xargs -I {} sudo docker rm -f {} >/dev/null 2>&1 || true
-        else
-            PrintMsg "226" "Scorched Earth aborted. Alien containers retained."
+            if [ "$do_nuke" -eq 1 ]; then
+                PrintMsg "196" "Executing Scorched Earth."
+                echo "$AlienContainers" | awk '{print $1}' | xargs -I {} sudo docker rm -f {} >/dev/null 2>&1 || true
+            else
+                PrintMsg "226" "Scorched Earth aborted. Alien containers retained."
+            fi
         fi
     fi
-fi
+}
+
+EnforceScorchedEarth
 
 UpdaterScript="/opt/Docker/Scripts/Update${StackName}.sh"
 
