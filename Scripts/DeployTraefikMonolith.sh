@@ -1,8 +1,11 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v61.1-BULLETPROOF-CRON)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v61.2-DEPENDENCY-ARMOR)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
+#  Dependency Fixes Applied:
+#  - DEP-01: CheckDependencies function injected to ensure 'cron' daemon and 
+#            base utilities exist on minimal distributions before staging.
 #  Resilience Fixes Applied:
 #  - CRON-06: UpdaterScript atomic swap (.tmp to mv) prevents bash pointer decapitation.
 #  - APT-01: UpdateCmd insulated (|| true) to prevent 3rd-party PPA set -e suicide.
@@ -80,7 +83,48 @@ DetectOsFamily() {
         exit 1
     fi
 }
+
+# DEP-01: Verifies the presence of required utilities and the cron daemon
+CheckDependencies() {
+    PrintMsg "240" "Verifying baseline dependencies for $OS_ID ($OS_FAMILY)..."
+    eval "$UpdateCmd" > /dev/null 2>&1 || true
+    
+    local deps="curl jq openssl cron tzdata"
+    [[ "$PkgManager" == "apt-get" ]] && deps="$deps apparmor-utils"
+    [[ "$PkgManager" == "dnf" ]] && deps="$deps cronie"
+    
+    for dep in $deps; do
+        if ! command -v "$dep" &> /dev/null && ! dpkg -l | grep -q "^ii  $dep" 2>/dev/null && ! rpm -q "$dep" &>/dev/null; then
+            PrintMsg "226" "Installing missing dependency: $dep"
+            eval "$InstallCmd $dep" > /dev/null || true
+        fi
+    done
+
+    # UI/UX Dependency (Gum)
+    if ! command -v gum &> /dev/null; then
+        PrintMsg "226" "Installing Charmbracelet Gum for secure prompts..."
+        if [[ "$PkgManager" == "apt-get" ]]; then
+            sudo mkdir -p /etc/apt/keyrings
+            curl --connect-timeout 5 -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/charm.gpg || true
+            echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list > /dev/null
+            eval "$UpdateCmd" > /dev/null || true
+            eval "$InstallCmd gum" > /dev/null || true
+        elif [[ "$PkgManager" == "dnf" ]]; then
+            echo '[charm]
+name=Charm
+baseurl=https://repo.charm.sh/yum/
+enabled=1
+gpgcheck=1
+gpgkey=https://repo.charm.sh/yum/gpg.key' | sudo tee /etc/yum.repos.d/charm.repo > /dev/null
+            eval "$InstallCmd gum" > /dev/null || true
+        else
+            PrintMsg "196" "[WARNING] Gum UI not available in standard repos for $OS_FAMILY. Falling back to basic prompts."
+        fi
+    fi
+}
+
 DetectOsFamily
+CheckDependencies
 
 # SEC-05: Silent migration of legacy nested secrets to the encapsulated stack directory.
 if [ -d "${ConfigDir}/Secrets" ] && [ ! -d "${SecretsDir}" ]; then
