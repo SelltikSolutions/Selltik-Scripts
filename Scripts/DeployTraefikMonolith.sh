@@ -1,8 +1,11 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v61.0-ENCAPSULATION)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v61.1-BULLETPROOF-CRON)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
+#  Resilience Fixes Applied:
+#  - CRON-06: UpdaterScript atomic swap (.tmp to mv) prevents bash pointer decapitation.
+#  - APT-01: UpdateCmd insulated (|| true) to prevent 3rd-party PPA set -e suicide.
 #  Encapsulation Fixes Applied:
 #  - SEC-04: Pre-populated .gitignore injected into SecretsDir.
 #  - SEC-05: Abstracted SecretsDir from ConfigDir to prevent GitOps tarball leakage.
@@ -204,12 +207,29 @@ if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
     fi
 fi
 
+UpdaterScript="/opt/Docker/Scripts/Update${StackName}.sh"
+
+# CRON-06: Write to .tmp and use atomic swap to prevent bash in-place truncation decapitation.
+sudo tee "${UpdaterScript}.tmp" > /dev/null << EOF
+#!/bin/bash
+set -euo pipefail
+export PATH="/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+
+# APT-01: Insulate updates to prevent 3rd-party PPA failures from triggering set -e suicide.
+${UpdateCmd} || true
+${UpgradeCmd} || true
+
+/opt/Docker/Scripts/Deploy${StackName}.sh
+EOF
+
+sudo chmod 700 "${UpdaterScript}.tmp"
+sudo mv "${UpdaterScript}.tmp" "${UpdaterScript}"
+
 CronFile="/etc/cron.d/sovereign_updates"
-if [ ! -f "$CronFile" ]; then
-    CronExpr="0 3 * * 0 root $UpdateCmd && $UpgradeCmd && /opt/Docker/Scripts/Deploy${StackName}.sh > /var/log/sovereign_updates.log 2>&1"
-    echo "$CronExpr" | sudo tee "$CronFile" > /dev/null
-    sudo chmod 644 "$CronFile"
-fi
+sudo tee "$CronFile" > /dev/null << EOF
+0 3 * * 0 root $UpdaterScript > /var/log/sovereign_updates.log 2>&1
+EOF
+sudo chmod 644 "$CronFile"
 
 SysctlConf="/etc/sysctl.d/99-traefik-core.conf"
 sudo tee "$SysctlConf" > /dev/null << EOF
