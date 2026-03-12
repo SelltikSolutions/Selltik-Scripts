@@ -1,8 +1,11 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v62.1-CLEAN-ROUTING)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v62.2-TTY-REMEDIATION)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
+#  TTY Fixes Applied:
+#  - BOOT-06: Interactive check shifted from stdout (-t 1) to stdin (-t 0) to 
+#             prevent false headless aborts during chained sudo executions.
 #  Routing Protocol Applied:
 #  - ROUTE-11: Drone C2 telemetry amputated in favor of explicit Static File 
 #              Providers. This prevents the Docker Subnet LAN gap paradox.
@@ -38,7 +41,8 @@ exec 200>"$LockFile"
 flock -n 200 || { echo "[FATAL] Another deployment instance is running."; exit 1; }
 [ "$EUID" -eq 0 ] || { echo "[FATAL] Elevated privileges required. Run with: sudo $0"; exit 1; }
 
-Interactive=$([ -t 1 ] && echo 1 || echo 0)
+# BOOT-06: Check Standard Input (0) for an active terminal, not Output (1).
+Interactive=$([ -t 0 ] && echo 1 || echo 0)
 
 PrintMsg() {
     local color=$1
