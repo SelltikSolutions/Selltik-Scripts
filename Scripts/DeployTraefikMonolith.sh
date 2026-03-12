@@ -1,13 +1,16 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v60.0-DRONE-FORGE)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v60.1-AUDIT-REMEDIATION)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
+#  Audit Fixes Applied:
+#  - TRAEFIK-02: Restored v2.11 API determinism (prevent v3 1.24 downgrade panic).
+#  - SAFETY-01: Scorched Earth protocol bolted with interactive confirmation switch.
+#  - ACME-01: Let's Encrypt staging API trap removed; restoring production trust chain.
 #  Drone Forge Protocol Applied:
 #  - ROUTE-10: Monolith acts as C2, automatically generating a burned-in
 #              PortableAssimilator.sh drone for remote NAS/Satellite deployment.
 #  - ENV-02: INTERNAL_DOMAIN collection added to Monolith to seed the drone.
-#  OpSec: Let's Encrypt Rate-Limit armor deployed via ACME Staging API.
 # ==============================================================================
 
 set -euo pipefail
@@ -163,11 +166,26 @@ elif systemctl is-active --quiet chronyd; then
     sudo systemctl restart chronyd
 fi
 
+# SAFETY-01: Interactive confirmation switch implemented for the Scorched Earth protocol
 if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
     AlienContainers=$(sudo docker ps -a --format '{{.ID}}|{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($3) != stack {print $1 " (" $2 ")"}')
     if [ -n "$AlienContainers" ]; then
-        PrintMsg "196" "Executing Scorched Earth on rogue containers."
-        echo "$AlienContainers" | awk '{print $1}' | xargs -I {} sudo docker rm -f {} >/dev/null 2>&1 || true
+        PrintMsg "196" "Rogue containers detected outside the Monolith perimeter:"
+        echo "$AlienContainers"
+        local do_nuke=0
+        if command -v gum &> /dev/null; then
+            gum confirm "Execute Scorched Earth? (DESTROY all listed alien containers permanently)" && do_nuke=1 || do_nuke=0
+        else
+            read -p "Execute Scorched Earth? [y/N]: " conf || echo ""
+            [[ "${conf,,}" == "y" ]] && do_nuke=1 || do_nuke=0
+        fi
+
+        if [ "$do_nuke" -eq 1 ]; then
+            PrintMsg "196" "Executing Scorched Earth."
+            echo "$AlienContainers" | awk '{print $1}' | xargs -I {} sudo docker rm -f {} >/dev/null 2>&1 || true
+        else
+            PrintMsg "226" "Scorched Earth aborted. Alien containers retained."
+        fi
     fi
 fi
 
@@ -229,7 +247,8 @@ ResolveImage() {
 }
 
 IMG_SOCKET=$(ResolveImage "lscr.io/linuxserver/socket-proxy:latest")
-IMG_TRAEFIK=$(ResolveImage "traefik:latest")
+# TRAEFIK-02: Surgically pinned Traefik back to LTS v2.11 to restore API version determinism
+IMG_TRAEFIK=$(ResolveImage "traefik:v2.11")
 
 sudo tee "$ComposeFile" > /dev/null << EOF
 networks:
@@ -307,6 +326,8 @@ services:
       - "--api.dashboard=false"
       - "--providers.docker=true"
       - "--providers.docker.endpoint=tcp://DockerSocketProxy:2375"
+      # TRAEFIK-02: Hardcoded 1.44 API version bypasses the HAProxy header stripping panic
+      - "--providers.docker.version=1.44"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.file.filename=/etc/traefik/dynamic_rules.yml"
       - "--entrypoints.web.address=:80"
@@ -320,7 +341,7 @@ services:
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme/acme.json"
-      - "--certificatesresolvers.cloudflare.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
+      # ACME-01: Staging API removed. Traefik will default to Let's Encrypt production endpoints.
       - "--accesslog=true"
       - "--accesslog.filepath=/var/log/traefik/access.log"
       - "--accesslog.format=json"
@@ -531,7 +552,7 @@ if [ "$Interactive" -eq 0 ]; then
 elif [ "$Interactive" -eq 1 ]; then
     GeneratePortableDrone
     echo ""
-    PrintMsg "82" "✔ Traefik Core Staged (STAGING API ACTIVE)."
+    PrintMsg "82" "✔ Traefik Core Staged (PRODUCTION API ACTIVE)."
     PrintMsg "226" "► The Portable Assimilation Drone has been forged."
     PrintMsg "240" "  Use SCP or SFTP to copy this payload to your NAS or remote servers:"
     PrintMsg "250" "  /opt/Docker/Scripts/PortableAssimilator.sh"
