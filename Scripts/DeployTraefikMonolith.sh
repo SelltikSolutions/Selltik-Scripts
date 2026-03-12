@@ -1,12 +1,12 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v62.5-IGNITION-SEQUENCE)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v62.6-SNAKE-CASE-MANDATE)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Boot Fixes Applied:
-#  - BOOT-08: Unlocked container ignition sequence for interactive deployments.
-#  - CYCLE-01: Stateful matrix teardown to prevent stale IPAM/veth collisions.
-#  State Fixes Applied:
+#  Nomenclature Fixes Applied:
+#  - DOCKER-02: Reverted Docker boundaries to strict snake_case/kebab-case.
+#               Amputated the explicit '-f DockerCompose.yml' workaround and
+#               added legacy orphan cleanup logic.
 #  - ENV-03: Unconditionally source the generated environment file into the active
 #            shell to prevent 'unbound variable' suicides during YAML generation.
 #  Scope Fixes Applied:
@@ -40,7 +40,8 @@ ConfigDir="${BaseDir}/Config"
 SecretsDir="${BaseDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
 EnvFile="${BaseDir}/Traefik.env"
-ComposeFile="${BaseDir}/DockerCompose.yml"
+# DOCKER-02: Native Docker execution defaults restored.
+ComposeFile="${BaseDir}/docker-compose.yml"
 LockFile="/var/lock/traefik_core.lock"
 
 sudo mkdir -p "$BaseDir" "$LogsDir"
@@ -425,16 +426,17 @@ ResolveImage() {
 IMG_SOCKET=$(ResolveImage "lscr.io/linuxserver/socket-proxy:latest")
 IMG_TRAEFIK=$(ResolveImage "traefik:v2.11")
 
+# DOCKER-02: Enforcing strict snake_case for all Docker daemon objects
 sudo tee "$ComposeFile" > /dev/null << EOF
 networks:
-  ProxyNetwork:
-    name: ProxyNetwork
+  proxy_network:
+    name: proxy_network
     attachable: true
     ipam:
       config:
         - subnet: 10.50.0.0/24
-  SocketNetwork:
-    name: SocketNetwork
+  socket_network:
+    name: socket_network
     internal: true
 
 secrets:
@@ -444,11 +446,11 @@ secrets:
     file: ${SecretsDir}/traefik_auth
 
 services:
-  DockerSocketProxy:
+  docker_socket_proxy:
     image: ${IMG_SOCKET}
-    container_name: DockerSocketProxy
+    container_name: docker_socket_proxy
     networks:
-      - SocketNetwork
+      - socket_network
     environment:
       - CONTAINERS=1
       - IMAGES=1
@@ -476,12 +478,12 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
 
-  TraefikCore:
+  traefik_core:
     image: ${IMG_TRAEFIK}
-    container_name: TraefikCore
+    container_name: traefik_core
     networks:
-      - ProxyNetwork
-      - SocketNetwork
+      - proxy_network
+      - socket_network
     ports:
       - "80:80/tcp"
       - "443:443/tcp"
@@ -503,7 +505,7 @@ services:
       - "--global.sendAnonymousUsage=false"
       - "--api.dashboard=false"
       - "--providers.docker=true"
-      - "--providers.docker.endpoint=tcp://DockerSocketProxy:2375"
+      - "--providers.docker.endpoint=tcp://docker_socket_proxy:2375"
       - "--providers.docker.version=1.44"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.file.filename=/etc/traefik/dynamic_rules.yml"
@@ -529,7 +531,7 @@ services:
     security_opt:
       - no-new-privileges:true
     depends_on:
-      - DockerSocketProxy
+      - docker_socket_proxy
     restart: unless-stopped
 EOF
 
@@ -538,10 +540,23 @@ sudo chmod 600 "$ComposeFile"
 
 # CYCLE-01: Stateful matrix teardown to prevent stale network bridge collisions.
 CycleExistingMatrix() {
+    # DOCKER-02 Transition: Prevent orphaning by destroying the legacy PascalCase stack first.
+    if [ -f "${BaseDir}/DockerCompose.yml" ]; then
+        cd "$BaseDir"
+        local legacy_active
+        legacy_active=$(sudo docker compose -f DockerCompose.yml --env-file Traefik.env ps -q 2>/dev/null || echo "")
+        if [ -n "$legacy_active" ]; then
+            if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Legacy PascalCase Matrix detected. Tearing down..."; fi
+            sudo docker compose -f DockerCompose.yml --env-file Traefik.env down --remove-orphans > /dev/null 2>&1 || true
+            sleep 3
+        fi
+        sudo rm -f "${BaseDir}/DockerCompose.yml"
+    fi
+
     if [ -f "$ComposeFile" ]; then
         cd "$BaseDir"
         local active_containers
-        # Interrogate Docker for running containers tied to this specific Compose file
+        # DOCKER-02: Native docker-compose.yml detection active. Explicit -f amputated.
         active_containers=$(sudo docker compose --env-file Traefik.env ps -q 2>/dev/null || echo "")
         
         if [ -n "$active_containers" ]; then
@@ -572,6 +587,7 @@ if [ "$Interactive" -eq 1 ]; then
     PrintMsg "226" "Igniting the Traefik Matrix..."
 fi
 
+# DOCKER-02: Native docker-compose.yml detection active. Explicit -f amputated.
 cd "$BaseDir" && sudo docker compose --env-file Traefik.env up -d --remove-orphans
 
 if [ "$Interactive" -eq 1 ]; then
