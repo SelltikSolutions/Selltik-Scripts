@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST IAM GATEWAY (v65.0-SNAKE-CASE-ALIGNMENT)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST IAM GATEWAY (v65.1-STIG-SURGERY)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
 #  Nomenclature Fixes Applied:
@@ -8,9 +8,10 @@
 #               native Docker engine discovery and user mandates.
 #  - FORMAT-02: Retained PascalCase for host directories (Config, Secrets).
 #  Boot/Lifecycle Fixes Applied:
+#  - HEALTH-06: Authelia healthcheck shifted from 'curl' to native binary to
+#               resolve the ignition stalemate.
 #  - CYCLE-03: Transition logic implemented to detect, teardown, and delete 
 #               legacy PascalCase 'DockerCompose.yml' stack before ignition.
-#  - HEALTH-05: DockerSocketProxy healthcheck verified for Traefik ignition.
 #  - SEC-07: Inode-preserving secret writes to prevent bind-mount detachment.
 #  IAM Fixes Applied:
 #  - AUTH-04: Authelia (MFA) remains the default suggested exposure posture.
@@ -211,7 +212,7 @@ AssimilateAlienContainers() {
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 # ==============================================================================
 # TRAEFIK INTEGRATION MANIFEST FOR: $container
-# TARGET ARCHITECTURE: TraefikMonolith (v65.0-SNAKE-CASE-ALIGNMENT)
+# TARGET ARCHITECTURE: TraefikMonolith (v65.1-STIG-SURGERY)
 # ==============================================================================
 networks:
   proxy_network:
@@ -401,8 +402,9 @@ services:
       AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_key
     depends_on:
       auth_db: { condition: service_healthy }
+    # HEALTH-06: Switched to native binary; curl is missing in the minimal Authelia image.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9091/api/health"]
+      test: ["CMD", "authelia", "healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 3
