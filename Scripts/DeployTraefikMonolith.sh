@@ -1,8 +1,11 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v62.4-ENV-STATE-REMEDIATION)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v62.5-IGNITION-SEQUENCE)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
+#  Boot Fixes Applied:
+#  - BOOT-08: Unlocked container ignition sequence for interactive deployments.
+#  - CYCLE-01: Stateful matrix teardown to prevent stale IPAM/veth collisions.
 #  State Fixes Applied:
 #  - ENV-03: Unconditionally source the generated environment file into the active
 #            shell to prevent 'unbound variable' suicides during YAML generation.
@@ -533,11 +536,47 @@ EOF
 sudo chown 0:0 "$ComposeFile"
 sudo chmod 600 "$ComposeFile"
 
-if [ "$Interactive" -eq 0 ]; then
-    cd "$BaseDir" && sudo docker compose --env-file Traefik.env up -d --remove-orphans
-elif [ "$Interactive" -eq 1 ]; then
+# CYCLE-01: Stateful matrix teardown to prevent stale network bridge collisions.
+CycleExistingMatrix() {
+    if [ -f "$ComposeFile" ]; then
+        cd "$BaseDir"
+        local active_containers
+        # Interrogate Docker for running containers tied to this specific Compose file
+        active_containers=$(sudo docker compose --env-file Traefik.env ps -q 2>/dev/null || echo "")
+        
+        if [ -n "$active_containers" ]; then
+            if [ "$Interactive" -eq 1 ]; then
+                echo ""
+                PrintMsg "214" "⚠️  Existing Traefik Matrix detected."
+                if command -v gum &> /dev/null; then
+                    gum spin --spinner dot --title "Executing controlled teardown and flushing network bridges..." -- sudo docker compose --env-file Traefik.env down --remove-orphans
+                else
+                    PrintMsg "240" "Executing controlled teardown..."
+                    sudo docker compose --env-file Traefik.env down --remove-orphans > /dev/null 2>&1
+                fi
+                # Mandatory kernel buffer to ensure veth interfaces drop completely
+                sleep 3
+            else
+                sudo docker compose --env-file Traefik.env down --remove-orphans > /dev/null 2>&1 || true
+                sleep 5
+            fi
+        fi
+    fi
+}
+
+CycleExistingMatrix
+
+# BOOT-08: Unlocked container ignition sequence for interactive deployments.
+if [ "$Interactive" -eq 1 ]; then
     echo ""
-    PrintMsg "82" "✔ Traefik Core Staged (STATIC ROUTING ACTIVE)."
+    PrintMsg "226" "Igniting the Traefik Matrix..."
+fi
+
+cd "$BaseDir" && sudo docker compose --env-file Traefik.env up -d --remove-orphans
+
+if [ "$Interactive" -eq 1 ]; then
+    echo ""
+    PrintMsg "82" "✔ Traefik Core Online (STATIC ROUTING ACTIVE)."
     echo ""
 fi
 exit 0
