@@ -1,24 +1,20 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST IAM GATEWAY (v64.0-IAM-PRIORITY)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST IAM GATEWAY (v64.1-STIG-REMEDIATION)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  IAM Fixes Applied:
-#  - AUTH-04: Authelia (MFA) promoted to Option 1 (Default Suggested Method).
-#  - AUTH-05: Healthcheck Gating implemented for Authelia and PostgreSQL.
-#  - HEALTH-04: Traefik now waits for Authelia service_healthy status before ignition.
 #  Nomenclature Fixes Applied:
-#  - FORMAT-01: Strict PascalCase enforced for all files (DockerCompose.yml).
-#  Resilience Fixes Applied:
-#  - ENV-03: Unconditionally source environment file to prevent unbound variables.
-#  - CRON-06: UpdaterScript atomic swap (.tmp to mv) prevents decapitation.
-#  - APT-01: UpdateCmd insulated (|| true).
-#  Encapsulation Fixes Applied:
-#  - SEC-04: Pre-populated .gitignore injected into SecretsDir.
-#  - SEC-05: Abstracted SecretsDir from ConfigDir to prevent GitOps leakage.
-#  Audit Fixes Applied:
-#  - TRAEFIK-02: Restored v2.11 API determinism (1.44 Pinning).
-#  - SAFETY-01: Scorched Earth protocol with interactive dead-man switch.
+#  - FORMAT-01: Strict PascalCase for host files (DockerCompose.yml).
+#  - DOCKER-02: Strict snake_case for all Docker-internal objects (containers/nets).
+#  - COMPOSE-01: Explicit '-f' pointers added to all Docker commands to support
+#                non-standard PascalCase naming conventions.
+#  Boot/Lifecycle Fixes Applied:
+#  - CYCLE-01: Dual-filename teardown logic restored to prevent orphan drift.
+#  - HEALTH-05: Missing healthcheck injected into docker_socket_proxy to resolve
+#               the Traefik ignition stalemate.
+#  IAM Fixes Applied:
+#  - AUTH-04: Authelia (MFA) remains Option 1 (Default Suggested Method).
+#  - AUTH-05: Healthcheck Gating implemented for Authelia and PostgreSQL.
 # ==============================================================================
 
 set -euo pipefail
@@ -32,7 +28,7 @@ ConfigDir="${BaseDir}/Config"
 SecretsDir="${BaseDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
 EnvFile="${BaseDir}/Traefik.env"
-# FORMAT-01: Adhering to PascalCase mandate
+# FORMAT-01: Adhering to PascalCase mandate for host filesystem
 ComposeFile="${BaseDir}/DockerCompose.yml"
 LockFile="/var/lock/traefik_core.lock"
 
@@ -44,7 +40,7 @@ exec 200>"$LockFile"
 flock -n 200 || { echo "[FATAL] Another deployment instance is running."; exit 1; }
 [ "$EUID" -eq 0 ] || { echo "[FATAL] Elevated privileges required. Run with: sudo $0"; exit 1; }
 
-# Determine TTY status for interactive prompts
+# Determine TTY status for interactive prompts (BOOT-06 Fix)
 Interactive=$([ -t 0 ] && echo 1 || echo 0)
 
 PrintMsg() {
@@ -170,7 +166,11 @@ EnforceScorchedEarth() {
         if [ -n "$AlienContainers" ]; then
             PrintMsg "196" "Rogue containers detected outside the Monolith perimeter:"
             echo "$AlienContainers"
-            gum confirm "DESTROY all listed alien containers permanently?" && echo "$AlienContainers" | awk '{print $1}' | xargs -I {} sudo docker rm -f {} || PrintMsg "226" "Scorched Earth aborted. Aliens retained."
+            if gum confirm "DESTROY all listed alien containers permanently?"; then
+                echo "$AlienContainers" | awk '{print $1}' | xargs -I {} sudo docker rm -f {}
+            else
+                PrintMsg "226" "Scorched Earth aborted. Aliens retained."
+            fi
         fi
     fi
 }
@@ -189,7 +189,6 @@ AssimilateAlienContainers() {
                 
                 echo ""
                 PrintMsg "214" "Select EXPOSURE POSTURE for [$container]:"
-                # AUTH-04: Authelia is now the first and default choice
                 local choice=$(gum choose "1) MFA Protected (Authelia) [SUGGESTED]" "2) VPN-Only (Air-Gapped)" "3) BasicAuth (Legacy Form)" "4) Fully Public (DANGER)" "5) Internal (Hidden)")
                 local posture_choice=${choice:0:1}
                 local mw_string=""
@@ -205,7 +204,7 @@ AssimilateAlienContainers() {
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 # ==============================================================================
 # TRAEFIK INTEGRATION MANIFEST FOR: $container
-# TARGET ARCHITECTURE: TraefikMonolith (v64.0-IAM-PRIORITY)
+# TARGET ARCHITECTURE: TraefikMonolith (v64.1-STIG-REMEDIATION)
 # ==============================================================================
 networks:
   proxy_network:
@@ -339,7 +338,7 @@ IMG_AUTHELIA=$(ResolveImage "authelia/authelia:latest")
 IMG_POSTGRES=$(ResolveImage "postgres:15-alpine")
 IMG_SOCKET=$(ResolveImage "lscr.io/linuxserver/socket-proxy:latest")
 
-# DOCKER-02: Native DockerCompose.yml with Health Gating
+# DOCKER-02: Native Docker internal snake_case names wrapped in PascalCase file
 sudo tee "$ComposeFile" > /dev/null << EOF
 networks:
   proxy_network:
@@ -364,6 +363,12 @@ services:
     networks: [socket_network]
     environment: [CONTAINERS=1, IMAGES=1, NETWORKS=1, VOLUMES=1, POST=0]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
+    # HEALTH-05: Healthcheck injected to resolve Traefik ignition stalemate
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2375/version || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
 
   auth_db:
@@ -376,7 +381,6 @@ services:
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     secrets: [postgres_password]
     volumes: [${ConfigDir}/Postgres:/var/lib/postgresql/data]
-    # AUTH-05: Strict healthcheck for the vault backend
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -d authelia -U authelia"]
       interval: 10s
@@ -397,7 +401,6 @@ services:
     depends_on:
       auth_db:
         condition: service_healthy
-    # AUTH-05: Authelia internal API health verification
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9091/api/health"]
       interval: 10s
@@ -418,7 +421,6 @@ services:
       - ${ConfigDir}/TraefikAcme:/etc/traefik/acme
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
       - ${LogsDir}:/var/log/traefik
-    # HEALTH-04: Traefik refuses to bind until the IAM provider is healthy
     depends_on:
       docker_socket_proxy: { condition: service_healthy }
       authelia: { condition: service_healthy }
@@ -443,11 +445,31 @@ EOF
 sudo chown -R 0:0 "$BaseDir"
 sudo chmod 600 "$ComposeFile" "$EnvFile"
 
-# Lifecycle Management: Controlled Tear-down
-cd "$BaseDir" && sudo docker compose down --remove-orphans || true
-sleep 3
-# Ignition Sequence
-sudo docker compose up -d --remove-orphans
+# CYCLE-01: Lifecycle Management with COMPOSE-01 '-f' enforcement
+CycleExistingMatrix() {
+    cd "$BaseDir"
+    
+    # 1. Clean legacy snake_case orphans if they exist
+    if [ -f "${BaseDir}/docker-compose.yml" ]; then
+        if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Legacy snake_case file detected. Purging..."; fi
+        sudo docker compose -f docker-compose.yml down --remove-orphans || true
+        sudo rm -f "${BaseDir}/docker-compose.yml"
+    fi
+
+    # 2. Clean current PascalCase stack
+    if [ -f "$ComposeFile" ]; then
+        if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Resetting active Traefik Matrix..."; fi
+        sudo docker compose -f DockerCompose.yml down --remove-orphans || true
+    fi
+    
+    sleep 3
+}
+
+CycleExistingMatrix
+
+# COMPOSE-01: Ignition Sequence using explicit file pointer
+if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting the Zero-Trust Matrix..."; fi
+sudo docker compose -f DockerCompose.yml up -d --remove-orphans
 
 PrintMsg "82" "✔ IAM Gateway Online: https://auth.${INTERNAL_DOMAIN}"
 exit 0
