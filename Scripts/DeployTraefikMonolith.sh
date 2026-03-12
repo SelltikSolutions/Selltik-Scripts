@@ -1,12 +1,13 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v62.6-SNAKE-CASE-MANDATE)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v62.7-LOCAL-ASSIMILATION)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
+#  Assimilation Fixes Applied:
+#  - ROUTE-12: Re-injected local Assimilation Protocol for co-located containers
+#              (Gitea, Portainer) running alongside the Monolith.
 #  Nomenclature Fixes Applied:
 #  - DOCKER-02: Reverted Docker boundaries to strict snake_case/kebab-case.
-#               Amputated the explicit '-f DockerCompose.yml' workaround and
-#               added legacy orphan cleanup logic.
 #  - ENV-03: Unconditionally source the generated environment file into the active
 #            shell to prevent 'unbound variable' suicides during YAML generation.
 #  Scope Fixes Applied:
@@ -287,7 +288,139 @@ EnforceScorchedEarth() {
     fi
 }
 
+# ROUTE-12: Local Assimilation Engine for Co-Located Services
+AssimilateAlienContainers() {
+    if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
+        # Re-scan. If Scorched Earth executed, this list will be empty and the function exits cleanly.
+        local foreign_containers
+        foreign_containers=$(sudo docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($2) != stack && $1 != "" {print $1}')
+
+        if [ -n "$foreign_containers" ]; then
+            echo ""
+            PrintMsg "214" "========================================================================"
+            PrintMsg "214" "LOCAL ASSIMILATION PROTOCOL INITIATED"
+            PrintMsg "214" "Generating Traefik Integration Manifests for retained local containers."
+            PrintMsg "214" "========================================================================"
+            echo ""
+
+            local manifest_dir="${BaseDir}/IntegrationManifests"
+            sudo mkdir -p "$manifest_dir"
+
+            for container in $foreign_containers; do
+                local clean_name=$(echo "$container" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
+                local manifest_file="${manifest_dir}/${clean_name}_integration.yml"
+
+                local has_traefik=$(sudo docker inspect --format='{{index .Config.Labels "traefik.enable"}}' "$container" 2>/dev/null || echo "")
+                local current_middlewares=$(sudo docker inspect --format='{{index .Config.Labels "traefik.http.routers.'$clean_name'.middlewares"}}' "$container" 2>/dev/null || echo "")
+
+                local needs_update=1
+
+                if [ "$has_traefik" == "true" ]; then
+                    if [[ "$current_middlewares" == *"vpn-whitelist"* ]] || [[ "$current_middlewares" == *"static-auth"* ]]; then
+                        PrintMsg "82" "[$container] -> Verified. Monolith armor is active. Skipping."
+                        needs_update=0
+                    else
+                        PrintMsg "196" "[$container] -> WARNING: Legacy or insecure Traefik labels detected."
+                        if command -v gum &> /dev/null; then
+                            gum confirm "Generate updated Integration Manifest for $container?" && needs_update=1 || needs_update=0
+                        else
+                            read -p "Update labels for $container? [y/N]: " conf || echo ""
+                            [[ "${conf,,}" == "y" ]] && needs_update=1 || needs_update=0
+                        fi
+                    fi
+                else
+                    PrintMsg "226" "[$container] -> Unassimilated. No Traefik routing found."
+                    if command -v gum &> /dev/null; then
+                        gum confirm "Assimilate $container into the Traefik Monolith?" && needs_update=1 || needs_update=0
+                    else
+                        read -p "Assimilate $container? [y/N]: " conf || echo ""
+                        [[ "${conf,,}" == "y" ]] && needs_update=1 || needs_update=0
+                    fi
+                fi
+
+                if [ "$needs_update" -eq 1 ]; then
+                    local posture_choice="1"
+                    local mw_string=""
+
+                    echo ""
+                    PrintMsg "214" "------------------------------------------------------------------------"
+                    PrintMsg "214" " EXPOSURE POSTURE MATRIX FOR: [$container]"
+                    PrintMsg "214" "------------------------------------------------------------------------"
+                    PrintMsg "118" " [1] VPN-Only (Absolute Air-Gap) [STIG DEFAULT]"
+                    PrintMsg "240" "     Middlewares: secure-headers@file, vpn-whitelist@file"
+                    echo ""
+                    PrintMsg "226" " [2] BasicAuth (Password Wall)"
+                    PrintMsg "240" "     Middlewares: secure-headers@file, static-auth@file"
+                    echo ""
+                    PrintMsg "196" " [3] Fully Public (NO ARMOR - EXTREME DANGER)"
+                    PrintMsg "240" "     Middlewares: secure-headers@file"
+                    echo ""
+                    PrintMsg "244" " [4] Internal Backend (Completely Ignored)"
+                    PrintMsg "240" "     Behavior: Container is hidden from Traefik. For internal DBs."
+                    PrintMsg "214" "------------------------------------------------------------------------"
+                    echo ""
+
+                    if command -v gum &> /dev/null; then
+                        local choice=$(gum choose "1) VPN-Only" "2) BasicAuth" "3) Fully Public" "4) Internal Backend")
+                        posture_choice=${choice:0:1}
+                    else
+                        read -p "Select posture for [$container] (1-4): " posture_choice || echo ""
+                    fi
+
+                    case "$posture_choice" in
+                        1) mw_string="secure-headers@file,vpn-whitelist@file" ;;
+                        2) mw_string="secure-headers@file,static-auth@file" ;;
+                        3) mw_string="secure-headers@file" ;;
+                        4) 
+                            PrintMsg "240" "[$container] -> Marked as internal. No manifest generated."
+                            continue 
+                            ;;
+                        *) mw_string="secure-headers@file,vpn-whitelist@file" ;;
+                    esac
+
+                    sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
+# ==============================================================================
+# TRAEFIK INTEGRATION MANIFEST FOR: $container
+# TARGET ARCHITECTURE: TraefikMonolith (Local Instance)
+# ==============================================================================
+# POSTURE: Option $posture_choice
+# MIDDLEWARES: $mw_string
+# ==============================================================================
+# INSTRUCTIONS:
+# 1. Open the original docker-compose.yml file where '$container' is defined.
+# 2. Add 'proxy_network' to your bottom networks block.
+# 3. Paste the networks and labels sections below into your service definition.
+# 4. Replace <PORT> with the actual internal listening port of your application.
+# 5. Re-run 'docker compose up -d' on your original stack.
+# ==============================================================================
+
+networks:
+  proxy_network:
+    external: true
+
+services:
+  $container:
+    # ... existing image/volumes ...
+    networks:
+      - proxy_network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${clean_name}.rule=Host(\`${clean_name}.${INTERNAL_DOMAIN}\`)"
+      - "traefik.http.routers.${clean_name}.entrypoints=websecure"
+      - "traefik.http.routers.${clean_name}.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${clean_name}.loadbalancer.server.port=<PORT>"
+      - "traefik.http.routers.${clean_name}.middlewares=${mw_string}"
+      - "traefik.docker.network=proxy_network"
+MANIFEST_EOF
+                    PrintMsg "82" "✔ Manifest generated: ${manifest_dir}/${clean_name}_integration.yml"
+                fi
+            done
+        fi
+    fi
+}
+
 EnforceScorchedEarth
+AssimilateAlienContainers
 
 UpdaterScript="/opt/Docker/Scripts/Update${StackName}.sh"
 
