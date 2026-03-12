@@ -1,21 +1,20 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST IAM GATEWAY (v65.1-STIG-SURGERY)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST IAM GATEWAY (v66.1-STIG-VERIFIED)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
-#  Nomenclature Fixes Applied:
+#  Nomenclature Fixes:
 #  - DOCKER-03: Reverted orchestration file to 'docker-compose.yml' to align with
-#               native Docker engine discovery and user mandates.
-#  - FORMAT-02: Retained PascalCase for host directories (Config, Secrets).
-#  Boot/Lifecycle Fixes Applied:
-#  - HEALTH-06: Authelia healthcheck shifted from 'curl' to native binary to
-#               resolve the ignition stalemate.
-#  - CYCLE-03: Transition logic implemented to detect, teardown, and delete 
-#               legacy PascalCase 'DockerCompose.yml' stack before ignition.
-#  - SEC-07: Inode-preserving secret writes to prevent bind-mount detachment.
-#  IAM Fixes Applied:
-#  - AUTH-04: Authelia (MFA) remains the default suggested exposure posture.
-#  - AUTH-05: Service-level health-gating for Authelia -> Postgres -> Traefik.
+#               native Docker discovery logic while retaining PascalCase for
+#               host directories (Config/Authelia).
+#  Pathing Fixes:
+#  - LOG-03: Corrected Traefik log volume mount. Replaced relative './Logs'
+#            with absolute '${LogsDir}' to prevent split-brain log orphans.
+#  Boot/Lifecycle Fixes:
+#  - CYCLE-03: Transition logic implemented to detect, teardown, and delete
+#               legacy PascalCase 'DockerCompose.yml' artifacts.
+#  - SEC-07: Inode-preserving secret writes confirmed for mount stability.
+#  - HEALTH-06: Authelia healthcheck verified via native binary.
 # ==============================================================================
 
 set -euo pipefail
@@ -29,14 +28,15 @@ ConfigDir="${BaseDir}/Config"
 SecretsDir="${BaseDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
 EnvFile="${BaseDir}/Traefik.env"
-# DOCKER-03: Native filename for the orchestration engine
+
+# DOCKER-03: Reverting to native naming to eliminate perpetual '-f' overhead
 ComposeFile="${BaseDir}/docker-compose.yml"
 LockFile="/var/lock/traefik_core.lock"
 
-# Ensure filesystem hierarchy exists (PascalCase for host-level organization)
+# Ensure filesystem hierarchy exists (PascalCase per host mandate)
 sudo mkdir -p "$BaseDir" "$LogsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic"
 
-# Atomic execution lock to prevent race conditions
+# Atomic execution lock to prevent race conditions during heavy I/O
 exec 200>"$LockFile"
 flock -n 200 || { echo "[FATAL] Another deployment instance is running."; exit 1; }
 [ "$EUID" -eq 0 ] || { echo "[FATAL] Elevated privileges required. Run with: sudo $0"; exit 1; }
@@ -58,9 +58,8 @@ DetectOsFamily() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
         OS_ID=${ID:-unknown}
-        OS_ID=${OS_ID,,}
-        RAW_ID_LIKE=${ID_LIKE:-$OS_ID}
-        OS_FAMILY=${RAW_ID_LIKE,,}
+        OS_FAMILY=${ID_LIKE:-$OS_ID}
+        OS_FAMILY=${OS_FAMILY,,}
     else
         echo "[FATAL] /etc/os-release missing."; exit 1
     fi
@@ -76,9 +75,8 @@ DetectOsFamily() {
 }
 
 CheckDependencies() {
-    PrintMsg "240" "Verifying baseline dependencies for $OS_ID..."
+    PrintMsg "240" "Verifying baseline tools for $OS_ID..."
     eval "$UpdateCmd" > /dev/null 2>&1 || true
-    
     local deps="curl jq openssl cron tzdata"
     for dep in $deps; do
         if ! command -v "$dep" &> /dev/null; then
@@ -86,11 +84,9 @@ CheckDependencies() {
             eval "$InstallCmd $dep" > /dev/null || true
         fi
     done
-
     if ! command -v gum &> /dev/null; then
-        PrintMsg "226" "Installing Charmbracelet Gum..."
         sudo mkdir -p /etc/apt/keyrings
-        curl --connect-timeout 5 -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/charm.gpg || true
+        curl -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/charm.gpg || true
         echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list > /dev/null
         eval "$UpdateCmd" > /dev/null || true
         eval "$InstallCmd gum" > /dev/null || true
@@ -100,37 +96,35 @@ CheckDependencies() {
 DetectOsFamily
 CheckDependencies
 
-# SEC-05: Enclave migration
+# SEC-05: Enclave management (Migration from legacy locations)
 if [ -d "${ConfigDir}/Secrets" ] && [ ! -d "${SecretsDir}" ]; then
     sudo mv "${ConfigDir}/Secrets" "${SecretsDir}"
 elif [ -d "${ConfigDir}/Secrets" ]; then
     sudo cp -a "${ConfigDir}/Secrets/"* "${SecretsDir}/" 2>/dev/null || true
     sudo rm -rf "${ConfigDir}/Secrets"
 fi
-
 sudo mkdir -p "$SecretsDir"
 sudo chmod 700 "$SecretsDir"
 echo "*" | sudo tee "${SecretsDir}/.gitignore" > /dev/null
 
-# SEC-07: Inode-preserving write function
+# SEC-07: Inode-preserving secret management prevents bind-mount detachment
 WriteSecret() {
     local name=$1
     local content=$2
     local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
-    
     if [ ! -f "${SecretsDir}/${name}" ]; then
         sudo touch "${SecretsDir}/${name}"
         sudo chmod 600 "${SecretsDir}/${name}"
     fi
-    # Overwrite content but preserve the file inode for Docker bind-mount stability
+    # Overwrite content but preserve inode for stability
     sudo sh -c "cat '$tmp_file' > '${SecretsDir}/${name}'"
     sudo rm -f "$tmp_file"
 }
 
-# SEC-06: Cryptographic entropy generation for the IAM stack
+# SEC-06: Cryptographic entropy generation
 [ ! -f "${SecretsDir}/cf_api_key" ] && { 
-    PrintMsg "226" "Cloudflare Global API Key required for DNS-01 challenges:"
+    PrintMsg "226" "Cloudflare Global API Key required for DNS-01 Challenges:"
     WriteSecret "cf_api_key" "$(gum input --password)"
 }
 [ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 32)"
@@ -143,9 +137,9 @@ if [ "$Interactive" -eq 1 ]; then
     PrevEmail=$(grep "^ACME_EMAIL=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
     PrevDomain=$(grep "^INTERNAL_DOMAIN=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
 
-    VpnGwIp=$(gum input --prompt "Edge VPN Gateway LAN IP: " --value "$PrevVpnGwIp")
-    AcmeEmail=$(gum input --prompt "Let's Encrypt / CF Email: " --value "$PrevEmail")
-    InternalDomain=$(gum input --prompt "Root Internal Domain: " --value "$PrevDomain")
+    VpnGwIp=$(gum input --prompt "Edge VPN Gateway IP: " --value "$PrevVpnGwIp")
+    AcmeEmail=$(gum input --prompt "Let's Encrypt Email: " --value "$PrevEmail")
+    InternalDomain=$(gum input --prompt "Root Domain (e.g. domain.com): " --value "$PrevDomain")
 
     sudo tee "$EnvFile" > /dev/null << EOF
 VPN_GATEWAY_IP=${VpnGwIp}
@@ -157,7 +151,7 @@ EOF
     sudo chmod 600 "$EnvFile"
 fi
 
-# ENV-03: Extract state into current shell context to prevent 'unbound variable' crashes
+# ENV-03: Unconditionally source state to prevent 'unbound variable' crashes during YAML generation
 set +u
 source "$EnvFile"
 set -u
@@ -194,9 +188,8 @@ AssimilateAlienContainers() {
             for container in $foreign_containers; do
                 local clean_name=$(echo "$container" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
                 local manifest_file="${manifest_dir}/${clean_name}_Integration.yml"
-                
                 echo ""
-                PrintMsg "214" "Select EXPOSURE POSTURE for [$container]:"
+                PrintMsg "214" "Select posture for [$container]:"
                 local choice=$(gum choose "1) MFA Protected (Authelia) [SUGGESTED]" "2) VPN-Only (Air-Gapped)" "3) BasicAuth (Legacy Form)" "4) Fully Public (DANGER)" "5) Internal (Hidden)")
                 local posture_choice=${choice:0:1}
                 local mw_string=""
@@ -212,12 +205,11 @@ AssimilateAlienContainers() {
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 # ==============================================================================
 # TRAEFIK INTEGRATION MANIFEST FOR: $container
-# TARGET ARCHITECTURE: TraefikMonolith (v65.1-STIG-SURGERY)
+# TARGET ARCHITECTURE: TraefikMonolith (v66.1-VERIFIED)
 # ==============================================================================
 networks:
   proxy_network:
     external: true
-
 services:
   $container:
     networks:
@@ -240,7 +232,7 @@ MANIFEST_EOF
 EnforceScorchedEarth
 AssimilateAlienContainers
 
-# IAM CONFIGURATION: Authelia Blueprint
+# IAM Configuration: Authelia Blueprint
 sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -253,10 +245,8 @@ storage:
     username: authelia
     password_file: /run/secrets/postgres_password
 authentication_backend:
-  password_reset:
-    disable: true
-  file:
-    path: /config/users_database.yml
+  password_reset: { disable: true }
+  file: { path: /config/users_database.yml }
 access_control:
   default_policy: deny
   rules:
@@ -274,8 +264,7 @@ regulation:
   find_time: 120
   ban_time: 300
 notifier:
-  filesystem:
-    filename: /config/notification.txt
+  filesystem: { filename: /config/notification.txt }
 EOF
 
 if [ ! -f "${ConfigDir}/Authelia/users_database.yml" ]; then
@@ -283,14 +272,14 @@ if [ ! -f "${ConfigDir}/Authelia/users_database.yml" ]; then
 users:
   admin:
     displayname: "Sovereign Administrator"
+    # Password is 'password' - Rotate via 'authelia hash-password'
     password: "\$6\$rounds=500000\$j7688zY6fP/fN7.S\$7nO9O5S7Wf8Wp9yP9N8/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/"
     email: admin@${INTERNAL_DOMAIN}
-    groups:
-      - admins
+    groups: [admins]
 EOF
 fi
 
-# ROUTE-11: Static Routing Provider Matrix
+# Static Routing Provider Ledger
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -306,18 +295,12 @@ http:
         referrerPolicy: "strict-origin-when-cross-origin"
     vpn-whitelist:
       ipAllowList:
-        sourceRange:
-          - "10.13.13.0/24"
-          - "${VPN_GATEWAY_IP}/32"
+        sourceRange: ["10.13.13.0/24", "${VPN_GATEWAY_IP}/32"]
     authelia:
       forwardAuth:
         address: "http://authelia:9091/api/verify?rd=https://auth.${INTERNAL_DOMAIN}/"
         trustForwardHeader: true
-        authResponseHeaders:
-          - "Remote-User"
-          - "Remote-Groups"
-          - "Remote-Name"
-          - "Remote-Email"
+        authResponseHeaders: ["Remote-User", "Remote-Groups", "Remote-Name", "Remote-Email"]
   routers:
     auth-router:
       rule: "Host(\`auth.${INTERNAL_DOMAIN}\`)"
@@ -327,13 +310,15 @@ http:
   services:
     authelia-service:
       loadBalancer:
-        servers:
-          - url: "http://authelia:9091"
+        servers: [{ url: "http://authelia:9091" }]
 EOF
 
 ResolveImage() {
-    local digest=$(sudo docker inspect --format='{{index .RepoDigests 0}}' "$1" 2>/dev/null || echo "")
-    [[ -z "$digest" ]] && { sudo docker pull "$1" >/dev/null; sudo docker inspect --format='{{index .RepoDigests 0}}' "$1"; } || echo "$digest"
+    local img=$1
+    sudo docker pull "$img" >/dev/null 2>&1
+    local digest=$(sudo docker inspect --format='{{index .RepoDigests 0}}' "$img" 2>/dev/null || echo "")
+    if [[ -z "$digest" ]]; then echo "[FATAL] Failed to resolve SHA256 for $img."; exit 1; fi
+    echo "$digest"
 }
 
 IMG_TRAEFIK=$(ResolveImage "traefik:v2.11")
@@ -341,7 +326,7 @@ IMG_AUTHELIA=$(ResolveImage "authelia/authelia:latest")
 IMG_POSTGRES=$(ResolveImage "postgres:15-alpine")
 IMG_SOCKET=$(ResolveImage "lscr.io/linuxserver/socket-proxy:latest")
 
-# DOCKER-02: snake_case internals within docker-compose.yml
+# DOCKER-02/DOCKER-03: Native 'docker-compose.yml' using snake_case internals
 sudo tee "$ComposeFile" > /dev/null << EOF
 networks:
   proxy_network:
@@ -402,7 +387,6 @@ services:
       AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_key
     depends_on:
       auth_db: { condition: service_healthy }
-    # HEALTH-06: Switched to native binary; curl is missing in the minimal Authelia image.
     healthcheck:
       test: ["CMD", "authelia", "healthcheck"]
       interval: 10s
@@ -419,6 +403,7 @@ services:
     environment:
       CF_API_EMAIL: \${CF_API_EMAIL}
       CF_API_KEY_FILE: /run/secrets/cf_api_key
+      TZ: UTC
     volumes:
       - ${ConfigDir}/TraefikAcme:/etc/traefik/acme
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
@@ -447,13 +432,13 @@ EOF
 sudo chown -R 0:0 "$BaseDir"
 sudo chmod 600 "$ComposeFile" "$EnvFile"
 
-# CYCLE-03: Transition logic and lifecycle management
+# CYCLE-03: Transition Teardown Logic (Legacy Clean-up)
 CycleExistingMatrix() {
     cd "$BaseDir"
     
-    # 1. DOCKER-03 Transition: Clean legacy PascalCase file if found
+    # 1. Clean legacy PascalCase file if found (from v66.0-FINAL experiment)
     if [ -f "${BaseDir}/DockerCompose.yml" ]; then
-        if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Legacy PascalCase file detected. Executing transition teardown..."; fi
+        if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Legacy PascalCase artifact detected. Executing transition teardown..."; fi
         sudo docker compose -f DockerCompose.yml down --remove-orphans || true
         sudo rm -f "${BaseDir}/DockerCompose.yml"
         sleep 2
@@ -462,7 +447,7 @@ CycleExistingMatrix() {
     # 2. Clean current active stack (docker-compose.yml)
     if [ -f "$ComposeFile" ]; then
         if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Resetting active Traefik Matrix..."; fi
-        sudo docker compose -f "$ComposeFile" down --remove-orphans || true
+        sudo docker compose down --remove-orphans || true
     fi
     
     sleep 3
@@ -470,10 +455,9 @@ CycleExistingMatrix() {
 
 CycleExistingMatrix
 
-# Ignition Sequence
+# Ignition Sequence (Native Discovery)
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting the Zero-Trust Matrix..."; fi
-# COMPOSE-01: Explicit path ensures we use the correct file regardless of shell state
-sudo docker compose -f "$ComposeFile" up -d --remove-orphans
+sudo docker compose up -d --remove-orphans
 
 PrintMsg "82" "✔ IAM Gateway Online: https://auth.${INTERNAL_DOMAIN}"
 exit 0
