@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v62.0-STATIC-ROUTING)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v62.1-CLEAN-ROUTING)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
 #  Routing Protocol Applied:
@@ -165,16 +165,16 @@ if [ ! -f "${SecretsDir}/cf_api_key" ]; then
     fi
 fi
 
-# AUTH-02: Generate Cryptographic Password for NAS services
+# AUTH-02: Generate Cryptographic Password for Remote Satellite services
 if [ ! -f "${SecretsDir}/traefik_auth" ]; then
     if [ "$Interactive" -eq 1 ]; then
-        PrintMsg "226" "Provide a secure password for the Satellite (NAS) Auth Wall:"
+        PrintMsg "226" "Provide a secure password for the Satellite Auth Wall:"
         TraefikPass=""
         while [[ -z "$TraefikPass" ]]; do
             if command -v gum &> /dev/null; then
                 TraefikPass=$(gum input --password)
             else
-                read -s -p "NAS Auth Password: " TraefikPass
+                read -s -p "Satellite Auth Password: " TraefikPass
                 echo ""
             fi
             if [[ -z "$TraefikPass" ]]; then PrintMsg "196" "Password cannot be empty."; fi
@@ -188,19 +188,19 @@ if [ ! -f "${SecretsDir}/traefik_auth" ]; then
 fi
 
 if [ "$Interactive" -eq 1 ]; then
-    PrevPiZeroIp=$(grep "^PI_ZERO_IP=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
+    PrevVpnGwIp=$(grep "^VPN_GATEWAY_IP=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
     PrevEmail=$(grep "^ACME_EMAIL=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
     PrevDomain=$(grep "^INTERNAL_DOMAIN=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
 
-    PiZeroIp=""
-    while [[ -z "$PiZeroIp" ]]; do
+    VpnGwIp=""
+    while [[ -z "$VpnGwIp" ]]; do
         if command -v gum &> /dev/null; then
-            PiZeroIp=$(gum input --prompt "Pi Zero (VPN Gateway) LAN IP: " --value "$PrevPiZeroIp" --placeholder "10.0.0.40")
+            VpnGwIp=$(gum input --prompt "Edge VPN Gateway LAN IP: " --value "$PrevVpnGwIp" --placeholder "10.0.0.40")
         else
-            read -p "Pi Zero (VPN Gateway) LAN IP [$PrevPiZeroIp]: " InputIp
-            PiZeroIp=${InputIp:-$PrevPiZeroIp}
+            read -p "Edge VPN Gateway LAN IP [$PrevVpnGwIp]: " InputIp
+            VpnGwIp=${InputIp:-$PrevVpnGwIp}
         fi
-        if [[ -z "$PiZeroIp" ]]; then PrintMsg "196" "[FATAL] Pi Zero IP is required."; fi
+        if [[ -z "$VpnGwIp" ]]; then PrintMsg "196" "[FATAL] VPN Gateway IP is required. Leaving this blank will crash Traefik."; fi
     done
 
     AcmeEmail=""
@@ -226,7 +226,7 @@ if [ "$Interactive" -eq 1 ]; then
     done
 
     sudo tee "$EnvFile" > /dev/null << EOF
-PI_ZERO_IP=${PiZeroIp}
+VPN_GATEWAY_IP=${VpnGwIp}
 ACME_EMAIL=${AcmeEmail}
 CF_API_EMAIL=${AcmeEmail}
 INTERNAL_DOMAIN=${InternalDomain}
@@ -338,7 +338,7 @@ http:
       ipAllowList:
         sourceRange:
           - "10.13.13.0/24"    # Remote WireGuard Client Subnet
-          - "${PI_ZERO_IP}/32" # The VPN Gateway Interface
+          - "${VPN_GATEWAY_IP}/32" # The VPN Gateway Interface
 
     # SATELLITE PASSWORD WALL
     static-auth:
@@ -346,14 +346,14 @@ http:
         usersFile: "/run/secrets/traefik_auth"
 
   # ==============================================================================
-  # SATELLITE ROUTING LEDGER (NAS / REMOTE SERVERS)
+  # SATELLITE ROUTING LEDGER (NAS / PROXMOX / REMOTE VMs)
   # ==============================================================================
   routers:
     # --------------------------------------------------
-    # NAS DASHBOARD EXAMPLE (Protected by Password Wall)
+    # SECURE SATELLITE APP EXAMPLE (Protected by Password Wall)
     # --------------------------------------------------
-    nas-dashboard:
-      rule: "Host(\`nas.${INTERNAL_DOMAIN}\`)"
+    secure-satellite-app:
+      rule: "Host(\`secure.${INTERNAL_DOMAIN}\`)"
       entryPoints:
         - "websecure"
       middlewares:
@@ -361,20 +361,20 @@ http:
         - "static-auth"
         # Uncomment the line below to FORCE users to be connected to the VPN to see this page.
         # - "vpn-whitelist" 
-      service: "nas-service"
+      service: "secure-satellite-service"
       tls:
         certResolver: "cloudflare"
 
     # --------------------------------------------------
-    # PLEX SERVER EXAMPLE (Publicly Accessible, No Password)
+    # PUBLIC SATELLITE APP EXAMPLE (No Password - e.g., Plex, Web Server)
     # --------------------------------------------------
-    nas-plex:
-      rule: "Host(\`plex.${INTERNAL_DOMAIN}\`)"
+    public-satellite-app:
+      rule: "Host(\`public.${INTERNAL_DOMAIN}\`)"
       entryPoints:
         - "websecure"
       middlewares:
         - "secure-headers"
-      service: "plex-service"
+      service: "public-satellite-service"
       tls:
         certResolver: "cloudflare"
 
@@ -382,15 +382,15 @@ http:
   # SATELLITE PHYSICAL ADDRESS MAPPING
   # ==============================================================================
   services:
-    nas-service:
+    secure-satellite-service:
       loadBalancer:
         servers:
-          - url: "http://10.0.0.60:5000" # <-- REPLACE WITH YOUR NAS IP & ADMIN PORT
+          - url: "http://192.168.167.2:5001" # <-- REPLACE WITH REMOTE IP & ADMIN PORT
 
-    plex-service:
+    public-satellite-service:
       loadBalancer:
         servers:
-          - url: "http://10.0.0.60:32400" # <-- REPLACE WITH YOUR PLEX IP & PORT
+          - url: "http://192.168.167.10:8080" # <-- REPLACE WITH REMOTE IP & PORT
 EOF
 
 ResolveImage() {
@@ -492,7 +492,7 @@ services:
       - "--entrypoints.websecure.address=:443"
       - "--entrypoints.web.http.middlewares=secure-headers@file"
       - "--entrypoints.websecure.http.middlewares=secure-headers@file"
-      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=\${PI_ZERO_IP}/32,10.13.13.0/24,10.50.0.0/24"
+      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=\${VPN_GATEWAY_IP}/32,10.13.13.0/24,10.50.0.0/24"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge=true"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
