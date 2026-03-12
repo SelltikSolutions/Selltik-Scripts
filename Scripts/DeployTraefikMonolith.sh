@@ -1,14 +1,16 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v62.3-SCOPE-REMEDIATION)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v62.4-ENV-STATE-REMEDIATION)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
+#  State Fixes Applied:
+#  - ENV-03: Unconditionally source the generated environment file into the active
+#            shell to prevent 'unbound variable' suicides during YAML generation.
 #  Scope Fixes Applied:
 #  - BOOT-07: Encapsulated Scorched Earth protocol into a function to resolve
 #             the fatal 'local' variable scope syntax error.
 #  TTY Fixes Applied:
-#  - BOOT-06: Interactive check shifted from stdout (-t 1) to stdin (-t 0) to 
-#             prevent false headless aborts during chained sudo executions.
+#  - BOOT-06: Interactive check shifted from stdout (-t 1) to stdin (-t 0).
 #  Routing Protocol Applied:
 #  - ROUTE-11: Drone C2 telemetry amputated in favor of explicit Static File 
 #              Providers. This prevents the Docker Subnet LAN gap paradox.
@@ -240,9 +242,12 @@ INTERNAL_DOMAIN=${InternalDomain}
 TZ=UTC
 EOF
     sudo chmod 600 "$EnvFile"
-else
-    source "$EnvFile"
 fi
+
+# ENV-03: Unconditionally extract state into current execution context to prevent 'unbound variable' crashes
+set +u
+source "$EnvFile"
+set -u
 
 sudo timedatectl set-timezone UTC
 sudo rm -f /etc/localtime && sudo ln -s /usr/share/zoneinfo/UTC /etc/localtime
