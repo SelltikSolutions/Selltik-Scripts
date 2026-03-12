@@ -1,8 +1,11 @@
 #!/bin/bash
 # ==============================================================================
-#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v60.1-AUDIT-REMEDIATION)
+#  SOVEREIGN TRAEFIK CORE - ZERO-TRUST REVERSE PROXY (v61.0-ENCAPSULATION)
 # ==============================================================================
 #  Architecture: Centralized /opt/Docker GitOps Topology
+#  Encapsulation Fixes Applied:
+#  - SEC-04: Pre-populated .gitignore injected into SecretsDir.
+#  - SEC-05: Abstracted SecretsDir from ConfigDir to prevent GitOps tarball leakage.
 #  Audit Fixes Applied:
 #  - TRAEFIK-02: Restored v2.11 API determinism (prevent v3 1.24 downgrade panic).
 #  - SAFETY-01: Scorched Earth protocol bolted with interactive confirmation switch.
@@ -17,8 +20,8 @@ set -euo pipefail
 
 StackName="TraefikMonolith"
 BaseDir="/opt/Docker/Stacks/${StackName}"
-ConfigDir="/opt/Docker/Config"
-SecretsDir="${ConfigDir}/Secrets"
+ConfigDir="${BaseDir}/Config"
+SecretsDir="${BaseDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
 EnvFile="${BaseDir}/Traefik.env"
 ComposeFile="${BaseDir}/DockerCompose.yml"
@@ -76,8 +79,20 @@ DetectOsFamily() {
 }
 DetectOsFamily
 
+# SEC-05: Silent migration of legacy nested secrets to the encapsulated stack directory.
+if [ -d "${ConfigDir}/Secrets" ] && [ ! -d "${SecretsDir}" ]; then
+    sudo mv "${ConfigDir}/Secrets" "${SecretsDir}"
+elif [ -d "${ConfigDir}/Secrets" ]; then
+    sudo cp -a "${ConfigDir}/Secrets/"* "${SecretsDir}/" 2>/dev/null || true
+    sudo rm -rf "${ConfigDir}/Secrets"
+fi
+
 sudo mkdir -p "$SecretsDir"
 sudo chmod 700 "$SecretsDir"
+
+# SEC-04: Pre-populate .gitignore to prevent catastrophic repository leaks.
+echo "*" | sudo tee "${SecretsDir}/.gitignore" > /dev/null
+sudo chmod 600 "${SecretsDir}/.gitignore"
 
 WriteSecret() {
     local name=$1
