@@ -1,15 +1,15 @@
 #!/bin/bash
 # ==============================================================================
-#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA (v10.0-ULTIMATUM-IAM)
+#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
+#  Version: v10.1-ULTIMATUM-VERIFIED
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Integrations Applied:
-#  - IAM-01: Authelia (MFA) + PostgreSQL backend merged into the Unified Node.
-#  - AUTH-04: Authelia-MFA promoted to default Suggested Exposure Posture.
-#  - DOCKER-03: Reverted to native 'docker-compose.yml' for daemon discovery
-#               while maintaining PascalCase host directories.
-#  - SEC-07: Inode-preserving secret writes to prevent bind-mount detachment.
-#  - HEALTH-06: Authelia healthcheck utilizing native binary (no curl).
+#  Regressions Repaired:
+#  - GITOPS-01: Encapsulated ConfigDir back into the BaseDir for portability.
+#  - ACME-02: Pre-ignition file touch prevents Docker directory-mount panics.
+#  - AUTH-07: Added 'traefik_auth' secret generation to prevent daemon crashes.
+#  - DNS-01: Re-engineered Unbound config generation and Root Hints injection.
+#  - CYCLE-03: Restored legacy teardown logic to prevent port-binding conflicts.
 # ==============================================================================
 
 set -euo pipefail
@@ -19,11 +19,12 @@ export PATH="/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
 
 StackName="SovereignNode"
 BaseDir="/opt/Docker/Stacks/${StackName}"
-ConfigDir="/opt/Docker/Config"
+# GITOPS-01: Restored strictly encapsulated pathing
+ConfigDir="${BaseDir}/Config"
 SecretsDir="${BaseDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
 EnvFile="${BaseDir}/Node.env"
-# DOCKER-03: Native discovery naming
+# Native Docker orchestration filename
 ComposeFile="${BaseDir}/docker-compose.yml"
 LockFile="/var/lock/sovereign_node.lock"
 
@@ -33,12 +34,16 @@ sudo mkdir -p "$BaseDir" "$LogsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" 
              "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
              "$ConfigDir/Unbound"
 
+# ACME-02: Prevent Docker from creating a directory instead of a file
+sudo touch "${ConfigDir}/Traefik/acme.json"
+sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
+
 # Atomic execution lock
 exec 200>"$LockFile"
 flock -n 200 || { echo "[FATAL] Another deployment instance is running."; exit 1; }
 [ "$EUID" -eq 0 ] || { echo "[FATAL] Elevated privileges required. Run with: sudo $0"; exit 1; }
 
-# BOOT-06: TTY verification for ParrotOS chained sudo
+# TTY verification for ParrotOS chained sudo
 Interactive=$([ -t 0 ] && echo 1 || echo 0)
 
 PrintMsg() {
@@ -65,7 +70,6 @@ DetectOsFamily() {
         PkgManager="apt-get"
         UpdateCmd="apt-get update -y -q"
         InstallCmd="DEBIAN_FRONTEND=noninteractive apt-get install -y -q"
-        UpgradeCmd="DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -q -o Dpkg::Options::=\"--force-confdef\" -o Dpkg::Options::=\"--force-confold\""
     else
         echo "[FATAL] Unsupported OS Family: $OS_FAMILY."; exit 1
     fi
@@ -112,10 +116,15 @@ WriteSecret() {
     sudo rm -f "$tmp_file"
 }
 
-# SEC-06: Cryptographic entropy generation
+# SEC-06 & AUTH-07: Cryptographic entropy generation
 [ ! -f "${SecretsDir}/cf_api_token" ] && { 
     PrintMsg "226" "Cloudflare Scoped DNS API Token required:"
     WriteSecret "cf_api_token" "$(gum input --password)"
+}
+[ ! -f "${SecretsDir}/traefik_auth" ] && {
+    PrintMsg "226" "Provide a secure password for the Traefik BasicAuth fallback:"
+    TraefikPass=$(gum input --password)
+    WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"
 }
 [ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_jwt_secret" ] && WriteSecret "authelia_jwt_secret" "$(openssl rand -base64 32)"
@@ -191,11 +200,11 @@ AssimilateAlienContainers() {
                 esac
 
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
-# TRAEFIK INTEGRATION MANIFEST: $container (v10.0-ULTIMATUM)
+# TRAEFIK INTEGRATION MANIFEST: $container (v10.1-ULTIMATUM-VERIFIED)
 networks:
   ProxyNetwork:
     external: true
-    name: SovereignNode_ProxyNetwork
+    name: sovereign_node_proxy_network
 services:
   $container:
     networks: [ProxyNetwork]
@@ -206,7 +215,7 @@ services:
       - "traefik.http.routers.${clean_name}.tls.certresolver=letsencrypt"
       - "traefik.http.services.${clean_name}.loadbalancer.server.port=<PORT>"
       - "traefik.http.routers.${clean_name}.middlewares=${mw_string}"
-      - "traefik.docker.network=SovereignNode_ProxyNetwork"
+      - "traefik.docker.network=sovereign_node_proxy_network"
 MANIFEST_EOF
                 PrintMsg "82" "✔ Manifest: ${clean_name}_Integration.yml"
             done
@@ -216,6 +225,32 @@ MANIFEST_EOF
 
 EnforceScorchedEarth
 AssimilateAlienContainers
+
+# DNS-01: Unbound Structural Reconstruction
+PrintMsg "240" "Fetching InterNIC Root Hints for Unbound DNS..."
+sudo curl -sS https://www.internic.net/domain/named.root | sudo tee "${ConfigDir}/Unbound/RootHints.txt" > /dev/null
+
+sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
+server:
+  num-threads: 1
+  interface: 0.0.0.0
+  port: 53
+  do-ip4: yes
+  do-udp: yes
+  do-tcp: yes
+  root-hints: "/opt/unbound/etc/unbound/root.hints"
+  harden-glue: yes
+  harden-dnssec-stripped: yes
+  use-caps-for-id: no
+  edns-buffer-size: 1232
+  prefetch: yes
+  num-queries-per-thread: 4096
+  rrset-roundrobin: yes
+  minimal-responses: yes
+  hide-identity: yes
+  hide-version: yes
+  access-control: 10.99.0.0/24 allow
+EOF
 
 # IAM Configuration
 sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
@@ -264,7 +299,7 @@ EOF
 fi
 
 # Traefik Dynamic Rules
-sudo tee "${ConfigDir}/Traefik/dynamic/DynamicRules.yml" > /dev/null << EOF
+sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
     secure-headers:
@@ -309,7 +344,7 @@ entryPoints:
     http: { redirections: { entryPoint: { to: websecure, scheme: https } } }
   websecure: { address: ":443" }
 providers:
-  docker: { endpoint: "tcp://DockerSocketProxy:2375", exposedByDefault: false }
+  docker: { endpoint: "tcp://docker_socket_proxy:2375", exposedByDefault: false }
   file: { directory: /etc/traefik/dynamic, watch: true }
 certificatesResolvers:
   letsencrypt:
@@ -334,15 +369,15 @@ IMG_AUTHELIA=$(ResolveImage "authelia/authelia:latest")
 
 sudo tee "$ComposeFile" > /dev/null << EOF
 networks:
-  VpnNetwork:
-    name: VpnNetwork
+  vpn_network:
+    name: sovereign_node_vpn_network
     ipam: { config: [{ subnet: 10.99.0.0/24 }] }
-  ProxyNetwork:
-    name: SovereignNode_ProxyNetwork
+  proxy_network:
+    name: sovereign_node_proxy_network
     ipam: { config: [{ subnet: 10.98.0.0/24 }] }
-  AuthNetwork:
+  auth_network:
     internal: true
-  SocketNetwork:
+  socket_network:
     internal: true
 
 secrets:
@@ -357,8 +392,8 @@ secrets:
 services:
   docker_socket_proxy:
     image: ${IMG_PROXY}
-    container_name: DockerSocketProxy
-    networks: [SocketNetwork]
+    container_name: docker_socket_proxy
+    networks: [socket_network]
     environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, PING=1, INFO=1, POST=0]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
     healthcheck:
@@ -370,8 +405,8 @@ services:
 
   auth_db:
     image: ${IMG_POSTGRES}
-    container_name: AuthDb
-    networks: [AuthNetwork]
+    container_name: auth_db
+    networks: [auth_network]
     environment:
       POSTGRES_USER: authelia
       POSTGRES_DB: authelia
@@ -387,8 +422,8 @@ services:
 
   authelia:
     image: ${IMG_AUTHELIA}
-    container_name: Authelia
-    networks: [ProxyNetwork, AuthNetwork]
+    container_name: authelia
+    networks: [proxy_network, auth_network]
     volumes: [${ConfigDir}/Authelia:/config]
     secrets: [postgres_password, authelia_jwt_secret, authelia_session_secret, authelia_storage_key]
     environment:
@@ -404,17 +439,69 @@ services:
       retries: 3
     restart: unless-stopped
 
+  unbound_dns:
+    image: ${IMG_UNBOUND}
+    container_name: unbound_dns
+    networks:
+      vpn_network: { ipv4_address: 10.99.0.11 }
+    volumes:
+      - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
+      - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
+    healthcheck:
+      test: ["CMD-SHELL", "drill google.com @127.0.0.1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  pihole_sinkhole:
+    image: ${IMG_PIHOLE}
+    container_name: pihole_sinkhole
+    networks:
+      vpn_network: { ipv4_address: 10.99.0.12 }
+      proxy_network:
+    environment:
+      - WEBPASSWORD_FILE=/run/secrets/pihole_pass
+      - PIHOLE_DNS_=10.99.0.11#53
+      - DNSMASQ_LISTENING=all
+    secrets: [pihole_pass]
+    volumes:
+      - ${ConfigDir}/PiHole/etc-pihole:/etc/pihole
+      - ${ConfigDir}/PiHole/etc-dnsmasq.d:/etc/dnsmasq.d
+    depends_on:
+      unbound_dns: { condition: service_healthy }
+    restart: unless-stopped
+
+  wireguard_vpn:
+    image: ${IMG_WG}
+    container_name: wireguard_vpn
+    networks:
+      vpn_network: { ipv4_address: 10.99.0.10 }
+    cap_add: [NET_ADMIN, SYS_MODULE]
+    environment:
+      - SERVERURL=${WG_ENDPOINT}
+      - SERVERPORT=51820
+      - PEERS=3
+      - PEERDNS=10.99.0.12
+      - INTERNAL_SUBNET=10.13.13.0/24
+    volumes:
+      - /lib/modules:/lib/modules:ro
+      - ${ConfigDir}/WireGuard:/config
+    ports: ["51820:51820/udp"]
+    sysctls: { net.ipv4.ip_forward: 1 }
+    restart: unless-stopped
+
   traefik_proxy:
     image: ${IMG_TRAEFIK}
-    container_name: Traefik
+    container_name: traefik_proxy
     networks:
-      SocketNetwork:
-      ProxyNetwork:
-      VpnNetwork: { ipv4_address: 10.99.0.13 }
+      socket_network:
+      proxy_network:
+      vpn_network: { ipv4_address: 10.99.0.13 }
     ports: ["80:80", "443:443"]
     volumes:
       - ${ConfigDir}/Traefik/TraefikConfig.yml:/etc/traefik/traefik.yml:ro
-      - ${ConfigDir}/Traefik/dynamic:/etc/traefik/dynamic:ro
+      - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
       - ${ConfigDir}/Traefik/acme.json:/acme.json:rw
     secrets: [cf_api_token, traefik_auth]
     environment:
@@ -424,55 +511,31 @@ services:
       authelia: { condition: service_healthy }
     command: ["--providers.docker.version=1.44"]
     restart: unless-stopped
-
-  wireguard_vpn:
-    image: ${IMG_WG}
-    container_name: WireGuard
-    networks: { VpnNetwork: { ipv4_address: 10.99.0.10 } }
-    cap_add: [NET_ADMIN, SYS_MODULE]
-    environment:
-      - SERVERURL=${WG_ENDPOINT}
-      - SERVERPORT=51820
-      - PEERS=3
-      - PEERDNS=10.99.0.12
-      - INTERNAL_SUBNET=10.13.13.0/24
-    volumes: [/lib/modules:/lib/modules:ro, ${ConfigDir}/WireGuard:/config]
-    ports: ["51820:51820/udp"]
-    sysctls: { net.ipv4.ip_forward: 1 }
-    restart: unless-stopped
-
-  pihole_sinkhole:
-    image: ${IMG_PIHOLE}
-    container_name: PiHole
-    networks: { VpnNetwork: { ipv4_address: 10.99.0.12 }, ProxyNetwork: }
-    environment:
-      - WEBPASSWORD_FILE=/run/secrets/pihole_pass
-      - PIHOLE_DNS_=10.99.0.11#53
-      - DNSMASQ_LISTENING=all
-    secrets: [pihole_pass]
-    volumes: [${ConfigDir}/PiHole/etc-pihole:/etc/pihole, ${ConfigDir}/PiHole/etc-dnsmasq.d:/etc/dnsmasq.d]
-    depends_on: { unbound_dns: { condition: service_healthy } }
-    restart: unless-stopped
-
-  unbound_dns:
-    image: ${IMG_UNBOUND}
-    container_name: UnboundDns
-    networks: { VpnNetwork: { ipv4_address: 10.99.0.11 } }
-    volumes: [${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro]
-    healthcheck:
-      test: ["CMD-SHELL", "drill google.com @127.0.0.1 || exit 1"]
-    restart: unless-stopped
 EOF
 
 sudo chown -R 0:0 "$BaseDir"
 sudo chmod 600 "$ComposeFile" "$EnvFile"
 
-# Teardown logic for transition
-cd "$BaseDir" && sudo docker compose down --remove-orphans || true
-sleep 3
+# CYCLE-03: Transition Teardown Logic
+CycleExistingMatrix() {
+    cd "$BaseDir"
+    if [ -f "${BaseDir}/DockerCompose.yml" ]; then
+        if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Legacy PascalCase file detected. Purging orphans..."; fi
+        sudo docker compose -f DockerCompose.yml down --remove-orphans > /dev/null 2>&1 || true
+        sudo rm -f "${BaseDir}/DockerCompose.yml"
+    fi
+    if [ -f "$ComposeFile" ]; then
+        if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Flushing active matrix state..."; fi
+        sudo docker compose down --remove-orphans > /dev/null 2>&1 || true
+    fi
+    sleep 3
+}
+
+CycleExistingMatrix
+
 # Ignition
-if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified IAM Matrix..."; fi
+if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified Sovereign Node..."; fi
 sudo docker compose up -d --remove-orphans
 
-PrintMsg "82" "✔ Unified Sovereign Node Online: https://auth.${INTERNAL_DOMAIN}"
+PrintMsg "82" "✔ Unified Matrix Online. Verification recommended."
 exit 0
