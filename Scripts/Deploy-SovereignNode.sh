@@ -1,19 +1,15 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.7-GITOPS-REFABRICATED
+#  Version: v10.9-TRUE-SCORCHED-EARTH
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
 #  Modifications:
-#  - STRUCT-01: Decoupled ConfigDir to a global level while retaining Secrets 
-#               and Env states within the newly defined StackDir.
-#  Final Hardening Applied:
-#  - IAM-03: Amputated illegal 'password_file' from Authelia YAML to prevent
-#            schema validation crashes. Re-routed secret via compose environment.
-#  - IAM-04: Upgraded Authelia base policy to 'two_factor' to enforce true MFA.
-#  - OPSEC-02: Swapped Pi-Hole Base64 generator to hex to prevent newline UI lockouts.
-#  - ROOT-03: Amputated vestigial 777 host directory. Docker Named Volumes 
-#             exclusively handle the Alpine UID mapping for DNSSEC persistence.
+#  - ANNIHILATION-01: Front-loaded True Scorched Earth protocol. If confirmed,
+#                     this executes a recursive wipe of all databases, secrets,
+#                     certificates, and configurations. Zero state retention.
+#  - CLEANUP-02: Renamed the legacy alien container logic to 'PurgeAlienContainers'
+#                to differentiate from the true stack annihilation sequence.
 # ==============================================================================
 
 set -euo pipefail
@@ -28,20 +24,8 @@ StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 EnvFile="${StackDir}/Node.env"
 LogsDir="/opt/Docker/Logs/${StackName}"
-# Native Docker orchestration filename
 ComposeFile="${StackDir}/docker-compose.yml"
 LockFile="/var/lock/sovereign_node.lock"
-
-# Ensure filesystem hierarchy exists (PascalCase per mandate)
-# ROOT-03: Unbound keys directory is no longer mapped to the host.
-sudo mkdir -p "$StackDir" "$LogsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" \
-             "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" \
-             "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
-             "$ConfigDir/Unbound"
-
-# ACME-02: Prevent Docker from creating a directory instead of a file
-sudo touch "${ConfigDir}/Traefik/acme.json"
-sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 
 # Atomic execution lock
 exec 200>"$LockFile"
@@ -102,6 +86,63 @@ CheckDependencies() {
 DetectOsFamily
 CheckDependencies
 
+# ==============================================================================
+# ANNIHILATION-01: TRUE SCORCHED EARTH PROTOCOL
+# ==============================================================================
+ExecuteAnnihilation() {
+    if [ "$Interactive" -eq 1 ] && [ -d "$StackDir" ]; then
+        PrintMsg "196" "========================================================================"
+        PrintMsg "196" " 🔥 TRUE SCORCHED EARTH PROTOCOL"
+        PrintMsg "196" "========================================================================"
+        PrintMsg "226" "WARNING: You are requesting a mathematically clean slate."
+        PrintMsg "226" "This will VAPORIZE your PostgreSQL MFA Database, Let's Encrypt"
+        PrintMsg "226" "Certificates, Pi-Hole telemetry, and ALL cryptographic secrets."
+        PrintMsg "196" "There is no undo. You will be punished for your mistakes."
+        echo ""
+        if gum confirm "OBLITERATE EVERYTHING and restart fresh?"; then
+            PrintMsg "196" "Executing tactical nuke..."
+            
+            # Tear down the active matrix and destroy named volumes (DNSSEC cache)
+            cd "$StackDir" || true
+            local EnvFlag=""
+            [ -f "$EnvFile" ] && EnvFlag="--env-file $EnvFile"
+            if [ -f "$ComposeFile" ]; then
+                sudo docker compose $EnvFlag down -v --remove-orphans > /dev/null 2>&1 || true
+            fi
+            
+            # Step out of the directory before vaporizing it
+            cd /tmp
+            
+            # The Annihilation
+            sudo rm -rf "$StackDir"
+            sudo rm -rf "${ConfigDir}/Authelia"
+            sudo rm -rf "${ConfigDir}/Postgres"
+            sudo rm -rf "${ConfigDir}/Traefik"
+            sudo rm -rf "${ConfigDir}/WireGuard"
+            sudo rm -rf "${ConfigDir}/PiHole"
+            sudo rm -rf "${ConfigDir}/Unbound"
+            
+            PrintMsg "82" "✔ Earth scorched. Nothing survives."
+            sleep 2
+        else
+            PrintMsg "82" "Scorched Earth aborted. Retaining persistent state."
+        fi
+    fi
+}
+
+ExecuteAnnihilation
+# ==============================================================================
+
+# Ensure filesystem hierarchy exists (PascalCase per mandate)
+sudo mkdir -p "$StackDir" "$LogsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" \
+             "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" \
+             "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
+             "$ConfigDir/Unbound"
+
+# ACME-02: Prevent Docker from creating a directory instead of a file
+sudo touch "${ConfigDir}/Traefik/acme.json"
+sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
+
 # SEC-05: Enclave management
 sudo mkdir -p "$SecretsDir"
 sudo chmod 700 "$SecretsDir"
@@ -133,17 +174,14 @@ if [ "$Interactive" -eq 1 ]; then
         WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"
     }
 else
-    # Headless Safety Net
     [ ! -f "${SecretsDir}/cf_api_token" ] && { echo "[FATAL] Headless run failed. Missing cf_api_token."; exit 1; }
     [ ! -f "${SecretsDir}/traefik_auth" ] && { echo "[FATAL] Headless run failed. Missing traefik_auth."; exit 1; }
 fi
 
-# Auto-generate non-interactive internal entropy
 [ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_jwt_secret" ] && WriteSecret "authelia_jwt_secret" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_session_secret" ] && WriteSecret "authelia_session_secret" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_storage_key" ] && WriteSecret "authelia_storage_key" "$(openssl rand -base64 32)"
-# OPSEC-02: Clean Hex generation prevents newline hash corruption in UI logins.
 [ ! -f "${SecretsDir}/pihole_pass" ] && WriteSecret "pihole_pass" "$(openssl rand -hex 16)"
 
 if [ "$Interactive" -eq 1 ]; then
@@ -175,8 +213,8 @@ set -u
 sudo timedatectl set-timezone UTC
 if systemctl is-active --quiet systemd-timesyncd; then sudo systemctl restart systemd-timesyncd; fi
 
-# BOOT-07: Scorched Earth Protocol
-EnforceScorchedEarth() {
+# CLEANUP-02: Purge Alien Containers (formerly Scorched Earth)
+PurgeAlienContainers() {
     if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
         local AlienContainers=$(sudo docker ps -a --format '{{.ID}}|{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($3) != stack {print $1 " (" $2 ")"}')
         if [ -n "$AlienContainers" ]; then
@@ -216,7 +254,7 @@ AssimilateAlienContainers() {
                 esac
 
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
-# TRAEFIK INTEGRATION MANIFEST: $container (v10.7-GITOPS-REFABRICATED)
+# TRAEFIK INTEGRATION MANIFEST: $container (v10.9-TRUE-SCORCHED-EARTH)
 networks:
   ProxyNetwork:
     external: true
@@ -239,7 +277,7 @@ MANIFEST_EOF
     fi
 }
 
-EnforceScorchedEarth
+PurgeAlienContainers
 AssimilateAlienContainers
 
 # BOOT-05: True Zero-Byte Guillotine Prevention for Root Hints
@@ -281,7 +319,6 @@ server:
 EOF
 
 # IAM Configuration
-# IAM-03: Removed schema-breaking password_file. Secret is passed via Compose ENV.
 sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -299,7 +336,6 @@ access_control:
   default_policy: deny
   rules:
     - domain: "*.${INTERNAL_DOMAIN}"
-      # IAM-04: True MFA enforced. No bypassing the biometric vault.
       policy: two_factor
 session:
   name: authelia_session
@@ -320,7 +356,6 @@ if [ ! -f "${ConfigDir}/Authelia/users_database.yml" ]; then
 users:
   admin:
     displayname: "Sovereign Administrator"
-    # Password is 'password' - Rotate via 'authelia hash-password'
     password: "\$6\$rounds=500000\$j7688zY6fP/fN7.S\$7nO9O5S7Wf8Wp9yP9N8/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/"
     email: admin@${INTERNAL_DOMAIN}
     groups: [admins]
@@ -390,7 +425,6 @@ networks:
   socket_network:
     internal: true
 
-# ROOT-03: Docker handles the opaque Alpine UID internally. No host STIG violations.
 volumes:
   unbound_keys: {}
 
@@ -444,7 +478,6 @@ services:
       AUTHELIA_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret
       AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret
       AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_key
-      # IAM-03: Correct injection of PostgreSQL password for strict schema compliance
       AUTHELIA_STORAGE_POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     depends_on:
       auth_db: { condition: service_healthy }
@@ -556,15 +589,9 @@ EOF
 sudo chown -R 0:0 "$StackDir"
 sudo chmod 600 "$ComposeFile" "$EnvFile"
 
-# CYCLE-03: Transition Teardown Logic
-CycleExistingMatrix() {
-    # Critical: Enforce StackDir scope to prevent execution in global /opt/Docker
+# Cycle Active State
+CycleActiveMatrix() {
     cd "$StackDir"
-    if [ -f "${StackDir}/DockerCompose.yml" ]; then
-        if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Legacy PascalCase file detected. Purging orphans..."; fi
-        sudo docker compose --env-file "$EnvFile" -f DockerCompose.yml down --remove-orphans > /dev/null 2>&1 || true
-        sudo rm -f "${StackDir}/DockerCompose.yml"
-    fi
     if [ -f "$ComposeFile" ]; then
         if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Flushing active matrix state..."; fi
         sudo docker compose --env-file "$EnvFile" down --remove-orphans > /dev/null 2>&1 || true
@@ -572,14 +599,12 @@ CycleExistingMatrix() {
     sleep 3
 }
 
-CycleExistingMatrix
+CycleActiveMatrix
 
 # Ignition
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified Sovereign Node..."; fi
-# CRITICAL: Ensure ignition occurs strictly within the Stack directory
 cd "$StackDir" && sudo docker compose --env-file "$EnvFile" up -d --remove-orphans
 
-# OPSEC-01: Explicitly print the generated Pi-Hole credential
 if [ "$Interactive" -eq 1 ]; then
     echo ""
     PiholePass=$(sudo cat "${SecretsDir}/pihole_pass")
