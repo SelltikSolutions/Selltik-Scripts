@@ -1,19 +1,16 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.5-ULTIMATUM-OMEGA
+#  Version: v10.6-ULTIMATUM-EXCALIBUR
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Final Regressions Repaired:
-#  - GITOPS-02: Consolidated Traefik static config entirely into CLI arguments 
-#               to resolve the mutually exclusive configuration fatal crash.
-#  - BOOT-05: Implemented actual zero-byte size check on Root Hints with 
-#             hardcoded fallback to prevent Unbound boot loops.
-#  - ROOT-02: Replaced host bind-mount with a Docker Named Volume for Unbound 
-#             keys. Eliminates STIG violations (chmod 777) while natively 
-#             handling Alpine's opaque internal UIDs for DNSSEC persistence.
-#  - HEALTH-08: Universal 'nslookup' probe for Unbound healthcheck stability.
-#  - OPSEC-01: Extracted and echoed generated Pi-Hole password to stdout.
+#  Final Hardening Applied:
+#  - IAM-03: Amputated illegal 'password_file' from Authelia YAML to prevent
+#            schema validation crashes. Re-routed secret via compose environment.
+#  - IAM-04: Upgraded Authelia base policy to 'two_factor' to enforce true MFA.
+#  - OPSEC-02: Swapped Pi-Hole Base64 generator to hex to prevent newline UI lockouts.
+#  - ROOT-03: Amputated vestigial 777 host directory. Docker Named Volumes 
+#             exclusively handle the Alpine UID mapping for DNSSEC persistence.
 # ==============================================================================
 
 set -euo pipefail
@@ -32,6 +29,7 @@ ComposeFile="${BaseDir}/docker-compose.yml"
 LockFile="/var/lock/sovereign_node.lock"
 
 # Ensure filesystem hierarchy exists (PascalCase per mandate)
+# ROOT-03: Unbound keys directory is no longer mapped to the host.
 sudo mkdir -p "$BaseDir" "$LogsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" \
              "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" \
              "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
@@ -141,7 +139,8 @@ fi
 [ ! -f "${SecretsDir}/authelia_jwt_secret" ] && WriteSecret "authelia_jwt_secret" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_session_secret" ] && WriteSecret "authelia_session_secret" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_storage_key" ] && WriteSecret "authelia_storage_key" "$(openssl rand -base64 32)"
-[ ! -f "${SecretsDir}/pihole_pass" ] && WriteSecret "pihole_pass" "$(openssl rand -base64 24)"
+# OPSEC-02: Clean Hex generation prevents newline hash corruption in UI logins.
+[ ! -f "${SecretsDir}/pihole_pass" ] && WriteSecret "pihole_pass" "$(openssl rand -hex 16)"
 
 if [ "$Interactive" -eq 1 ]; then
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
@@ -213,7 +212,7 @@ AssimilateAlienContainers() {
                 esac
 
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
-# TRAEFIK INTEGRATION MANIFEST: $container (v10.5-ULTIMATUM-OMEGA)
+# TRAEFIK INTEGRATION MANIFEST: $container (v10.6-ULTIMATUM-EXCALIBUR)
 networks:
   ProxyNetwork:
     external: true
@@ -278,6 +277,7 @@ server:
 EOF
 
 # IAM Configuration
+# IAM-03: Removed schema-breaking password_file. Secret is passed via Compose ENV.
 sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -288,7 +288,6 @@ storage:
     port: 5432
     database: authelia
     username: authelia
-    password_file: /run/secrets/postgres_password
 authentication_backend:
   password_reset: { disable: true }
   file: { path: /config/users_database.yml }
@@ -296,7 +295,8 @@ access_control:
   default_policy: deny
   rules:
     - domain: "*.${INTERNAL_DOMAIN}"
-      policy: one_factor
+      # IAM-04: True MFA enforced. No bypassing the biometric vault.
+      policy: two_factor
 session:
   name: authelia_session
   domain: "${INTERNAL_DOMAIN}"
@@ -386,7 +386,7 @@ networks:
   socket_network:
     internal: true
 
-# ROOT-02: Named volume for DNSSEC keys. Docker natively manages Alpine UID mapping.
+# ROOT-03: Docker handles the opaque Alpine UID internally. No host STIG violations.
 volumes:
   unbound_keys: {}
 
@@ -440,6 +440,8 @@ services:
       AUTHELIA_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret
       AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret
       AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_key
+      # IAM-03: Correct injection of PostgreSQL password for strict schema compliance
+      AUTHELIA_STORAGE_POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     depends_on:
       auth_db: { condition: service_healthy }
     healthcheck:
@@ -527,7 +529,6 @@ services:
     depends_on:
       docker_socket_proxy: { condition: service_healthy }
       authelia: { condition: service_healthy }
-    # GITOPS-02: Consolidated dynamic CLI parameters resolve config overlap
     command: 
       - "--api.dashboard=true"
       - "--api.insecure=false"
