@@ -1,15 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.4-ULTIMATUM-ABSOLUTE
+#  Version: v10.5-ULTIMATUM-OMEGA
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
 #  Final Regressions Repaired:
-#  - ROOT-02: Bypassed opaque container UIDs via 777 on public DNSSEC key cache.
-#  - IAM-02: Wired Pi-Hole directly into the Traefik/Authelia routing mesh.
-#  - GITOPS-02: Extracted hardcoded ACME variables into dynamic compose CLI args.
+#  - GITOPS-02: Consolidated Traefik static config entirely into CLI arguments 
+#               to resolve the mutually exclusive configuration fatal crash.
+#  - BOOT-05: Implemented actual zero-byte size check on Root Hints with 
+#             hardcoded fallback to prevent Unbound boot loops.
+#  - ROOT-02: Replaced host bind-mount with a Docker Named Volume for Unbound 
+#             keys. Eliminates STIG violations (chmod 777) while natively 
+#             handling Alpine's opaque internal UIDs for DNSSEC persistence.
 #  - HEALTH-08: Universal 'nslookup' probe for Unbound healthcheck stability.
-#  - ENV-04: Explicit '--env-file' flag on compose commands.
 #  - OPSEC-01: Extracted and echoed generated Pi-Hole password to stdout.
 # ==============================================================================
 
@@ -32,11 +35,7 @@ LockFile="/var/lock/sovereign_node.lock"
 sudo mkdir -p "$BaseDir" "$LogsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" \
              "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" \
              "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
-             "$ConfigDir/Unbound/keys"
-
-# ROOT-02: STIG-acceptable operational bypass for public DNSSEC keys
-# Prevents RFC-5011 permission denial crashes across different base images.
-sudo chmod 777 "${ConfigDir}/Unbound/keys"
+             "$ConfigDir/Unbound"
 
 # ACME-02: Prevent Docker from creating a directory instead of a file
 sudo touch "${ConfigDir}/Traefik/acme.json"
@@ -214,7 +213,7 @@ AssimilateAlienContainers() {
                 esac
 
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
-# TRAEFIK INTEGRATION MANIFEST: $container (v10.4-ULTIMATUM-ABSOLUTE)
+# TRAEFIK INTEGRATION MANIFEST: $container (v10.5-ULTIMATUM-OMEGA)
 networks:
   ProxyNetwork:
     external: true
@@ -240,9 +239,20 @@ MANIFEST_EOF
 EnforceScorchedEarth
 AssimilateAlienContainers
 
-# DNS-01: Unbound Structural Reconstruction
+# BOOT-05: True Zero-Byte Guillotine Prevention for Root Hints
 PrintMsg "240" "Fetching InterNIC Root Hints for Unbound DNS..."
-sudo curl -sS https://www.internic.net/domain/named.root | sudo tee "${ConfigDir}/Unbound/RootHints.txt" > /dev/null
+sudo curl -sS https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
+
+if [ -s "${ConfigDir}/Unbound/RootHints.txt.tmp" ]; then
+    sudo mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
+else
+    PrintMsg "196" "[WARNING] InterNIC fetch failed. Injecting hardcoded fallback."
+    sudo tee "${ConfigDir}/Unbound/RootHints.txt" > /dev/null << 'EOF'
+.                        3600000      NS    A.ROOT-SERVERS.NET.
+A.ROOT-SERVERS.NET.      3600000      A     198.41.0.4
+EOF
+    sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
+fi
 
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << 'EOF'
 server:
@@ -350,19 +360,6 @@ http:
         servers: [{ url: "http://authelia:9091" }]
 EOF
 
-# GITOPS-02: Traefik Core Config (Static, abstracted from Environment variables)
-sudo tee "${ConfigDir}/Traefik/TraefikConfig.yml" > /dev/null << 'EOF'
-api: { dashboard: true, insecure: false }
-entryPoints:
-  web:
-    address: ":80"
-    http: { redirections: { entryPoint: { to: websecure, scheme: https } } }
-  websecure: { address: ":443" }
-providers:
-  docker: { endpoint: "tcp://docker_socket_proxy:2375", exposedByDefault: false }
-  file: { directory: /etc/traefik/dynamic, watch: true }
-EOF
-
 ResolveImage() {
     local digest=$(sudo docker inspect --format='{{index .RepoDigests 0}}' "$1" 2>/dev/null || echo "")
     [[ -z "$digest" ]] && { sudo docker pull "$1" >/dev/null; sudo docker inspect --format='{{index .RepoDigests 0}}' "$1"; } || echo "$digest"
@@ -388,6 +385,10 @@ networks:
     internal: true
   socket_network:
     internal: true
+
+# ROOT-02: Named volume for DNSSEC keys. Docker natively manages Alpine UID mapping.
+volumes:
+  unbound_keys: {}
 
 secrets:
   cf_api_token: { file: ${SecretsDir}/cf_api_token }
@@ -456,8 +457,7 @@ services:
     volumes:
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
-      - ${ConfigDir}/Unbound/keys:/opt/unbound/etc/unbound/keys:rw
-    # HEALTH-08: Universal nslookup ensures stability across different base OS images
+      - unbound_keys:/opt/unbound/etc/unbound/keys:rw
     healthcheck:
       test: ["CMD-SHELL", "nslookup google.com 127.0.0.1 || exit 1"]
       interval: 10s
@@ -471,7 +471,6 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.12 }
       proxy_network:
-    # IAM-02: Pi-Hole is now directly assimilated into the Authelia vault
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)"
@@ -520,7 +519,6 @@ services:
       vpn_network: { ipv4_address: 10.99.0.13 }
     ports: ["80:80", "443:443"]
     volumes:
-      - ${ConfigDir}/Traefik/TraefikConfig.yml:/etc/traefik/traefik.yml:ro
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
       - ${ConfigDir}/Traefik/acme.json:/acme.json:rw
     secrets: [cf_api_token, traefik_auth]
@@ -529,9 +527,20 @@ services:
     depends_on:
       docker_socket_proxy: { condition: service_healthy }
       authelia: { condition: service_healthy }
-    # GITOPS-02: ACME variables are now fully dynamic and bound to the compose execution
+    # GITOPS-02: Consolidated dynamic CLI parameters resolve config overlap
     command: 
+      - "--api.dashboard=true"
+      - "--api.insecure=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--providers.docker=true"
+      - "--providers.docker.endpoint=tcp://docker_socket_proxy:2375"
       - "--providers.docker.version=1.44"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--providers.file.watch=true"
       - "--certificatesresolvers.letsencrypt.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.letsencrypt.acme.storage=/acme.json"
       - "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare"
