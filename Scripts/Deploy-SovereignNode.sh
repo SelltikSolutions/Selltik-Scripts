@@ -1,21 +1,23 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.11-APEX-UNSHACKLED
+#  Version: v10.12-TERMINUS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Final Unshackling Applied:
-#  - STIG-02: Restored NET_RAW to WireGuard to permit iptables NAT routing.
-#  - STIG-03: Restored CHOWN/SETUID/SETGID to Socket Proxy to permit s6-overlay 
-#             privilege dropping. Prevents fatal boot-loops.
-#  - CRON-07: Injected explicit unbound_dns restart into the weekly appliance 
-#             updater to force ingestion of freshly pulled Root Hints into RAM.
+#  Terminus Fixes:
+#  - ROUTE-14: Re-engineered Assimilation Engine. Writes live Traefik File 
+#              Provider configs and dynamically bridges alien containers to the 
+#              proxy network instead of generating inert compose fragments.
+#  - UX-01: Injected explicit MFA registration extraction instructions to 
+#           prevent administrative lockouts due to the null SMTP relay.
+#  - CRON-08: Armored the autonomous lifecycle updater with explicit PATH 
+#             exports to survive minimal ParrotOS/Debian cron environments.
 # ==============================================================================
 
 set -euo pipefail
 
 # Force absolute path resolution
-export PATH="/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 StackName="SovereignNode"
 BaseDir="/opt/Docker"
@@ -104,8 +106,8 @@ PurgeLegacyState() {
             sudo rm -f "${StackDir}/DockerCompose.yml"
         fi
 
-        # Wipe generated configs but SPARE the databases and secrets
-        sudo rm -f "${ConfigDir}/Traefik/Dynamic"/*.yml 2>/dev/null || true
+        # Wipe generated configs but SPARE the databases, secrets, and integration manifests
+        sudo rm -f "${ConfigDir}/Traefik/Dynamic"/DynamicRules*.yml 2>/dev/null || true
         sudo rm -f "${ConfigDir}/Unbound/UnboundConfig.conf" 2>/dev/null || true
         sudo rm -f "${ConfigDir}/Unbound/RootHints.txt" 2>/dev/null || true
         sudo rm -f "${ConfigDir}/Authelia/configuration.yml" 2>/dev/null || true
@@ -242,55 +244,7 @@ PurgeAlienContainers() {
     fi
 }
 
-AssimilateAlienContainers() {
-    if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
-        local foreign_containers=$(sudo docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($2) != stack && $1 != "" {print $1}')
-        if [ -n "$foreign_containers" ]; then
-            PrintMsg "214" "LOCAL ASSIMILATION PROTOCOL INITIATED"
-            local manifest_dir="${StackDir}/IntegrationManifests"
-            sudo mkdir -p "$manifest_dir"
-            for container in $foreign_containers; do
-                local clean_name=$(echo "$container" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
-                local manifest_file="${manifest_dir}/${clean_name}_Integration.yml"
-                echo ""
-                PrintMsg "214" "Select posture for [$container]:"
-                local choice=$(gum choose "1) MFA Protected (Authelia) [SUGGESTED]" "2) VPN-Only (Air-Gapped)" "3) BasicAuth (Legacy Form)" "4) Fully Public" "5) Internal")
-                local posture_choice=${choice:0:1}
-                local mw_string=""
-                case "$posture_choice" in
-                    1) mw_string="secure-headers@file,authelia@file" ;;
-                    2) mw_string="secure-headers@file,vpn-whitelist@file" ;;
-                    3) mw_string="secure-headers@file,traefik-auth@file" ;;
-                    4) mw_string="secure-headers@file" ;;
-                    5) continue ;;
-                esac
-
-                sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
-# TRAEFIK INTEGRATION MANIFEST: $container (v10.11-APEX-UNSHACKLED)
-networks:
-  ProxyNetwork:
-    external: true
-    name: sovereign_node_proxy_network
-services:
-  $container:
-    networks: [ProxyNetwork]
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.${clean_name}.rule=Host(\`${clean_name}.${INTERNAL_DOMAIN}\`)"
-      - "traefik.http.routers.${clean_name}.entrypoints=websecure"
-      - "traefik.http.routers.${clean_name}.tls.certresolver=letsencrypt"
-      - "traefik.http.services.${clean_name}.loadbalancer.server.port=<PORT>"
-      - "traefik.http.routers.${clean_name}.middlewares=${mw_string}"
-      - "traefik.docker.network=sovereign_node_proxy_network"
-MANIFEST_EOF
-                PrintMsg "82" "✔ Manifest: ${clean_name}_Integration.yml"
-            done
-        fi
-    fi
-}
-
 PurgeAlienContainers
-AssimilateAlienContainers
 
 PrintMsg "240" "Fetching InterNIC Root Hints for Unbound DNS..."
 sudo curl -sS https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
@@ -460,7 +414,6 @@ services:
     environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, PING=1, INFO=1, POST=0]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
     cap_drop: [ALL]
-    # STIG-03: Restored privilege-dropping capabilities for s6-overlay
     cap_add: [CHOWN, SETUID, SETGID]
     security_opt: [no-new-privileges:true]
     logging: *default-logging
@@ -581,7 +534,6 @@ services:
     ports: ["\${WG_PORT}:\${WG_PORT}/udp"]
     sysctls: { net.ipv4.ip_forward: 1 }
     cap_drop: [ALL]
-    # STIG-02: Restored NET_RAW to permit iptables to build the NAT translation matrix
     cap_add: [NET_ADMIN, SYS_MODULE, NET_RAW]
     logging: *default-logging
     restart: unless-stopped
@@ -631,13 +583,14 @@ sudo chown -R 0:0 "$StackDir"
 sudo chmod 600 "$ComposeFile" "$EnvFile"
 
 # ==============================================================================
-# CRON-06/07: AUTOMATED LIFECYCLE APPLIANCE GENERATOR
+# CRON-08: AUTOMATED LIFECYCLE APPLIANCE GENERATOR (PATH-ARMORED)
 # ==============================================================================
 UpdaterScript="/opt/Docker/Scripts/UpdateSovereignNode.sh"
 sudo tee "$UpdaterScript" > /dev/null << EOF
 #!/bin/bash
 # Sovereign Node Autonomous Lifecycle Updater
 # Managed by DeploySovereignNode.sh
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 exec > >(logger -t SovereignNodeUpdater) 2>&1
 
@@ -648,7 +601,7 @@ cd "${StackDir}" || exit 1
 curl -sS https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
 if [ -s "${ConfigDir}/Unbound/RootHints.txt.tmp" ]; then
     mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
-    # CRON-07: Explicitly flush the DNS resolver to ingest the new anchors into RAM
+    # Flush the DNS resolver to ingest the new anchors into RAM
     docker compose --env-file "${EnvFile}" restart unbound_dns
 fi
 
@@ -667,6 +620,71 @@ sudo ln -sf "$UpdaterScript" /etc/cron.weekly/sovereign-node-update
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified Sovereign Node..."; fi
 cd "$StackDir" && sudo docker compose --env-file "$EnvFile" up -d --remove-orphans
 
+# ==============================================================================
+# ROUTE-14: LIVE ASSIMILATION ENGINE (POST-IGNITION)
+# ==============================================================================
+AssimilateAlienContainers() {
+    if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
+        local foreign_containers=$(sudo docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($2) != stack && $1 != "" {print $1}')
+        if [ -n "$foreign_containers" ]; then
+            local found_new=0
+            for container in $foreign_containers; do
+                local clean_name=$(echo "$container" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
+                local manifest_file="${ConfigDir}/Traefik/Dynamic/${clean_name}_assimilation.yml"
+
+                if [ -f "$manifest_file" ]; then
+                    sudo docker network connect sovereign_node_proxy_network "$container" >/dev/null 2>&1 || true
+                    continue
+                fi
+
+                if [ $found_new -eq 0 ]; then
+                    PrintMsg "214" "LOCAL ASSIMILATION PROTOCOL INITIATED"
+                    found_new=1
+                fi
+
+                echo ""
+                PrintMsg "214" "Select posture for unassimilated container [$container]:"
+                local choice=$(gum choose "1) MFA Protected (Authelia) [SUGGESTED]" "2) VPN-Only (Air-Gapped)" "3) BasicAuth (Legacy Form)" "4) Fully Public" "5) Internal (Skip)")
+                local posture_choice=${choice:0:1}
+                if [ "$posture_choice" -eq 5 ]; then continue; fi
+
+                local TargetPort=$(gum input --prompt "Internal listening port for $container (e.g. 80, 8080): ")
+
+                local mw_string=""
+                case "$posture_choice" in
+                    1) mw_string="\"secure-headers\", \"authelia\"" ;;
+                    2) mw_string="\"secure-headers\", \"vpn-whitelist\"" ;;
+                    3) mw_string="\"secure-headers\", \"traefik-auth\"" ;;
+                    4) mw_string="\"secure-headers\"" ;;
+                esac
+
+                PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
+                sudo docker network connect sovereign_node_proxy_network "$container" >/dev/null 2>&1 || true
+
+                sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
+http:
+  routers:
+    ${clean_name}-router:
+      rule: "Host(\`${clean_name}.\${INTERNAL_DOMAIN}\`)"
+      entryPoints: ["websecure"]
+      middlewares: [${mw_string}]
+      service: "${clean_name}-service"
+      tls:
+        certResolver: "letsencrypt"
+  services:
+    ${clean_name}-service:
+      loadBalancer:
+        servers:
+          - url: "http://${container}:${TargetPort}"
+MANIFEST_EOF
+                PrintMsg "82" "✔ Assimilated: https://${clean_name}.\${INTERNAL_DOMAIN}"
+            done
+        fi
+    fi
+}
+
+AssimilateAlienContainers
+
 if [ "$Interactive" -eq 1 ]; then
     echo ""
     PiholePass=$(sudo cat "${SecretsDir}/pihole_pass")
@@ -676,8 +694,18 @@ if [ "$Interactive" -eq 1 ]; then
     PrintMsg "82"  " Pi-Hole Admin Password: $PiholePass"
     PrintMsg "196" " SAVE THIS NOW. IT WILL NOT BE DISPLAYED AGAIN."
     PrintMsg "214" "========================================================================"
+    
+    # UX-01: Critical MFA Extraction Notice
     echo ""
-    PrintMsg "82" "✔ Unified Matrix Online. Verification recommended."
+    PrintMsg "196" " ⚠️  AUTHELIA MFA REGISTRATION (CRITICAL)"
+    PrintMsg "226" " Your first login attempt at https://pihole.\${INTERNAL_DOMAIN}"
+    PrintMsg "226" " will trigger an email to register your biometric/2FA device."
+    PrintMsg "226" " Because no SMTP server is configured, the link is intercepted locally."
+    PrintMsg "82"  " Retrieve your registration link by running:"
+    PrintMsg "196" " sudo cat ${ConfigDir}/Authelia/notification.txt"
+    PrintMsg "214" "========================================================================"
+    echo ""
+    PrintMsg "82" "✔ Unified Matrix Online. Turn the key."
 fi
 
 exit 0
