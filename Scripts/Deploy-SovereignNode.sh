@@ -1,16 +1,15 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.10-APEX-AUTOMATION
+#  Version: v10.11-APEX-UNSHACKLED
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Final Apex Additions:
-#  - CYCLE-05: Implemented Graceful Fallback for the Scorched Earth protocol.
-#  - CRON-06: Generates a self-updating Cron appliance for weekly CVE patching 
-#             and Root Hint regeneration.
-#  - LOG-01: Injected strict JSON log rotation to prevent host disk exhaustion.
-#  - STIG-01: Applied 'cap_drop: [ALL]' globally with surgical 'cap_add' 
-#             whitelists to obliterate container privilege escalation vectors.
+#  Final Unshackling Applied:
+#  - STIG-02: Restored NET_RAW to WireGuard to permit iptables NAT routing.
+#  - STIG-03: Restored CHOWN/SETUID/SETGID to Socket Proxy to permit s6-overlay 
+#             privilege dropping. Prevents fatal boot-loops.
+#  - CRON-07: Injected explicit unbound_dns restart into the weekly appliance 
+#             updater to force ingestion of freshly pulled Root Hints into RAM.
 # ==============================================================================
 
 set -euo pipefail
@@ -267,7 +266,7 @@ AssimilateAlienContainers() {
                 esac
 
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
-# TRAEFIK INTEGRATION MANIFEST: $container (v10.10-APEX-AUTOMATION)
+# TRAEFIK INTEGRATION MANIFEST: $container (v10.11-APEX-UNSHACKLED)
 networks:
   ProxyNetwork:
     external: true
@@ -447,7 +446,6 @@ secrets:
   traefik_auth: { file: ${SecretsDir}/traefik_auth }
   pihole_pass: { file: ${SecretsDir}/pihole_pass }
 
-# LOG-01: YAML Anchors for global log restriction
 x-logging: &default-logging
   driver: "json-file"
   options:
@@ -462,6 +460,8 @@ services:
     environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, PING=1, INFO=1, POST=0]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
     cap_drop: [ALL]
+    # STIG-03: Restored privilege-dropping capabilities for s6-overlay
+    cap_add: [CHOWN, SETUID, SETGID]
     security_opt: [no-new-privileges:true]
     logging: *default-logging
     healthcheck:
@@ -581,7 +581,8 @@ services:
     ports: ["\${WG_PORT}:\${WG_PORT}/udp"]
     sysctls: { net.ipv4.ip_forward: 1 }
     cap_drop: [ALL]
-    cap_add: [NET_ADMIN, SYS_MODULE]
+    # STIG-02: Restored NET_RAW to permit iptables to build the NAT translation matrix
+    cap_add: [NET_ADMIN, SYS_MODULE, NET_RAW]
     logging: *default-logging
     restart: unless-stopped
 
@@ -630,7 +631,7 @@ sudo chown -R 0:0 "$StackDir"
 sudo chmod 600 "$ComposeFile" "$EnvFile"
 
 # ==============================================================================
-# CRON-06: AUTOMATED LIFECYCLE APPLIANCE GENERATOR
+# CRON-06/07: AUTOMATED LIFECYCLE APPLIANCE GENERATOR
 # ==============================================================================
 UpdaterScript="/opt/Docker/Scripts/UpdateSovereignNode.sh"
 sudo tee "$UpdaterScript" > /dev/null << EOF
@@ -641,17 +642,19 @@ sudo tee "$UpdaterScript" > /dev/null << EOF
 exec > >(logger -t SovereignNodeUpdater) 2>&1
 
 echo "[Sovereign Node] Initiating weekly lifecycle update..."
-cd "$StackDir" || exit 1
+cd "${StackDir}" || exit 1
 
 # Fetch fresh root hints
 curl -sS https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
 if [ -s "${ConfigDir}/Unbound/RootHints.txt.tmp" ]; then
     mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
+    # CRON-07: Explicitly flush the DNS resolver to ingest the new anchors into RAM
+    docker compose --env-file "${EnvFile}" restart unbound_dns
 fi
 
 # Rotate Matrix
-docker compose --env-file "$EnvFile" pull --quiet
-docker compose --env-file "$EnvFile" up -d --remove-orphans
+docker compose --env-file "${EnvFile}" pull --quiet
+docker compose --env-file "${EnvFile}" up -d --remove-orphans
 docker image prune -af --filter "until=168h"
 
 echo "[Sovereign Node] Update cycle complete."
