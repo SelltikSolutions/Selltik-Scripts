@@ -1,17 +1,16 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.12-TERMINUS
+#  Version: v10.13-AETHER-FORGED
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Terminus Fixes:
-#  - ROUTE-14: Re-engineered Assimilation Engine. Writes live Traefik File 
-#              Provider configs and dynamically bridges alien containers to the 
-#              proxy network instead of generating inert compose fragments.
-#  - UX-01: Injected explicit MFA registration extraction instructions to 
-#           prevent administrative lockouts due to the null SMTP relay.
-#  - CRON-08: Armored the autonomous lifecycle updater with explicit PATH 
-#             exports to survive minimal ParrotOS/Debian cron environments.
+#  Aether Fixes:
+#  - CRON-09: Declared and injected ScriptsDir into the master hierarchy creation 
+#             to prevent tee failures on barren, zero-state hosts.
+#  - ENV-05: Engineered native bash read fallbacks for all variable inputs to 
+#            guarantee stack execution even if 'gum' fails to install.
+#  - ROUTE-15: Injected empty-string validation into the Assimilation Engine 
+#              port prompt to prevent fatal Traefik YAML parsing crashes.
 # ==============================================================================
 
 set -euo pipefail
@@ -22,6 +21,7 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 StackName="SovereignNode"
 BaseDir="/opt/Docker"
 ConfigDir="${BaseDir}/Config"
+ScriptsDir="${BaseDir}/Scripts"
 StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 EnvFile="${StackDir}/Node.env"
@@ -128,7 +128,17 @@ ExecuteAnnihilation() {
         PrintMsg "226" "Certificates, Pi-Hole telemetry, and ALL cryptographic secrets."
         PrintMsg "196" "There is no undo. You will be punished for your mistakes."
         echo ""
-        if gum confirm "OBLITERATE EVERYTHING and restart fresh?"; then
+        
+        # ENV-05: Native Bash Fallback for Confirmation
+        confirm="no"
+        if command -v gum &> /dev/null; then
+            if gum confirm "OBLITERATE EVERYTHING and restart fresh?"; then confirm="yes"; fi
+        else
+            read -p "OBLITERATE EVERYTHING and restart fresh? (y/N): " input_conf
+            [[ "${input_conf:-}" =~ ^[Yy]$ ]] && confirm="yes"
+        fi
+        
+        if [ "$confirm" == "yes" ]; then
             PrintMsg "196" "Executing tactical nuke..."
             cd "$StackDir" || true
             local EnvFlag=""
@@ -152,8 +162,8 @@ ExecuteAnnihilation() {
 ExecuteAnnihilation
 # ==============================================================================
 
-# Ensure filesystem hierarchy exists
-sudo mkdir -p "$StackDir" "$LogsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" \
+# CRON-09: Explicit creation of ScriptsDir to prevent 'tee' failure on barren hosts
+sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" \
              "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" \
              "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
              "$ConfigDir/Unbound"
@@ -181,11 +191,24 @@ WriteSecret() {
 if [ "$Interactive" -eq 1 ]; then
     [ ! -f "${SecretsDir}/cf_api_token" ] && { 
         PrintMsg "226" "Cloudflare Scoped DNS API Token required:"
-        WriteSecret "cf_api_token" "$(gum input --password)"
+        cf_token=""
+        if command -v gum &> /dev/null; then
+            cf_token=$(gum input --password)
+        else
+            read -s -p "Token: " cf_token
+            echo ""
+        fi
+        WriteSecret "cf_api_token" "$cf_token"
     }
     [ ! -f "${SecretsDir}/traefik_auth" ] && {
         PrintMsg "226" "Provide a secure password for the Traefik BasicAuth fallback:"
-        TraefikPass=$(gum input --password)
+        TraefikPass=""
+        if command -v gum &> /dev/null; then
+            TraefikPass=$(gum input --password)
+        else
+            read -s -p "Password: " TraefikPass
+            echo ""
+        fi
         WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"
     }
 else
@@ -205,10 +228,30 @@ if [ "$Interactive" -eq 1 ]; then
     PrevEmail=$(grep "^ACME_EMAIL=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
     PrevPort=$(grep "^WG_PORT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "51820")
 
-    WgEndpoint=$(gum input --prompt "WireGuard Public Endpoint (IP/DDNS): " --value "$PrevEndpoint")
-    WgPort=$(gum input --prompt "WireGuard UDP Listen Port: " --value "$PrevPort")
-    InternalDomain=$(gum input --prompt "Root Internal Domain: " --value "$PrevDomain")
-    AcmeEmail=$(gum input --prompt "Let's Encrypt Email: " --value "$PrevEmail")
+    WgEndpoint=""
+    WgPort=""
+    InternalDomain=""
+    AcmeEmail=""
+
+    # ENV-05: Native Bash Fallback Engine
+    if command -v gum &> /dev/null; then
+        WgEndpoint=$(gum input --prompt "WireGuard Public Endpoint (IP/DDNS): " --value "$PrevEndpoint")
+        WgPort=$(gum input --prompt "WireGuard UDP Listen Port: " --value "$PrevPort")
+        InternalDomain=$(gum input --prompt "Root Internal Domain: " --value "$PrevDomain")
+        AcmeEmail=$(gum input --prompt "Let's Encrypt Email: " --value "$PrevEmail")
+    else
+        read -p "WireGuard Public Endpoint (IP/DDNS) [$PrevEndpoint]: " input_endpoint
+        WgEndpoint="${input_endpoint:-$PrevEndpoint}"
+        
+        read -p "WireGuard UDP Listen Port [$PrevPort]: " input_port
+        WgPort="${input_port:-$PrevPort}"
+        
+        read -p "Root Internal Domain [$PrevDomain]: " input_domain
+        InternalDomain="${input_domain:-$PrevDomain}"
+        
+        read -p "Let's Encrypt Email [$PrevEmail]: " input_email
+        AcmeEmail="${input_email:-$PrevEmail}"
+    fi
 
     sudo tee "$EnvFile" > /dev/null << EOF
 WG_ENDPOINT=${WgEndpoint}
@@ -235,7 +278,16 @@ PurgeAlienContainers() {
         if [ -n "$AlienContainers" ]; then
             PrintMsg "196" "Rogue containers detected outside the Unified perimeter:"
             echo "$AlienContainers"
-            if gum confirm "DESTROY all listed alien containers permanently?"; then
+            
+            confirm="no"
+            if command -v gum &> /dev/null; then
+                if gum confirm "DESTROY all listed alien containers permanently?"; then confirm="yes"; fi
+            else
+                read -p "DESTROY all listed alien containers permanently? (y/N): " input_conf
+                [[ "${input_conf:-}" =~ ^[Yy]$ ]] && confirm="yes"
+            fi
+
+            if [ "$confirm" == "yes" ]; then
                 echo "$AlienContainers" | awk '{print $1}' | xargs -I {} sudo docker rm -f {}
             else
                 PrintMsg "226" "Aliens retained."
@@ -585,7 +637,7 @@ sudo chmod 600 "$ComposeFile" "$EnvFile"
 # ==============================================================================
 # CRON-08: AUTOMATED LIFECYCLE APPLIANCE GENERATOR (PATH-ARMORED)
 # ==============================================================================
-UpdaterScript="/opt/Docker/Scripts/UpdateSovereignNode.sh"
+UpdaterScript="${ScriptsDir}/UpdateSovereignNode.sh"
 sudo tee "$UpdaterScript" > /dev/null << EOF
 #!/bin/bash
 # Sovereign Node Autonomous Lifecycle Updater
@@ -644,11 +696,35 @@ AssimilateAlienContainers() {
 
                 echo ""
                 PrintMsg "214" "Select posture for unassimilated container [$container]:"
-                local choice=$(gum choose "1) MFA Protected (Authelia) [SUGGESTED]" "2) VPN-Only (Air-Gapped)" "3) BasicAuth (Legacy Form)" "4) Fully Public" "5) Internal (Skip)")
-                local posture_choice=${choice:0:1}
+                
+                local posture_choice=""
+                if command -v gum &> /dev/null; then
+                    local choice=$(gum choose "1) MFA Protected (Authelia) [SUGGESTED]" "2) VPN-Only (Air-Gapped)" "3) BasicAuth (Legacy Form)" "4) Fully Public" "5) Internal (Skip)")
+                    posture_choice=${choice:0:1}
+                else
+                    echo "1) MFA Protected (Authelia) [SUGGESTED]"
+                    echo "2) VPN-Only (Air-Gapped)"
+                    echo "3) BasicAuth (Legacy Form)"
+                    echo "4) Fully Public"
+                    echo "5) Internal (Skip)"
+                    read -p "Select posture (1-5) [1]: " posture_choice
+                    posture_choice=${posture_choice:-1}
+                fi
+
                 if [ "$posture_choice" -eq 5 ]; then continue; fi
 
-                local TargetPort=$(gum input --prompt "Internal listening port for $container (e.g. 80, 8080): ")
+                local TargetPort=""
+                if command -v gum &> /dev/null; then
+                    TargetPort=$(gum input --prompt "Internal listening port for $container (e.g. 80, 8080): ")
+                else
+                    read -p "Internal listening port for $container (e.g. 80, 8080): " TargetPort
+                fi
+
+                # ROUTE-15: Failsafe port validation to prevent YAML parsing panic
+                if [ -z "$TargetPort" ]; then
+                    PrintMsg "196" "Target port cannot be empty. Skipping assimilation for $container."
+                    continue
+                fi
 
                 local mw_string=""
                 case "$posture_choice" in
