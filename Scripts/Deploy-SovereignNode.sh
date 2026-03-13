@@ -1,15 +1,16 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.9-TRUE-SCORCHED-EARTH
+#  Version: v10.10-APEX-AUTOMATION
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Modifications:
-#  - ANNIHILATION-01: Front-loaded True Scorched Earth protocol. If confirmed,
-#                     this executes a recursive wipe of all databases, secrets,
-#                     certificates, and configurations. Zero state retention.
-#  - CLEANUP-02: Renamed the legacy alien container logic to 'PurgeAlienContainers'
-#                to differentiate from the true stack annihilation sequence.
+#  Final Apex Additions:
+#  - CYCLE-05: Implemented Graceful Fallback for the Scorched Earth protocol.
+#  - CRON-06: Generates a self-updating Cron appliance for weekly CVE patching 
+#             and Root Hint regeneration.
+#  - LOG-01: Injected strict JSON log rotation to prevent host disk exhaustion.
+#  - STIG-01: Applied 'cap_drop: [ALL]' globally with surgical 'cap_add' 
+#             whitelists to obliterate container privilege escalation vectors.
 # ==============================================================================
 
 set -euo pipefail
@@ -87,6 +88,33 @@ DetectOsFamily
 CheckDependencies
 
 # ==============================================================================
+# CYCLE-05: GRACEFUL CLEANUP FALLBACK
+# ==============================================================================
+PurgeLegacyState() {
+    if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Initiating Graceful Cleanup..."; fi
+    if [ -d "$StackDir" ]; then
+        cd "$StackDir" || true
+        local EnvFlag=""
+        [ -f "$EnvFile" ] && EnvFlag="--env-file $EnvFile"
+
+        if [ -f "$ComposeFile" ]; then
+            sudo docker compose $EnvFlag down --remove-orphans > /dev/null 2>&1 || true
+        fi
+        if [ -f "${StackDir}/DockerCompose.yml" ]; then
+            sudo docker compose $EnvFlag -f DockerCompose.yml down --remove-orphans > /dev/null 2>&1 || true
+            sudo rm -f "${StackDir}/DockerCompose.yml"
+        fi
+
+        # Wipe generated configs but SPARE the databases and secrets
+        sudo rm -f "${ConfigDir}/Traefik/Dynamic"/*.yml 2>/dev/null || true
+        sudo rm -f "${ConfigDir}/Unbound/UnboundConfig.conf" 2>/dev/null || true
+        sudo rm -f "${ConfigDir}/Unbound/RootHints.txt" 2>/dev/null || true
+        sudo rm -f "${ConfigDir}/Authelia/configuration.yml" 2>/dev/null || true
+        sudo rm -f "${StackDir}/docker-compose.yml" 2>/dev/null || true
+    fi
+}
+
+# ==============================================================================
 # ANNIHILATION-01: TRUE SCORCHED EARTH PROTOCOL
 # ==============================================================================
 ExecuteAnnihilation() {
@@ -101,31 +129,21 @@ ExecuteAnnihilation() {
         echo ""
         if gum confirm "OBLITERATE EVERYTHING and restart fresh?"; then
             PrintMsg "196" "Executing tactical nuke..."
-            
-            # Tear down the active matrix and destroy named volumes (DNSSEC cache)
             cd "$StackDir" || true
             local EnvFlag=""
             [ -f "$EnvFile" ] && EnvFlag="--env-file $EnvFile"
             if [ -f "$ComposeFile" ]; then
                 sudo docker compose $EnvFlag down -v --remove-orphans > /dev/null 2>&1 || true
             fi
-            
-            # Step out of the directory before vaporizing it
             cd /tmp
-            
-            # The Annihilation
-            sudo rm -rf "$StackDir"
-            sudo rm -rf "${ConfigDir}/Authelia"
-            sudo rm -rf "${ConfigDir}/Postgres"
-            sudo rm -rf "${ConfigDir}/Traefik"
-            sudo rm -rf "${ConfigDir}/WireGuard"
-            sudo rm -rf "${ConfigDir}/PiHole"
-            sudo rm -rf "${ConfigDir}/Unbound"
-            
+            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" \
+                        "${ConfigDir}/Traefik" "${ConfigDir}/WireGuard" \
+                        "${ConfigDir}/PiHole" "${ConfigDir}/Unbound"
             PrintMsg "82" "✔ Earth scorched. Nothing survives."
             sleep 2
         else
-            PrintMsg "82" "Scorched Earth aborted. Retaining persistent state."
+            PrintMsg "82" "✔ Scorched Earth aborted. Retaining persistent state."
+            PurgeLegacyState
         fi
     fi
 }
@@ -133,22 +151,19 @@ ExecuteAnnihilation() {
 ExecuteAnnihilation
 # ==============================================================================
 
-# Ensure filesystem hierarchy exists (PascalCase per mandate)
+# Ensure filesystem hierarchy exists
 sudo mkdir -p "$StackDir" "$LogsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" \
              "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" \
              "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
              "$ConfigDir/Unbound"
 
-# ACME-02: Prevent Docker from creating a directory instead of a file
 sudo touch "${ConfigDir}/Traefik/acme.json"
 sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 
-# SEC-05: Enclave management
 sudo mkdir -p "$SecretsDir"
 sudo chmod 700 "$SecretsDir"
 echo "*" | sudo tee "${SecretsDir}/.gitignore" > /dev/null
 
-# SEC-07: Inode-preserving secret management
 WriteSecret() {
     local name=$1
     local content=$2
@@ -162,7 +177,6 @@ WriteSecret() {
     sudo rm -f "$tmp_file"
 }
 
-# CRON-01 & AUTH-07: Headless-safe cryptographic entropy generation
 if [ "$Interactive" -eq 1 ]; then
     [ ! -f "${SecretsDir}/cf_api_token" ] && { 
         PrintMsg "226" "Cloudflare Scoped DNS API Token required:"
@@ -213,7 +227,7 @@ set -u
 sudo timedatectl set-timezone UTC
 if systemctl is-active --quiet systemd-timesyncd; then sudo systemctl restart systemd-timesyncd; fi
 
-# CLEANUP-02: Purge Alien Containers (formerly Scorched Earth)
+# CLEANUP-02: Purge Alien Containers
 PurgeAlienContainers() {
     if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
         local AlienContainers=$(sudo docker ps -a --format '{{.ID}}|{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($3) != stack {print $1 " (" $2 ")"}')
@@ -229,7 +243,6 @@ PurgeAlienContainers() {
     fi
 }
 
-# ROUTE-12/13: Local Assimilation Engine
 AssimilateAlienContainers() {
     if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
         local foreign_containers=$(sudo docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($2) != stack && $1 != "" {print $1}')
@@ -254,7 +267,7 @@ AssimilateAlienContainers() {
                 esac
 
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
-# TRAEFIK INTEGRATION MANIFEST: $container (v10.9-TRUE-SCORCHED-EARTH)
+# TRAEFIK INTEGRATION MANIFEST: $container (v10.10-APEX-AUTOMATION)
 networks:
   ProxyNetwork:
     external: true
@@ -280,7 +293,6 @@ MANIFEST_EOF
 PurgeAlienContainers
 AssimilateAlienContainers
 
-# BOOT-05: True Zero-Byte Guillotine Prevention for Root Hints
 PrintMsg "240" "Fetching InterNIC Root Hints for Unbound DNS..."
 sudo curl -sS https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
 
@@ -318,7 +330,6 @@ server:
   access-control: 10.99.0.0/24 allow
 EOF
 
-# IAM Configuration
 sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -362,7 +373,6 @@ users:
 EOF
 fi
 
-# Traefik Dynamic Rules
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -437,6 +447,13 @@ secrets:
   traefik_auth: { file: ${SecretsDir}/traefik_auth }
   pihole_pass: { file: ${SecretsDir}/pihole_pass }
 
+# LOG-01: YAML Anchors for global log restriction
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   docker_socket_proxy:
     image: ${IMG_PROXY}
@@ -444,6 +461,9 @@ services:
     networks: [socket_network]
     environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, PING=1, INFO=1, POST=0]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2375/version || exit 1"]
       interval: 5s
@@ -461,6 +481,10 @@ services:
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     secrets: [postgres_password]
     volumes: [${ConfigDir}/Postgres:/var/lib/postgresql/data]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -d authelia -U authelia"]
       interval: 10s
@@ -481,6 +505,9 @@ services:
       AUTHELIA_STORAGE_POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     depends_on:
       auth_db: { condition: service_healthy }
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "authelia", "healthcheck"]
       interval: 10s
@@ -497,6 +524,10 @@ services:
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - unbound_keys:/opt/unbound/etc/unbound/keys:rw
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, SETGID, SETUID, CHOWN, DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "nslookup google.com 127.0.0.1 || exit 1"]
       interval: 10s
@@ -528,6 +559,9 @@ services:
       - ${ConfigDir}/PiHole/etc-dnsmasq.d:/etc/dnsmasq.d
     depends_on:
       unbound_dns: { condition: service_healthy }
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_BIND_SERVICE, NET_RAW, CHOWN, SETUID, SETGID, DAC_OVERRIDE, SYS_CHROOT, SYS_NICE]
+    logging: *default-logging
     restart: unless-stopped
 
   wireguard_vpn:
@@ -535,7 +569,6 @@ services:
     container_name: wireguard_vpn
     networks:
       vpn_network: { ipv4_address: 10.99.0.10 }
-    cap_add: [NET_ADMIN, SYS_MODULE]
     environment:
       - SERVERURL=\${WG_ENDPOINT}
       - SERVERPORT=\${WG_PORT}
@@ -547,6 +580,9 @@ services:
       - ${ConfigDir}/WireGuard:/config
     ports: ["\${WG_PORT}:\${WG_PORT}/udp"]
     sysctls: { net.ipv4.ip_forward: 1 }
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, SYS_MODULE]
+    logging: *default-logging
     restart: unless-stopped
 
   traefik_proxy:
@@ -583,23 +619,46 @@ services:
       - "--certificatesresolvers.letsencrypt.acme.storage=/acme.json"
       - "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare"
       - "--certificatesresolvers.letsencrypt.acme.dnschallenge=true"
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    logging: *default-logging
     restart: unless-stopped
 EOF
 
 sudo chown -R 0:0 "$StackDir"
 sudo chmod 600 "$ComposeFile" "$EnvFile"
 
-# Cycle Active State
-CycleActiveMatrix() {
-    cd "$StackDir"
-    if [ -f "$ComposeFile" ]; then
-        if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Flushing active matrix state..."; fi
-        sudo docker compose --env-file "$EnvFile" down --remove-orphans > /dev/null 2>&1 || true
-    fi
-    sleep 3
-}
+# ==============================================================================
+# CRON-06: AUTOMATED LIFECYCLE APPLIANCE GENERATOR
+# ==============================================================================
+UpdaterScript="/opt/Docker/Scripts/UpdateSovereignNode.sh"
+sudo tee "$UpdaterScript" > /dev/null << EOF
+#!/bin/bash
+# Sovereign Node Autonomous Lifecycle Updater
+# Managed by DeploySovereignNode.sh
 
-CycleActiveMatrix
+exec > >(logger -t SovereignNodeUpdater) 2>&1
+
+echo "[Sovereign Node] Initiating weekly lifecycle update..."
+cd "$StackDir" || exit 1
+
+# Fetch fresh root hints
+curl -sS https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
+if [ -s "${ConfigDir}/Unbound/RootHints.txt.tmp" ]; then
+    mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
+fi
+
+# Rotate Matrix
+docker compose --env-file "$EnvFile" pull --quiet
+docker compose --env-file "$EnvFile" up -d --remove-orphans
+docker image prune -af --filter "until=168h"
+
+echo "[Sovereign Node] Update cycle complete."
+EOF
+
+sudo chmod 700 "$UpdaterScript"
+sudo ln -sf "$UpdaterScript" /etc/cron.weekly/sovereign-node-update
 
 # Ignition
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified Sovereign Node..."; fi
