@@ -1,9 +1,12 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.6-ULTIMATUM-EXCALIBUR
+#  Version: v10.7-GITOPS-REFABRICATED
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Modifications:
+#  - STRUCT-01: Decoupled ConfigDir to a global level while retaining Secrets 
+#               and Env states within the newly defined StackDir.
 #  Final Hardening Applied:
 #  - IAM-03: Amputated illegal 'password_file' from Authelia YAML to prevent
 #            schema validation crashes. Re-routed secret via compose environment.
@@ -19,18 +22,19 @@ set -euo pipefail
 export PATH="/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
 
 StackName="SovereignNode"
-BaseDir="/opt/Docker/Stacks/${StackName}"
+BaseDir="/opt/Docker"
 ConfigDir="${BaseDir}/Config"
-SecretsDir="${BaseDir}/Secrets"
+StackDir="${BaseDir}/Stacks/${StackName}"
+SecretsDir="${StackDir}/Secrets"
+EnvFile="${StackDir}/Node.env"
 LogsDir="/opt/Docker/Logs/${StackName}"
-EnvFile="${BaseDir}/Node.env"
 # Native Docker orchestration filename
-ComposeFile="${BaseDir}/docker-compose.yml"
+ComposeFile="${StackDir}/docker-compose.yml"
 LockFile="/var/lock/sovereign_node.lock"
 
 # Ensure filesystem hierarchy exists (PascalCase per mandate)
 # ROOT-03: Unbound keys directory is no longer mapped to the host.
-sudo mkdir -p "$BaseDir" "$LogsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" \
+sudo mkdir -p "$StackDir" "$LogsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" \
              "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" \
              "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
              "$ConfigDir/Unbound"
@@ -193,7 +197,7 @@ AssimilateAlienContainers() {
         local foreign_containers=$(sudo docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($2) != stack && $1 != "" {print $1}')
         if [ -n "$foreign_containers" ]; then
             PrintMsg "214" "LOCAL ASSIMILATION PROTOCOL INITIATED"
-            local manifest_dir="${BaseDir}/IntegrationManifests"
+            local manifest_dir="${StackDir}/IntegrationManifests"
             sudo mkdir -p "$manifest_dir"
             for container in $foreign_containers; do
                 local clean_name=$(echo "$container" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
@@ -212,7 +216,7 @@ AssimilateAlienContainers() {
                 esac
 
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
-# TRAEFIK INTEGRATION MANIFEST: $container (v10.6-ULTIMATUM-EXCALIBUR)
+# TRAEFIK INTEGRATION MANIFEST: $container (v10.7-GITOPS-REFABRICATED)
 networks:
   ProxyNetwork:
     external: true
@@ -549,16 +553,17 @@ services:
     restart: unless-stopped
 EOF
 
-sudo chown -R 0:0 "$BaseDir"
+sudo chown -R 0:0 "$StackDir"
 sudo chmod 600 "$ComposeFile" "$EnvFile"
 
 # CYCLE-03: Transition Teardown Logic
 CycleExistingMatrix() {
-    cd "$BaseDir"
-    if [ -f "${BaseDir}/DockerCompose.yml" ]; then
+    # Critical: Enforce StackDir scope to prevent execution in global /opt/Docker
+    cd "$StackDir"
+    if [ -f "${StackDir}/DockerCompose.yml" ]; then
         if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Legacy PascalCase file detected. Purging orphans..."; fi
         sudo docker compose --env-file "$EnvFile" -f DockerCompose.yml down --remove-orphans > /dev/null 2>&1 || true
-        sudo rm -f "${BaseDir}/DockerCompose.yml"
+        sudo rm -f "${StackDir}/DockerCompose.yml"
     fi
     if [ -f "$ComposeFile" ]; then
         if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Flushing active matrix state..."; fi
@@ -571,7 +576,8 @@ CycleExistingMatrix
 
 # Ignition
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified Sovereign Node..."; fi
-sudo docker compose --env-file "$EnvFile" up -d --remove-orphans
+# CRITICAL: Ensure ignition occurs strictly within the Stack directory
+cd "$StackDir" && sudo docker compose --env-file "$EnvFile" up -d --remove-orphans
 
 # OPSEC-01: Explicitly print the generated Pi-Hole credential
 if [ "$Interactive" -eq 1 ]; then
