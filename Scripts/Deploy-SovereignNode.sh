@@ -1,18 +1,17 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.2-ULTIMATUM-FINAL
+#  Version: v10.3-ULTIMATUM-PERFECTION
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Regressions Repaired:
-#  - CRON-01: Cryptographic prompts wrapped in TTY guards to prevent headless hangs.
-#  - DNSSEC-01: Bound Unbound keys directory to host to prevent RFC-5011 amnesia.
-#  - NET-04: Dynamically mapped WireGuard WG_PORT to resolve hardcoded illusions.
-#  - ACME-03: Explicitly injected ACME_EMAIL into Traefik environment block.
-#  Legacy Hardening Maintained:
-#  - GITOPS-01: Encapsulated ConfigDir back into the BaseDir for portability.
-#  - ACME-02: Pre-ignition file touch prevents Docker directory-mount panics.
-#  - CYCLE-03: Restored legacy teardown logic to prevent port-binding conflicts.
+#  Final Regressions Repaired:
+#  - ENV-04: Injected '--env-file' flag to compose commands to prevent null 
+#            interpolation for WG_PORT and ACME_EMAIL.
+#  - ROOT-01: Enforced 1000:1000 UID/GID on Unbound keys dir to prevent 
+#             RFC-5011 DNSSEC permission denial crashes.
+#  - HEALTH-07: Swapped missing 'drill' binary for 'dig' in Unbound healthcheck.
+#  - OPSEC-01: Extracted and echoed generated Pi-Hole password to stdout to 
+#              prevent administrative lockout.
 # ==============================================================================
 
 set -euo pipefail
@@ -35,6 +34,10 @@ sudo mkdir -p "$BaseDir" "$LogsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" 
              "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" \
              "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
              "$ConfigDir/Unbound/keys"
+
+# ROOT-01: Correct permissions for the Unbound trust anchor directory
+# The mvance/unbound container runs as UID 1000. It must own this directory to write root.key.
+sudo chown -R 1000:1000 "${ConfigDir}/Unbound/keys"
 
 # ACME-02: Prevent Docker from creating a directory instead of a file
 sudo touch "${ConfigDir}/Traefik/acme.json"
@@ -89,7 +92,7 @@ CheckDependencies() {
     done
     if ! command -v gum &> /dev/null; then
         sudo mkdir -p /etc/apt/keyrings
-        curl -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/charm.gpg || true
+        curl --connect-timeout 5 -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/charm.gpg || true
         echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list > /dev/null
         eval "$UpdateCmd" > /dev/null || true
         eval "$InstallCmd gum" > /dev/null || true
@@ -212,7 +215,7 @@ AssimilateAlienContainers() {
                 esac
 
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
-# TRAEFIK INTEGRATION MANIFEST: $container (v10.2-ULTIMATUM-FINAL)
+# TRAEFIK INTEGRATION MANIFEST: $container (v10.3-ULTIMATUM-PERFECTION)
 networks:
   ProxyNetwork:
     external: true
@@ -461,8 +464,9 @@ services:
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - ${ConfigDir}/Unbound/keys:/opt/unbound/etc/unbound/keys:rw
+    # HEALTH-07: Using Alpine-native 'dig' to resolve the health phantom
     healthcheck:
-      test: ["CMD-SHELL", "drill google.com @127.0.0.1 || exit 1"]
+      test: ["CMD-SHELL", "dig +short @127.0.0.1 google.com || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -536,12 +540,13 @@ CycleExistingMatrix() {
     cd "$BaseDir"
     if [ -f "${BaseDir}/DockerCompose.yml" ]; then
         if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Legacy PascalCase file detected. Purging orphans..."; fi
-        sudo docker compose -f DockerCompose.yml down --remove-orphans > /dev/null 2>&1 || true
+        # ENV-04: '--env-file' ensures no empty-string substitutions during teardown
+        sudo docker compose --env-file "$EnvFile" -f DockerCompose.yml down --remove-orphans > /dev/null 2>&1 || true
         sudo rm -f "${BaseDir}/DockerCompose.yml"
     fi
     if [ -f "$ComposeFile" ]; then
         if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Flushing active matrix state..."; fi
-        sudo docker compose down --remove-orphans > /dev/null 2>&1 || true
+        sudo docker compose --env-file "$EnvFile" down --remove-orphans > /dev/null 2>&1 || true
     fi
     sleep 3
 }
@@ -550,7 +555,20 @@ CycleExistingMatrix
 
 # Ignition
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified Sovereign Node..."; fi
-sudo docker compose up -d --remove-orphans
+# ENV-04: Final execution logic requires '--env-file' to load ACME_EMAIL and WG_PORT
+sudo docker compose --env-file "$EnvFile" up -d --remove-orphans
 
-PrintMsg "82" "✔ Unified Matrix Online. Verification recommended."
+if [ "$Interactive" -eq 1 ]; then
+    echo ""
+    PiholePass=$(sudo cat "${SecretsDir}/pihole_pass")
+    PrintMsg "214" "========================================================================"
+    PrintMsg "226" " 🔐 SECURE CREDENTIAL RECOVERY"
+    PrintMsg "214" "========================================================================"
+    PrintMsg "82"  " Pi-Hole Admin Password: $PiholePass"
+    PrintMsg "196" " SAVE THIS NOW. IT WILL NOT BE DISPLAYED AGAIN."
+    PrintMsg "214" "========================================================================"
+    echo ""
+    PrintMsg "82" "✔ Unified Matrix Online. Verification recommended."
+fi
+
 exit 0
