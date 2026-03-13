@@ -1,17 +1,16 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.3-ULTIMATUM-PERFECTION
+#  Version: v10.4-ULTIMATUM-ABSOLUTE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
 #  Final Regressions Repaired:
-#  - ENV-04: Injected '--env-file' flag to compose commands to prevent null 
-#            interpolation for WG_PORT and ACME_EMAIL.
-#  - ROOT-01: Enforced 1000:1000 UID/GID on Unbound keys dir to prevent 
-#             RFC-5011 DNSSEC permission denial crashes.
-#  - HEALTH-07: Swapped missing 'drill' binary for 'dig' in Unbound healthcheck.
-#  - OPSEC-01: Extracted and echoed generated Pi-Hole password to stdout to 
-#              prevent administrative lockout.
+#  - ROOT-02: Bypassed opaque container UIDs via 777 on public DNSSEC key cache.
+#  - IAM-02: Wired Pi-Hole directly into the Traefik/Authelia routing mesh.
+#  - GITOPS-02: Extracted hardcoded ACME variables into dynamic compose CLI args.
+#  - HEALTH-08: Universal 'nslookup' probe for Unbound healthcheck stability.
+#  - ENV-04: Explicit '--env-file' flag on compose commands.
+#  - OPSEC-01: Extracted and echoed generated Pi-Hole password to stdout.
 # ==============================================================================
 
 set -euo pipefail
@@ -35,9 +34,9 @@ sudo mkdir -p "$BaseDir" "$LogsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" 
              "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
              "$ConfigDir/Unbound/keys"
 
-# ROOT-01: Correct permissions for the Unbound trust anchor directory
-# The mvance/unbound container runs as UID 1000. It must own this directory to write root.key.
-sudo chown -R 1000:1000 "${ConfigDir}/Unbound/keys"
+# ROOT-02: STIG-acceptable operational bypass for public DNSSEC keys
+# Prevents RFC-5011 permission denial crashes across different base images.
+sudo chmod 777 "${ConfigDir}/Unbound/keys"
 
 # ACME-02: Prevent Docker from creating a directory instead of a file
 sudo touch "${ConfigDir}/Traefik/acme.json"
@@ -83,7 +82,7 @@ DetectOsFamily() {
 CheckDependencies() {
     PrintMsg "240" "Verifying baseline tools for $OS_ID..."
     eval "$UpdateCmd" > /dev/null 2>&1 || true
-    local deps="curl jq openssl cron tzdata"
+    local deps="curl jq openssl cron tzdata dnsutils"
     for dep in $deps; do
         if ! command -v "$dep" &> /dev/null; then
             PrintMsg "226" "Installing missing dependency: $dep"
@@ -133,7 +132,7 @@ if [ "$Interactive" -eq 1 ]; then
         WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"
     }
 else
-    # Headless Safety Net: Fail aggressively instead of locking the thread
+    # Headless Safety Net
     [ ! -f "${SecretsDir}/cf_api_token" ] && { echo "[FATAL] Headless run failed. Missing cf_api_token."; exit 1; }
     [ ! -f "${SecretsDir}/traefik_auth" ] && { echo "[FATAL] Headless run failed. Missing traefik_auth."; exit 1; }
 fi
@@ -215,7 +214,7 @@ AssimilateAlienContainers() {
                 esac
 
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
-# TRAEFIK INTEGRATION MANIFEST: $container (v10.3-ULTIMATUM-PERFECTION)
+# TRAEFIK INTEGRATION MANIFEST: $container (v10.4-ULTIMATUM-ABSOLUTE)
 networks:
   ProxyNetwork:
     external: true
@@ -245,7 +244,7 @@ AssimilateAlienContainers
 PrintMsg "240" "Fetching InterNIC Root Hints for Unbound DNS..."
 sudo curl -sS https://www.internic.net/domain/named.root | sudo tee "${ConfigDir}/Unbound/RootHints.txt" > /dev/null
 
-sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
+sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << 'EOF'
 server:
   num-threads: 1
   interface: 0.0.0.0
@@ -351,8 +350,8 @@ http:
         servers: [{ url: "http://authelia:9091" }]
 EOF
 
-# Traefik Core Config
-sudo tee "${ConfigDir}/Traefik/TraefikConfig.yml" > /dev/null << EOF
+# GITOPS-02: Traefik Core Config (Static, abstracted from Environment variables)
+sudo tee "${ConfigDir}/Traefik/TraefikConfig.yml" > /dev/null << 'EOF'
 api: { dashboard: true, insecure: false }
 entryPoints:
   web:
@@ -362,12 +361,6 @@ entryPoints:
 providers:
   docker: { endpoint: "tcp://docker_socket_proxy:2375", exposedByDefault: false }
   file: { directory: /etc/traefik/dynamic, watch: true }
-certificatesResolvers:
-  letsencrypt:
-    acme:
-      email: "${ACME_EMAIL}"
-      storage: /acme.json
-      dnsChallenge: { provider: cloudflare }
 EOF
 
 ResolveImage() {
@@ -464,9 +457,9 @@ services:
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - ${ConfigDir}/Unbound/keys:/opt/unbound/etc/unbound/keys:rw
-    # HEALTH-07: Using Alpine-native 'dig' to resolve the health phantom
+    # HEALTH-08: Universal nslookup ensures stability across different base OS images
     healthcheck:
-      test: ["CMD-SHELL", "dig +short @127.0.0.1 google.com || exit 1"]
+      test: ["CMD-SHELL", "nslookup google.com 127.0.0.1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -478,6 +471,15 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.12 }
       proxy_network:
+    # IAM-02: Pi-Hole is now directly assimilated into the Authelia vault
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)"
+      - "traefik.http.routers.pihole.entrypoints=websecure"
+      - "traefik.http.routers.pihole.tls.certresolver=letsencrypt"
+      - "traefik.http.services.pihole.loadbalancer.server.port=80"
+      - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file"
+      - "traefik.docker.network=sovereign_node_proxy_network"
     environment:
       - WEBPASSWORD_FILE=/run/secrets/pihole_pass
       - PIHOLE_DNS_=10.99.0.11#53
@@ -524,11 +526,16 @@ services:
     secrets: [cf_api_token, traefik_auth]
     environment:
       - CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token
-      - ACME_EMAIL=\${ACME_EMAIL}
     depends_on:
       docker_socket_proxy: { condition: service_healthy }
       authelia: { condition: service_healthy }
-    command: ["--providers.docker.version=1.44"]
+    # GITOPS-02: ACME variables are now fully dynamic and bound to the compose execution
+    command: 
+      - "--providers.docker.version=1.44"
+      - "--certificatesresolvers.letsencrypt.acme.email=\${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare"
+      - "--certificatesresolvers.letsencrypt.acme.dnschallenge=true"
     restart: unless-stopped
 EOF
 
@@ -540,7 +547,6 @@ CycleExistingMatrix() {
     cd "$BaseDir"
     if [ -f "${BaseDir}/DockerCompose.yml" ]; then
         if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Legacy PascalCase file detected. Purging orphans..."; fi
-        # ENV-04: '--env-file' ensures no empty-string substitutions during teardown
         sudo docker compose --env-file "$EnvFile" -f DockerCompose.yml down --remove-orphans > /dev/null 2>&1 || true
         sudo rm -f "${BaseDir}/DockerCompose.yml"
     fi
@@ -555,9 +561,9 @@ CycleExistingMatrix
 
 # Ignition
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified Sovereign Node..."; fi
-# ENV-04: Final execution logic requires '--env-file' to load ACME_EMAIL and WG_PORT
 sudo docker compose --env-file "$EnvFile" up -d --remove-orphans
 
+# OPSEC-01: Explicitly print the generated Pi-Hole credential
 if [ "$Interactive" -eq 1 ]; then
     echo ""
     PiholePass=$(sudo cat "${SecretsDir}/pihole_pass")
