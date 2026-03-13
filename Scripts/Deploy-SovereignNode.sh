@@ -1,14 +1,17 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.1-ULTIMATUM-VERIFIED
+#  Version: v10.2-ULTIMATUM-FINAL
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
 #  Regressions Repaired:
+#  - CRON-01: Cryptographic prompts wrapped in TTY guards to prevent headless hangs.
+#  - DNSSEC-01: Bound Unbound keys directory to host to prevent RFC-5011 amnesia.
+#  - NET-04: Dynamically mapped WireGuard WG_PORT to resolve hardcoded illusions.
+#  - ACME-03: Explicitly injected ACME_EMAIL into Traefik environment block.
+#  Legacy Hardening Maintained:
 #  - GITOPS-01: Encapsulated ConfigDir back into the BaseDir for portability.
 #  - ACME-02: Pre-ignition file touch prevents Docker directory-mount panics.
-#  - AUTH-07: Added 'traefik_auth' secret generation to prevent daemon crashes.
-#  - DNS-01: Re-engineered Unbound config generation and Root Hints injection.
 #  - CYCLE-03: Restored legacy teardown logic to prevent port-binding conflicts.
 # ==============================================================================
 
@@ -19,7 +22,6 @@ export PATH="/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
 
 StackName="SovereignNode"
 BaseDir="/opt/Docker/Stacks/${StackName}"
-# GITOPS-01: Restored strictly encapsulated pathing
 ConfigDir="${BaseDir}/Config"
 SecretsDir="${BaseDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
@@ -32,7 +34,7 @@ LockFile="/var/lock/sovereign_node.lock"
 sudo mkdir -p "$BaseDir" "$LogsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" \
              "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" \
              "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
-             "$ConfigDir/Unbound"
+             "$ConfigDir/Unbound/keys"
 
 # ACME-02: Prevent Docker from creating a directory instead of a file
 sudo touch "${ConfigDir}/Traefik/acme.json"
@@ -116,16 +118,24 @@ WriteSecret() {
     sudo rm -f "$tmp_file"
 }
 
-# SEC-06 & AUTH-07: Cryptographic entropy generation
-[ ! -f "${SecretsDir}/cf_api_token" ] && { 
-    PrintMsg "226" "Cloudflare Scoped DNS API Token required:"
-    WriteSecret "cf_api_token" "$(gum input --password)"
-}
-[ ! -f "${SecretsDir}/traefik_auth" ] && {
-    PrintMsg "226" "Provide a secure password for the Traefik BasicAuth fallback:"
-    TraefikPass=$(gum input --password)
-    WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"
-}
+# CRON-01 & AUTH-07: Headless-safe cryptographic entropy generation
+if [ "$Interactive" -eq 1 ]; then
+    [ ! -f "${SecretsDir}/cf_api_token" ] && { 
+        PrintMsg "226" "Cloudflare Scoped DNS API Token required:"
+        WriteSecret "cf_api_token" "$(gum input --password)"
+    }
+    [ ! -f "${SecretsDir}/traefik_auth" ] && {
+        PrintMsg "226" "Provide a secure password for the Traefik BasicAuth fallback:"
+        TraefikPass=$(gum input --password)
+        WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"
+    }
+else
+    # Headless Safety Net: Fail aggressively instead of locking the thread
+    [ ! -f "${SecretsDir}/cf_api_token" ] && { echo "[FATAL] Headless run failed. Missing cf_api_token."; exit 1; }
+    [ ! -f "${SecretsDir}/traefik_auth" ] && { echo "[FATAL] Headless run failed. Missing traefik_auth."; exit 1; }
+fi
+
+# Auto-generate non-interactive internal entropy
 [ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_jwt_secret" ] && WriteSecret "authelia_jwt_secret" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_session_secret" ] && WriteSecret "authelia_session_secret" "$(openssl rand -base64 32)"
@@ -136,8 +146,10 @@ if [ "$Interactive" -eq 1 ]; then
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
     PrevDomain=$(grep "^INTERNAL_DOMAIN=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
     PrevEmail=$(grep "^ACME_EMAIL=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
+    PrevPort=$(grep "^WG_PORT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "51820")
 
     WgEndpoint=$(gum input --prompt "WireGuard Public Endpoint (IP/DDNS): " --value "$PrevEndpoint")
+    WgPort=$(gum input --prompt "WireGuard UDP Listen Port: " --value "$PrevPort")
     InternalDomain=$(gum input --prompt "Root Internal Domain: " --value "$PrevDomain")
     AcmeEmail=$(gum input --prompt "Let's Encrypt Email: " --value "$PrevEmail")
 
@@ -145,7 +157,7 @@ if [ "$Interactive" -eq 1 ]; then
 WG_ENDPOINT=${WgEndpoint}
 INTERNAL_DOMAIN=${InternalDomain}
 ACME_EMAIL=${AcmeEmail}
-WG_PORT=51820
+WG_PORT=${WgPort}
 WG_PEERS=3
 TZ=UTC
 EOF
@@ -200,7 +212,7 @@ AssimilateAlienContainers() {
                 esac
 
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
-# TRAEFIK INTEGRATION MANIFEST: $container (v10.1-ULTIMATUM-VERIFIED)
+# TRAEFIK INTEGRATION MANIFEST: $container (v10.2-ULTIMATUM-FINAL)
 networks:
   ProxyNetwork:
     external: true
@@ -239,6 +251,7 @@ server:
   do-udp: yes
   do-tcp: yes
   root-hints: "/opt/unbound/etc/unbound/root.hints"
+  auto-trust-anchor-file: "/opt/unbound/etc/unbound/keys/root.key"
   harden-glue: yes
   harden-dnssec-stripped: yes
   use-caps-for-id: no
@@ -447,6 +460,7 @@ services:
     volumes:
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
+      - ${ConfigDir}/Unbound/keys:/opt/unbound/etc/unbound/keys:rw
     healthcheck:
       test: ["CMD-SHELL", "drill google.com @127.0.0.1 || exit 1"]
       interval: 10s
@@ -479,15 +493,15 @@ services:
       vpn_network: { ipv4_address: 10.99.0.10 }
     cap_add: [NET_ADMIN, SYS_MODULE]
     environment:
-      - SERVERURL=${WG_ENDPOINT}
-      - SERVERPORT=51820
+      - SERVERURL=\${WG_ENDPOINT}
+      - SERVERPORT=\${WG_PORT}
       - PEERS=3
       - PEERDNS=10.99.0.12
       - INTERNAL_SUBNET=10.13.13.0/24
     volumes:
       - /lib/modules:/lib/modules:ro
       - ${ConfigDir}/WireGuard:/config
-    ports: ["51820:51820/udp"]
+    ports: ["\${WG_PORT}:\${WG_PORT}/udp"]
     sysctls: { net.ipv4.ip_forward: 1 }
     restart: unless-stopped
 
@@ -505,7 +519,8 @@ services:
       - ${ConfigDir}/Traefik/acme.json:/acme.json:rw
     secrets: [cf_api_token, traefik_auth]
     environment:
-      CF_DNS_API_TOKEN_FILE: /run/secrets/cf_api_token
+      - CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token
+      - ACME_EMAIL=\${ACME_EMAIL}
     depends_on:
       docker_socket_proxy: { condition: service_healthy }
       authelia: { condition: service_healthy }
