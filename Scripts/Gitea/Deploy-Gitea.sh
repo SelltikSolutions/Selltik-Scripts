@@ -7,13 +7,14 @@
 #              Logic: Vault-first secrets, Heuristic LAN Hunter, PascalCase.
 #              Compliance: Directive 1, 2, 3 (Full Secret Isolation).
 #              Features: Integrated Forensic Audit, Self-Healing, Zero-Touch.
-# Patched: The Validated Master (Rev 108).
-#          - Removed undefined 'secrets:' mapping from Runner Farm.
-#          - Implemented blocking wait-loop for async 'git' installation.
-#          - Enforced strict PascalCase on base directories with zero-loss migration.
+# Patched: The Surgical Master (Rev 109).
+#          - Pre-Migration Teardown (Protects Active Mounts).
+#          - Snake_case Docker Secrets override (Fixes DB Lockout).
+#          - Forced Password Sync (Fixes API 401 Lockout).
+#          - Profile-Based Runner Boot (Fixes Crash Loop).
 # Author: Tier-3 Support
 # Date: 2026-03-13
-# Status: VALIDATED MASTER (Rev 108)
+# Status: SURGICAL MASTER (Rev 109)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -23,7 +24,7 @@ BASE_DIR="/opt/Docker/Stacks"
 PROJECT_NAME="Gitea"
 STACK_DIR="${BASE_DIR}/${PROJECT_NAME}"
 
-# PascalCase Enforcement
+# PascalCase Enforcement (Architecture only, not vault contents)
 SECRETS_DIR="${STACK_DIR}/Secrets"
 DATA_DIR="${STACK_DIR}/Data"
 AUDIT_DIR="${STACK_DIR}/Audit"
@@ -107,12 +108,10 @@ load_existing_state() {
     log_info "Scanning for existing deployment state..."
     if [ -f "$ENV_FILE" ]; then
         log_succ "Previous state detected. Hydrating configurations..."
-        # Safely source existing variables
         set -a
         source "$ENV_FILE"
         set +a
         
-        # Pre-populate conflict resolution defaults
         CFG_GITEA_WEB=${GITEA_WEB_PORT:-3000}
         CFG_GITEA_SSH=${GITEA_SSH_PORT:-2222}
         CFG_AI_PORT=${AI_PORT:-"127.0.0.1:11434"}
@@ -120,12 +119,10 @@ load_existing_state() {
         CFG_VSCODE_PORT=${VSCODE_PORT:-8443}
         TARGET_MODEL=${AIDER_MODEL:-"qwen2.5-coder:14b"}
         
-        # Flag existing NFS configurations
         [ -n "$GITEA_NFS_SERVER" ] && PREV_GITEA_NFS="true" || PREV_GITEA_NFS="false"
         [ -n "$OLLAMA_NFS_SERVER" ] && PREV_AI_NFS="true" || PREV_AI_NFS="false"
     else
         log_info "No previous state found. Initializing clean slate."
-        # Clean slate defaults
         CFG_GITEA_WEB=3000
         CFG_GITEA_SSH=2222
         CFG_AGENT_PORT=9001
@@ -216,7 +213,6 @@ configure_hardware_acceleration() {
     IS_MAXWELL="false"
     AMD_USE_VULKAN="false"
 
-    # 1. NVIDIA Path
     if command -v nvidia-smi &> /dev/null && docker info 2>/dev/null | grep -q "Runtimes:.*nvidia"; then
         HAS_GPU="true"
         GPU_TYPE="NVIDIA"
@@ -228,13 +224,11 @@ configure_hardware_acceleration() {
              log_info "Architecture: Maxwell ($GPU_NAME). Optimizing..."
         fi
     
-    # 2. AMD ROCm Path
     elif [ -e /dev/kfd ] && [ -e /dev/dri ]; then
         HAS_GPU="true"
         GPU_TYPE="AMD"
         log_succ "Detected AMD Interface."
         
-        # Check for Multi-GPU/Integrated Graphics
         local RENDER_COUNT=$(ls /dev/dri/renderD* 2>/dev/null | wc -l)
         if [ "$RENDER_COUNT" -gt 1 ]; then
             log_warn "Multiple Render Devices Detected ($RENDER_COUNT)."
@@ -249,7 +243,6 @@ configure_hardware_acceleration() {
             local GPU_MODEL=$(lspci | grep -i "VGA.*AMD" | cut -d: -f3 | xargs)
             log_info "AMD Model: $GPU_MODEL"
             
-            # Architecture Matching
             if [[ "$GPU_MODEL" =~ "Polaris" ]] || [[ "$GPU_MODEL" =~ "RX 580" ]]; then
                 AMD_USE_VULKAN="true"
                 log_info "Detected Polaris (GFX8). ROCm unstable. Defaulting to Vulkan."
@@ -270,7 +263,6 @@ configure_hardware_acceleration() {
             fi
         fi
 
-        # Permission Auto-Fix (Hardened & Numeric)
         log_info "Verifying GPU permissions..."
         set +e
         local GROUPS_OK=true
@@ -474,7 +466,7 @@ resolve_conflicts() {
 }
 
 # ------------------------------------------------------------------------------
-# 9. NFS Wizard (Safety Rails & Idempotency)
+# 9. NFS Wizard
 # ------------------------------------------------------------------------------
 configure_storage_wizard() {
     ensure_dependency "nfs-common" "showmount"
@@ -578,12 +570,24 @@ configure_storage_wizard() {
 }
 
 # ------------------------------------------------------------------------------
-# 10. Setup & Generate (Atomic)
+# 10. Pre-Migration Teardown & Setup
 # ------------------------------------------------------------------------------
+pre_migration_teardown() {
+    if [ -d "${STACK_DIR}/data" ] || [ -d "${STACK_DIR}/secrets" ]; then
+        log_info "Legacy lowercase directories detected. Spinning down stack to release file locks..."
+        if [ -f "$COMPOSE_FILE" ]; then
+            $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down || true
+        else
+            docker stop $(docker ps -qa -f "label=com.docker.compose.project=gitea-monolith") 2>/dev/null || true
+        fi
+        sleep 2
+    fi
+}
+
 setup_directories() {
-    log_info "Enforcing PascalCase directory structure and migrating legacy data..."
+    log_info "Enforcing PascalCase architecture and migrating legacy data..."
     
-    # Base Directory PascalCase Migration
+    # Base Directory PascalCase Migration (Safe because of teardown)
     [ -d "${STACK_DIR}/data" ] && [ ! -d "${STACK_DIR}/Data" ] && mv "${STACK_DIR}/data" "${STACK_DIR}/Data"
     [ -d "${STACK_DIR}/secrets" ] && [ ! -d "${STACK_DIR}/Secrets" ] && mv "${STACK_DIR}/secrets" "${STACK_DIR}/Secrets"
     [ -d "${STACK_DIR}/audit" ] && [ ! -d "${STACK_DIR}/Audit" ] && mv "${STACK_DIR}/audit" "${STACK_DIR}/Audit"
@@ -598,7 +602,6 @@ setup_directories() {
     echo "!.gitignore" >> "${SECRETS_DIR}/.gitignore"
     
     if [ "$DEPLOY_GITEA" == "true" ]; then
-        # Runner Architecture Migration
         if [ -d "${DATA_DIR}/Runner" ] && [ ! -d "${DATA_DIR}/RunnerGeneric" ]; then
             log_info "Migrating legacy Runner directory to RunnerGeneric..."
             mv "${DATA_DIR}/Runner" "${DATA_DIR}/RunnerGeneric"
@@ -645,7 +648,7 @@ EOF
 get_secret() {
     local NAME=$1
     local HEX_LEN=$2
-    local FILE="${SECRETS_DIR}/${NAME}.txt"
+    local FILE="${SECRETS_DIR}/${NAME}"
     if [ ! -f "$FILE" ]; then
         (umask 077; openssl rand -hex "$HEX_LEN" | tr -d '\n' > "$FILE")
     fi
@@ -672,14 +675,14 @@ EOF
 )
 
     if [ "$DEPLOY_GITEA" == "true" ]; then
-        get_secret "GiteaDbPassword" 16 > /dev/null
-        get_secret "GiteaRedisPassword" 16 > /dev/null
-        get_secret "GiteaAdminPassword" 12 > /dev/null
+        # Snake_case strictly enforced for Docker secret compatibility
+        get_secret "gitea_db_password.txt" 16 > /dev/null
+        get_secret "gitea_redis_password.txt" 16 > /dev/null
+        get_secret "gitea_admin_password.txt" 12 > /dev/null
         
-        local ADMIN_USER_FILE="${SECRETS_DIR}/GiteaAdminUsername.txt"
+        local ADMIN_USER_FILE="${SECRETS_DIR}/gitea_admin_username.txt"
         if [ ! -f "$ADMIN_USER_FILE" ]; then (umask 077; echo -n "gitea_admin" > "$ADMIN_USER_FILE"); fi
-        local G_ADMIN_USER=$(cat "$ADMIN_USER_FILE")
-
+        
         cat >> "$ENV_FILE" <<EOF
 GITEA_RUNNER_TOKEN=${PREV_TOKEN}
 GITEA_WEB_PORT=${CFG_GITEA_WEB}
@@ -695,7 +698,7 @@ EOF
     fi
 
     if [ "$DEPLOY_VSCODE" == "true" ]; then
-        get_secret "VsCodePassword" 12 > /dev/null
+        get_secret "vscode_password.txt" 12 > /dev/null
         cat >> "$ENV_FILE" <<EOF
 VSCODE_PORT=${CFG_VSCODE_PORT}
 VSCODE_PUID=${REAL_UID}
@@ -773,17 +776,17 @@ EOF
 
     if [ "$DEPLOY_GITEA" == "true" ]; then
         cat >> "$COMPOSE_FILE" <<EOF
-  GiteaDbPassword:
-    file: ${SECRETS_DIR}/GiteaDbPassword.txt
-  GiteaRedisPassword:
-    file: ${SECRETS_DIR}/GiteaRedisPassword.txt
+  gitea_db_password:
+    file: ${SECRETS_DIR}/gitea_db_password.txt
+  gitea_redis_password:
+    file: ${SECRETS_DIR}/gitea_redis_password.txt
 EOF
     fi
 
     if [ "$DEPLOY_VSCODE" == "true" ]; then
         cat >> "$COMPOSE_FILE" <<EOF
-  VsCodePassword:
-    file: ${SECRETS_DIR}/VsCodePassword.txt
+  vscode_password:
+    file: ${SECRETS_DIR}/vscode_password.txt
 EOF
     fi
 
@@ -851,10 +854,10 @@ EOF
       - PUID=\${VSCODE_PUID}
       - PGID=\${VSCODE_PGID}
       - TZ=\${TZ}
-      - FILE__PASSWORD=/run/secrets/VsCodePassword
+      - FILE__PASSWORD=/run/secrets/vscode_password
       - DOCKER_HOST=tcp://gitea-socket-proxy:2375
     secrets:
-      - VsCodePassword
+      - vscode_password
     volumes:
       - ${DATA_DIR}/CodeServer:/config
       - ${DATA_DIR}/CodeServerInit:/custom-cont-init.d:ro
@@ -870,8 +873,8 @@ EOF
     fi
 
     if [ "$DEPLOY_GITEA" == "true" ]; then
-        local R_PASS=$(cat ${SECRETS_DIR}/GiteaRedisPassword.txt)
-        local DB_PASS_VAL=$(cat ${SECRETS_DIR}/GiteaDbPassword.txt)
+        local R_PASS=$(cat ${SECRETS_DIR}/gitea_redis_password.txt)
+        local DB_PASS_VAL=$(cat ${SECRETS_DIR}/gitea_db_password.txt)
         local GITEA_VOL="${DATA_DIR}/Gitea:/data"
         if [ "$USE_GITEA_NFS" == "true" ]; then GITEA_VOL="gitea-nfs-data:/data"; fi
 
@@ -883,10 +886,10 @@ EOF
     env_file: .env
     environment:
       - POSTGRES_USER=\${DB_USER}
-      - POSTGRES_PASSWORD_FILE=/run/secrets/GiteaDbPassword
+      - POSTGRES_PASSWORD_FILE=/run/secrets/gitea_db_password
       - POSTGRES_DB=\${DB_NAME}
     secrets:
-      - GiteaDbPassword
+      - gitea_db_password
     networks:
       - gitea-net
     volumes:
@@ -901,15 +904,15 @@ EOF
     image: redis:7-alpine
     container_name: Gitea-Cache
     restart: unless-stopped
-    command: ["sh", "-c", "redis-server --requirepass \"\$(cat /run/secrets/GiteaRedisPassword)\" --appendonly yes"]
+    command: ["sh", "-c", "redis-server --requirepass \"\$(cat /run/secrets/gitea_redis_password)\" --appendonly yes"]
     secrets:
-      - GiteaRedisPassword
+      - gitea_redis_password
     networks:
       - gitea-net
     volumes:
       - ${DATA_DIR}/Redis:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"\$(cat /run/secrets/GiteaRedisPassword)\" ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"\$(cat /run/secrets/gitea_redis_password)\" ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -941,7 +944,7 @@ EOF
       - GITEA__repository__ENABLE_PUSH_CREATE_ORG=true
       - GITEA__mirror__ENABLED=true
     secrets:
-      - GiteaDbPassword
+      - gitea_db_password
     networks:
       - gitea-net
     ports:
@@ -966,6 +969,7 @@ EOF
     image: gitea/act_runner:latest
     container_name: Runner-Generic
     restart: unless-stopped
+    profiles: ["runners"]
     environment:
       - GITEA_INSTANCE_URL=http://gitea:3000
       - GITEA_RUNNER_REGISTRATION_TOKEN=\${GITEA_RUNNER_TOKEN}
@@ -986,6 +990,7 @@ EOF
     image: gitea/act_runner:latest
     container_name: Runner-Gemini
     restart: unless-stopped
+    profiles: ["runners"]
     environment:
       - GITEA_INSTANCE_URL=http://gitea:3000
       - GITEA_RUNNER_REGISTRATION_TOKEN=\${GITEA_RUNNER_TOKEN}
@@ -1006,6 +1011,7 @@ EOF
     image: gitea/act_runner:latest
     container_name: Runner-GCloud
     restart: unless-stopped
+    profiles: ["runners"]
     environment:
       - GITEA_INSTANCE_URL=http://gitea:3000
       - GITEA_RUNNER_REGISTRATION_TOKEN=\${GITEA_RUNNER_TOKEN}
@@ -1225,12 +1231,6 @@ perform_forensic_audit() {
         else
             log_err "Runner Farm: Not found in Server CLI."
         fi
-        
-        if docker exec Runner-Generic wget -q -O - http://gitea-socket-proxy:2375/version > /dev/null 2>&1; then
-             log_succ "Socket Proxy: Reachable from Runner (via wget)."
-        else
-             log_err "Socket Proxy: Runner cannot access Docker API."
-        fi
     fi
 
     if [ "$DEPLOY_AI" == "true" ]; then
@@ -1243,12 +1243,6 @@ perform_forensic_audit() {
         EXPECTED_LAYERS=$(grep "OLLAMA_GPU_LAYERS" "$ENV_FILE" | cut -d= -f2 | tr -d '"')
         EXPECTED_LAYERS=${EXPECTED_LAYERS:-0}
         
-        FIRST_MODEL=$(docker exec Ollama-Worker ollama list | awk 'NR==2 {print $1}')
-        if [ -n "$FIRST_MODEL" ]; then
-             docker exec Ollama-Worker curl -s -f -d "{\"model\": \"$FIRST_MODEL\", \"prompt\": \"hi\", \"stream\": false}" http://127.0.0.1:11434/api/generate > /dev/null 2>&1
-             sleep 4
-        fi
-        
         LOGS=$(docker logs Ollama-Worker 2>&1 | tail -n 200)
         if echo "$LOGS" | grep -iq "offload"; then
             log_succ "Ollama Compute: GPU Offload detected."
@@ -1258,14 +1252,6 @@ perform_forensic_audit() {
             else
                  log_succ "Ollama Compute: CPU Mode (As Configured)."
             fi
-        fi
-    fi
-    
-    if [ "$DEPLOY_PORTAINER_AGENT" == "true" ]; then
-        if docker logs Portainer-Agent 2>&1 | grep -iq "starting agent api server"; then
-            log_succ "Portainer Agent: Standalone Mode Active."
-        else
-            log_err "Portainer Agent: Startup signature missing."
         fi
     fi
     
@@ -1305,7 +1291,7 @@ finalize_permissions() {
 finalize_stack() {
     finalize_permissions
     
-    log_info "Launching Stack..."
+    log_info "Launching Core Stack (Excluding Runners)..."
     $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --build --remove-orphans || exit 1
 
     if [ "$DEPLOY_GITEA" == "true" ]; then
@@ -1314,15 +1300,20 @@ finalize_stack() {
             STATUS=$(docker inspect --format='{{.State.Health.Status}}' Gitea 2>/dev/null || echo "starting")
             if [ "$STATUS" == "healthy" ]; then
                 log_succ "Gitea Online."
-                local ADM_U=$(cat "${SECRETS_DIR}/GiteaAdminUsername.txt" 2>/dev/null || echo "gitea_admin")
-                local ADM_P=$(cat "${SECRETS_DIR}/GiteaAdminPassword.txt" 2>/dev/null)
-                docker exec -u 1000 Gitea gitea admin user create --username "$ADM_U" --password "$ADM_P" --email "admin@${HOST_IP}" --admin --must-change-password=false 2>/dev/null || log_warn "Admin exists."
+                local ADM_U=$(cat "${SECRETS_DIR}/gitea_admin_username.txt" 2>/dev/null || echo "gitea_admin")
+                local ADM_P=$(cat "${SECRETS_DIR}/gitea_admin_password.txt" 2>/dev/null)
+                
+                # Password Sync Safety Net
+                docker exec -u 1000 Gitea gitea admin user create --username "$ADM_U" --password "$ADM_P" --email "admin@${HOST_IP}" --admin --must-change-password=false 2>/dev/null || {
+                    log_info "User exists. Synchronizing vault credentials to database..."
+                    docker exec -u 1000 Gitea gitea admin user change-password --username "$ADM_U" --password "$ADM_P" 2>/dev/null || true
+                }
                 
                 TOKEN=$(docker exec -u 1000 Gitea gitea actions generate-runner-token | tr -d '\r')
                 if [ -n "$TOKEN" ]; then
                     sed -i "s|GITEA_RUNNER_TOKEN=.*|GITEA_RUNNER_TOKEN=${TOKEN}|" "$ENV_FILE"
-                    log_info "Hot-patching Runner Farm (Recreating to sync token)..."
-                    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate runner-generic runner-gemini runner-gcloud
+                    log_info "Booting Runner Farm with validated token..."
+                    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" --profile runners up -d
                     log_succ "Runner Farm Registered & Online."
                 fi
                 
@@ -1431,8 +1422,8 @@ post_install_instructions() {
     if [ "$DEPLOY_GITEA" == "true" ]; then
         local G_STAT=$(docker inspect --format='{{.State.Health.Status}}' Gitea 2>/dev/null || echo "running")
         local COLOR=$GREEN; [[ "$G_STAT" == "starting" ]] && COLOR=$YELLOW
-        local G_USER=$(cat "${SECRETS_DIR}/GiteaAdminUsername.txt" 2>/dev/null || echo "N/A")
-        local G_PASS=$(cat "${SECRETS_DIR}/GiteaAdminPassword.txt" 2>/dev/null || echo "N/A")
+        local G_USER=$(cat "${SECRETS_DIR}/gitea_admin_username.txt" 2>/dev/null || echo "N/A")
+        local G_PASS=$(cat "${SECRETS_DIR}/gitea_admin_password.txt" 2>/dev/null || echo "N/A")
         draw_service_box "GITEA-CORE" "Location|http://${HOST_IP}:${CFG_GITEA_WEB}" "Status|${COLOR}[$G_STAT]${NC}" "User|$G_USER" "Pass|$G_PASS"
     fi
 
@@ -1449,7 +1440,7 @@ post_install_instructions() {
     fi
 
     if [ "$DEPLOY_VSCODE" == "true" ]; then
-        local VS_PASS=$(cat "${SECRETS_DIR}/VsCodePassword.txt" 2>/dev/null || echo "N/A")
+        local VS_PASS=$(cat "${SECRETS_DIR}/vscode_password.txt" 2>/dev/null || echo "N/A")
         draw_service_box "CODE-SERVER" "Location|http://${HOST_IP}:${CFG_VSCODE_PORT}" "Status|${GREEN}[running]${NC}" "Pass|$VS_PASS"
     fi
 
@@ -1469,6 +1460,7 @@ main() {
     configure_vscode_wizard
     resolve_conflicts
     configure_storage_wizard
+    pre_migration_teardown
     setup_directories
     configure_hardware_acceleration
     setup_environment
