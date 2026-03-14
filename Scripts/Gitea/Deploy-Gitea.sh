@@ -1,20 +1,20 @@
 #!/bin/bash
 
 # ==============================================================================
-# File: Deploy-Gitea.sh
+# File: DeployGitea.sh
 # Description: Tier-3 Hardened Provisioner for Gitea / Ollama / DevOps Stack.
 #              Target OS: ParrotOS / Debian Bookworm.
 #              Logic: Vault-first secrets, Heuristic LAN Hunter, PascalCase.
 #              Compliance: Directive 1, 2, 3 (Full Secret Isolation).
 #              Features: Integrated Forensic Audit, Self-Healing, Zero-Touch.
-# Patched: The Synthesis Monolith (Rev 106).
-#          - Immutable Secret Bug resolved (Runner Token via ENV).
-#          - Native LSIO Custom Init for Aider Injection (Zero-Nag).
-#          - Pre-seeded AI-Gated Repository and VS Code Workspace.
-#          - Strict PascalCase enforcement across Vault.
+# Patched: The Surgical Master (Rev 107).
+#          - [FIX 1] Seeded empty GITEA_RUNNER_TOKEN in .env for sed targeting.
+#          - [FIX 2] Added legacy Runner directory migration logic.
+#          - [FIX 3] Replaced sudo with native su -s in LSIO init script.
+#          - [FIX 4] Forced default_branch="main" in API repo creation payload.
 # Author: Tier-3 Support
 # Date: 2026-03-13
-# Status: SYNTHESIS MONOLITH (Rev 106)
+# Status: SURGICAL MASTER (Rev 107)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -129,7 +129,7 @@ load_existing_state() {
         CFG_GITEA_SSH=2222
         CFG_AGENT_PORT=9001
         CFG_VSCODE_PORT=8443
-        CFG_AI_PORT="" # Set dynamically based on role later
+        CFG_AI_PORT="" 
         PREV_GITEA_NFS="false"
         PREV_AI_NFS="false"
     fi
@@ -591,6 +591,12 @@ setup_directories() {
     echo "!.gitignore" >> "${SECRETS_DIR}/.gitignore"
     
     if [ "$DEPLOY_GITEA" == "true" ]; then
+        # [FIX 2] Architectural Migration: Salvage legacy Runner data to prevent orphaning
+        if [ -d "${DATA_DIR}/Runner" ] && [ ! -d "${DATA_DIR}/RunnerGeneric" ]; then
+            log_info "Migrating legacy Runner directory to RunnerGeneric..."
+            mv "${DATA_DIR}/Runner" "${DATA_DIR}/RunnerGeneric"
+        fi
+        
         mkdir -p "${DATA_DIR}/Postgres"
         mkdir -p "${DATA_DIR}/Redis"
         mkdir -p "${DATA_DIR}/RunnerGeneric"
@@ -604,7 +610,7 @@ setup_directories() {
         mkdir -p "${DATA_DIR}/CodeServer"
         mkdir -p "${DATA_DIR}/CodeServerInit"
         
-        # Inject Aider Installation Script into VS Code LSIO Init process
+        # [FIX 3] Inject Aider Installation Script using native 'su' to bypass missing sudo
         cat << EOF > "${DATA_DIR}/CodeServerInit/99-aider-install.sh"
 #!/bin/bash
 # Automatically injected by Omega Monolith script
@@ -612,8 +618,8 @@ echo "[INFO] Initializing Aider AI Partner Integration..."
 apt-get update -qq
 apt-get install -y -qq python3-pip git > /dev/null
 
-echo "[INFO] Installing Aider..."
-sudo -u abc pip3 install aider-chat --break-system-packages > /dev/null 2>&1
+echo "[INFO] Installing Aider (User context: abc)..."
+su -s /bin/bash abc -c "pip3 install aider-chat --break-system-packages > /dev/null 2>&1"
 
 BASHRC="/config/.bashrc"
 touch "\$BASHRC"
@@ -643,8 +649,16 @@ get_secret() {
 setup_environment() {
     log_info "Vaulting secrets and initializing environment..."
     mkdir -p "$SECRETS_DIR"
+    
+    # Retrieve previous token if hydrating, else empty
+    local PREV_TOKEN=""
+    if [ -f "$ENV_FILE" ]; then
+        PREV_TOKEN=$(grep "GITEA_RUNNER_TOKEN=" "$ENV_FILE" | cut -d= -f2)
+    fi
+
     rm -f "$ENV_FILE"
 
+    # 1. Global Constants
     (umask 077; cat > "$ENV_FILE" <<EOF
 # Generated on $(date)
 HOST_IP=${HOST_IP}
@@ -653,17 +667,19 @@ AGENT_PORT=${CFG_AGENT_PORT}
 EOF
 )
 
+    # 2. Add Gitea Secrets only if needed
     if [ "$DEPLOY_GITEA" == "true" ]; then
         get_secret "GiteaDbPassword" 16 > /dev/null
         get_secret "GiteaRedisPassword" 16 > /dev/null
         get_secret "GiteaAdminPassword" 12 > /dev/null
-        get_secret "GiteaRunnerToken" 16 > /dev/null
         
         local ADMIN_USER_FILE="${SECRETS_DIR}/GiteaAdminUsername.txt"
         if [ ! -f "$ADMIN_USER_FILE" ]; then (umask 077; echo -n "gitea_admin" > "$ADMIN_USER_FILE"); fi
         local G_ADMIN_USER=$(cat "$ADMIN_USER_FILE")
 
+        # [FIX 1] Critical Regression Fix: Inject token placeholder for sed logic later
         cat >> "$ENV_FILE" <<EOF
+GITEA_RUNNER_TOKEN=${PREV_TOKEN}
 GITEA_WEB_PORT=${CFG_GITEA_WEB}
 GITEA_SSH_PORT=${CFG_GITEA_SSH}
 DB_USER=gitea
@@ -676,6 +692,7 @@ EOF
         fi
     fi
 
+    # 3. Add VSCode Secrets
     if [ "$DEPLOY_VSCODE" == "true" ]; then
         get_secret "VsCodePassword" 12 > /dev/null
         cat >> "$ENV_FILE" <<EOF
@@ -685,6 +702,7 @@ VSCODE_PGID=${REAL_GID}
 EOF
     fi
 
+    # 4. Add AI Config
     if [ "$DEPLOY_AI" == "true" ]; then
         local GPU_L=0
         if [ "$HAS_GPU" == "true" ]; then GPU_L=20; fi
@@ -839,7 +857,6 @@ EOF
       - VsCodePassword
     volumes:
       - ${DATA_DIR}/CodeServer:/config
-      # Mount injected Aider bootstrap script
       - ${DATA_DIR}/CodeServerInit:/custom-cont-init.d:ro
     ports:
       - "\${VSCODE_PORT}:8443"
@@ -1304,8 +1321,6 @@ finalize_stack() {
                 # Runner Token Generation (ENV-based to prevent Immutable Secret Bug)
                 TOKEN=$(docker exec -u 1000 Gitea gitea actions generate-runner-token | tr -d '\r')
                 if [ -n "$TOKEN" ]; then
-                    (umask 077; echo -n "$TOKEN" > "${SECRETS_DIR}/GiteaRunnerToken.txt")
-                    
                     # Update .env and force recreation to inject ENV var securely
                     sed -i "s|GITEA_RUNNER_TOKEN=.*|GITEA_RUNNER_TOKEN=${TOKEN}|" "$ENV_FILE"
                     log_info "Hot-patching Runner Farm (Recreating to sync token)..."
@@ -1319,10 +1334,11 @@ finalize_stack() {
                 local REPO_CHECK=$(curl -s -u "${ADM_U}:${ADM_P}" "http://127.0.0.1:3000/api/v1/repos/${ADM_U}/${REPO_NAME}")
                 
                 if ! echo "$REPO_CHECK" | grep -q "\"id\":"; then
+                    # [FIX 4] Forcing default branch to "main" via API
                     curl -s -X POST "http://127.0.0.1:3000/api/v1/user/repos" \
                         -H "Content-Type: application/json" \
                         -u "${ADM_U}:${ADM_P}" \
-                        -d "{\"name\": \"$REPO_NAME\", \"auto_init\": true, \"private\": false}" > /dev/null
+                        -d "{\"name\": \"$REPO_NAME\", \"auto_init\": true, \"private\": false, \"default_branch\": \"main\"}" > /dev/null
                     
                     local NET_NAME=$(docker inspect Ollama-Worker --format '{{range $k, $v := .NetworkSettings.Networks}}{{printf "%s\n" $k}}{{end}}' | head -n 1 || echo "gitea-monolith_gitea-net")
                     local WORKFLOW_CONTENT=$(cat <<EOF
