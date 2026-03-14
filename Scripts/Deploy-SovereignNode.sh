@@ -1,18 +1,16 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.15-THE-ARCHITECT
+#  Version: v10.16-THE-MONOLITH
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Architect Fixes:
-#  - TLS-01: Unified CertResolver naming to 'cloudflare' across the master 
-#            daemon, dynamic rules, and assimilation manifests to prevent HSTS blocks.
-#  - HEALTH-09: Decoupled Unbound healthcheck from the WAN (Google). Queries 
-#               localhost to ensure LAN sinkhole survives ISP outages.
-#  - NET-06: Injected 'src_valid_mark=1' sysctl into WireGuard to permit iptables 
-#            FwMark policy routing, preventing tunnel packet death.
-#  - CRON-10: Engineered atomic '.tmp' script swaps for the cron automaton 
-#             to eliminate sub-shell truncation race conditions.
+#  Monolith Fixes:
+#  - BASH-01: Eradicated the undefined TRAEFIK_IP split-horizon artifact.
+#             Replaced with the mathematically guaranteed 10.99.0.13 static route.
+#  - DNS-02: Interpolated INTERNAL_DOMAIN into Unbound config to enforce local 
+#            zone redirection. All VPN subdomains now resolve locally to Traefik.
+#  - HEALTH-10: Injected 127.0.0.0/8 allow ACL into Unbound to permit internal 
+#               healthcheck queries, preventing a false-negative boot deadlock.
 # ==============================================================================
 
 set -euo pipefail
@@ -310,7 +308,9 @@ EOF
     sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
 fi
 
-sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << 'EOF'
+# BASH-01 & DNS-02: Unquoted EOF interpolates INTERNAL_DOMAIN into the Unbound config.
+# Enforces a local transparent redirect, bouncing all VPN subdomains directly to Traefik.
+sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
   num-threads: 1
   interface: 0.0.0.0
@@ -330,7 +330,11 @@ server:
   minimal-responses: yes
   hide-identity: yes
   hide-version: yes
+  # HEALTH-10: 127.0.0.0/8 allow added to permit healthcheck 'localhost' lookups
+  access-control: 127.0.0.0/8 allow
   access-control: 10.99.0.0/24 allow
+  local-zone: "${INTERNAL_DOMAIN}." redirect
+  local-data: "${INTERNAL_DOMAIN}. A 10.99.0.13"
 EOF
 
 sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
@@ -405,7 +409,6 @@ http:
       rule: "Host(\`auth.${INTERNAL_DOMAIN}\`)"
       entryPoints: ["websecure"]
       service: "authelia-service"
-      # TLS-01: Corrected resolver name to 'cloudflare' across all rules
       tls: { certResolver: "cloudflare" }
   services:
     authelia-service:
@@ -532,7 +535,6 @@ services:
     cap_add: [NET_BIND_SERVICE, SETGID, SETUID, CHOWN, DAC_OVERRIDE]
     security_opt: [no-new-privileges:true]
     logging: *default-logging
-    # HEALTH-09: Isolates DNS health from external Google ping to ensure PiHole boots even if ISP is down
     healthcheck:
       test: ["CMD-SHELL", "nslookup localhost 127.0.0.1 || exit 1"]
       interval: 10s
@@ -584,7 +586,6 @@ services:
       - /lib/modules:/lib/modules:ro
       - ${ConfigDir}/WireGuard:/config
     ports: ["0.0.0.0:\${WG_PORT}:\${WG_PORT}/udp"]
-    # NET-06: Permitted FwMark policy routing to pass via sysctls to prevent dropped packets
     sysctls:
       net.ipv4.ip_forward: 1
       net.ipv4.conf.all.src_valid_mark: 1
@@ -623,7 +624,6 @@ services:
       - "--providers.docker.exposedbydefault=false"
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--providers.file.watch=true"
-      # TLS-01: Declared resolver named 'cloudflare'
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/acme.json"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
@@ -642,7 +642,6 @@ sudo chmod 600 "$ComposeFile" "$EnvFile"
 # CRON-10: AUTOMATED LIFECYCLE APPLIANCE GENERATOR (ATOMIC SWAP)
 # ==============================================================================
 UpdaterScript="${ScriptsDir}/UpdateSovereignNode.sh"
-# Write to .tmp first to prevent EOF truncation panics if executed concurrently
 sudo tee "${UpdaterScript}.tmp" > /dev/null << EOF
 #!/bin/bash
 # Sovereign Node Autonomous Lifecycle Updater
