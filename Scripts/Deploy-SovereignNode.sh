@@ -1,16 +1,15 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.16-THE-MONOLITH
+#  Version: v10.17-EVENT-HORIZON
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Monolith Fixes:
-#  - BASH-01: Eradicated the undefined TRAEFIK_IP split-horizon artifact.
-#             Replaced with the mathematically guaranteed 10.99.0.13 static route.
-#  - DNS-02: Interpolated INTERNAL_DOMAIN into Unbound config to enforce local 
-#            zone redirection. All VPN subdomains now resolve locally to Traefik.
-#  - HEALTH-10: Injected 127.0.0.0/8 allow ACL into Unbound to permit internal 
-#               healthcheck queries, preventing a false-negative boot deadlock.
+#  Event Horizon Fixes:
+#  - ROUTE-16: Removed bash escapes from INTERNAL_DOMAIN inside the Assimilation 
+#              Engine to allow native interpolation. Traefik now receives a 
+#              functional FQDN instead of a literal string variable.
+#  - HEALTH-11: Replaced deprecated Authelia healthcheck binary with a native 
+#               wget spider ping to the /api/health endpoint to prevent boot deadlocks.
 # ==============================================================================
 
 set -euo pipefail
@@ -69,7 +68,7 @@ DetectOsFamily() {
 CheckDependencies() {
     PrintMsg "240" "Verifying baseline tools for $OS_ID..."
     eval "$UpdateCmd" > /dev/null 2>&1 || true
-    local deps="curl jq openssl cron tzdata dnsutils"
+    local deps="curl jq openssl cron tzdata dnsutils wget"
     for dep in $deps; do
         if ! command -v "$dep" &> /dev/null; then
             PrintMsg "226" "Installing missing dependency: $dep"
@@ -308,8 +307,6 @@ EOF
     sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
 fi
 
-# BASH-01 & DNS-02: Unquoted EOF interpolates INTERNAL_DOMAIN into the Unbound config.
-# Enforces a local transparent redirect, bouncing all VPN subdomains directly to Traefik.
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
   num-threads: 1
@@ -330,7 +327,6 @@ server:
   minimal-responses: yes
   hide-identity: yes
   hide-version: yes
-  # HEALTH-10: 127.0.0.0/8 allow added to permit healthcheck 'localhost' lookups
   access-control: 127.0.0.0/8 allow
   access-control: 10.99.0.0/24 allow
   local-zone: "${INTERNAL_DOMAIN}." redirect
@@ -515,8 +511,9 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     logging: *default-logging
+    # HEALTH-11: Corrected API spider ping prevents healthcheck binary path failures.
     healthcheck:
-      test: ["CMD", "authelia", "healthcheck"]
+      test: ["CMD-SHELL", "wget --quiet --spider http://127.0.0.1:9091/api/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -738,11 +735,12 @@ AssimilateAlienContainers() {
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
                 sudo docker network connect sovereign_node_proxy_network "$container" >/dev/null 2>&1 || true
 
+                # ROUTE-16: Removed bash escape (\) to ensure the domain correctly interpolates
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 http:
   routers:
     ${clean_name}-router:
-      rule: "Host(\`${clean_name}.\${INTERNAL_DOMAIN}\`)"
+      rule: "Host(\`${clean_name}.${INTERNAL_DOMAIN}\`)"
       entryPoints: ["websecure"]
       middlewares: [${mw_string}]
       service: "${clean_name}-service"
@@ -754,7 +752,7 @@ http:
         servers:
           - url: "http://${container}:${TargetPort}"
 MANIFEST_EOF
-                PrintMsg "82" "✔ Assimilated: https://${clean_name}.\${INTERNAL_DOMAIN}"
+                PrintMsg "82" "✔ Assimilated: https://${clean_name}.${INTERNAL_DOMAIN}"
             done
         fi
     fi
@@ -774,7 +772,8 @@ if [ "$Interactive" -eq 1 ]; then
     
     echo ""
     PrintMsg "196" " ⚠️  AUTHELIA MFA REGISTRATION (CRITICAL)"
-    PrintMsg "226" " Your first login attempt at https://pihole.\${INTERNAL_DOMAIN}"
+    # ROUTE-16: Removed bash escape here as well for clean terminal output
+    PrintMsg "226" " Your first login attempt at https://pihole.${INTERNAL_DOMAIN}"
     PrintMsg "226" " will trigger an email to register your biometric/2FA device."
     PrintMsg "226" " Because no SMTP server is configured, the link is intercepted locally."
     PrintMsg "82"  " Retrieve your registration link by running:"
