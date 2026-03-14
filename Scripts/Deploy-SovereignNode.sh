@@ -1,17 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.14-OBLIVION-SEALED
+#  Version: v10.15-THE-ARCHITECT
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Oblivion Fixes:
-#  - NET-05: Pinned WireGuard to IPv4 (0.0.0.0) to prevent EAFNOSUPPORT kernel 
-#            panics on STIG-hardened hosts with IPv6 disabled.
-#  - LOG-02: Injected global JSON log rotation anchors to guarantee host disk 
-#            exhaustion cannot be triggered by Traefik/PiHole telemetry.
-#  - STIG-04: Enforced true Zero-Trust via 'cap_drop: [ALL]' and surgical 
-#             'cap_add' matrices. Injected 'no-new-privileges:true' to prevent 
-#             container-to-host kernel escapes.
+#  Architect Fixes:
+#  - TLS-01: Unified CertResolver naming to 'cloudflare' across the master 
+#            daemon, dynamic rules, and assimilation manifests to prevent HSTS blocks.
+#  - HEALTH-09: Decoupled Unbound healthcheck from the WAN (Google). Queries 
+#               localhost to ensure LAN sinkhole survives ISP outages.
+#  - NET-06: Injected 'src_valid_mark=1' sysctl into WireGuard to permit iptables 
+#            FwMark policy routing, preventing tunnel packet death.
+#  - CRON-10: Engineered atomic '.tmp' script swaps for the cron automaton 
+#             to eliminate sub-shell truncation race conditions.
 # ==============================================================================
 
 set -euo pipefail
@@ -130,7 +131,6 @@ ExecuteAnnihilation() {
         PrintMsg "196" "There is no undo. You will be punished for your mistakes."
         echo ""
         
-        # ENV-05: Native Bash Fallback for Confirmation
         confirm="no"
         if command -v gum &> /dev/null; then
             if gum confirm "OBLITERATE EVERYTHING and restart fresh?"; then confirm="yes"; fi
@@ -163,7 +163,6 @@ ExecuteAnnihilation() {
 ExecuteAnnihilation
 # ==============================================================================
 
-# CRON-09: Explicit creation of ScriptsDir
 sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" \
              "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" \
              "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
@@ -234,7 +233,6 @@ if [ "$Interactive" -eq 1 ]; then
     InternalDomain=""
     AcmeEmail=""
 
-    # ENV-05: Native Bash Fallback Engine
     if command -v gum &> /dev/null; then
         WgEndpoint=$(gum input --prompt "WireGuard Public Endpoint (IP/DDNS): " --value "$PrevEndpoint")
         WgPort=$(gum input --prompt "WireGuard UDP Listen Port: " --value "$PrevPort")
@@ -272,7 +270,6 @@ set -u
 sudo timedatectl set-timezone UTC
 if systemctl is-active --quiet systemd-timesyncd; then sudo systemctl restart systemd-timesyncd; fi
 
-# CLEANUP-02: Purge Alien Containers
 PurgeAlienContainers() {
     if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
         local AlienContainers=$(sudo docker ps -a --format '{{.ID}}|{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($3) != stack {print $1 " (" $2 ")"}')
@@ -408,7 +405,8 @@ http:
       rule: "Host(\`auth.${INTERNAL_DOMAIN}\`)"
       entryPoints: ["websecure"]
       service: "authelia-service"
-      tls: { certResolver: "letsencrypt" }
+      # TLS-01: Corrected resolver name to 'cloudflare' across all rules
+      tls: { certResolver: "cloudflare" }
   services:
     authelia-service:
       loadBalancer:
@@ -453,7 +451,6 @@ secrets:
   traefik_auth: { file: ${SecretsDir}/traefik_auth }
   pihole_pass: { file: ${SecretsDir}/pihole_pass }
 
-# LOG-02: Global Storage Throttle prevents host disk exhaustion
 x-logging: &default-logging
   driver: "json-file"
   options:
@@ -467,7 +464,6 @@ services:
     networks: [socket_network]
     environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, PING=1, INFO=1, POST=0]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
-    # STIG-04: Enforce strict bounding sets globally
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID]
     security_opt: [no-new-privileges:true]
@@ -536,8 +532,9 @@ services:
     cap_add: [NET_BIND_SERVICE, SETGID, SETUID, CHOWN, DAC_OVERRIDE]
     security_opt: [no-new-privileges:true]
     logging: *default-logging
+    # HEALTH-09: Isolates DNS health from external Google ping to ensure PiHole boots even if ISP is down
     healthcheck:
-      test: ["CMD-SHELL", "nslookup google.com 127.0.0.1 || exit 1"]
+      test: ["CMD-SHELL", "nslookup localhost 127.0.0.1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -553,7 +550,7 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)"
       - "traefik.http.routers.pihole.entrypoints=websecure"
-      - "traefik.http.routers.pihole.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.pihole.tls.certresolver=cloudflare"
       - "traefik.http.services.pihole.loadbalancer.server.port=80"
       - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file"
       - "traefik.docker.network=sovereign_node_proxy_network"
@@ -586,9 +583,11 @@ services:
     volumes:
       - /lib/modules:/lib/modules:ro
       - ${ConfigDir}/WireGuard:/config
-    # NET-05: Hardcoded IPv4 bind to prevent EAFNOSUPPORT panic on STIG nodes
     ports: ["0.0.0.0:\${WG_PORT}:\${WG_PORT}/udp"]
-    sysctls: { net.ipv4.ip_forward: 1 }
+    # NET-06: Permitted FwMark policy routing to pass via sysctls to prevent dropped packets
+    sysctls:
+      net.ipv4.ip_forward: 1
+      net.ipv4.conf.all.src_valid_mark: 1
     cap_drop: [ALL]
     cap_add: [NET_ADMIN, SYS_MODULE, NET_RAW]
     logging: *default-logging
@@ -624,10 +623,11 @@ services:
       - "--providers.docker.exposedbydefault=false"
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--providers.file.watch=true"
-      - "--certificatesresolvers.letsencrypt.acme.email=\${ACME_EMAIL}"
-      - "--certificatesresolvers.letsencrypt.acme.storage=/acme.json"
-      - "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare"
-      - "--certificatesresolvers.letsencrypt.acme.dnschallenge=true"
+      # TLS-01: Declared resolver named 'cloudflare'
+      - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
+      - "--certificatesresolvers.cloudflare.acme.storage=/acme.json"
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge=true"
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     security_opt: [no-new-privileges:true]
@@ -639,10 +639,11 @@ sudo chown -R 0:0 "$StackDir"
 sudo chmod 600 "$ComposeFile" "$EnvFile"
 
 # ==============================================================================
-# CRON-08: AUTOMATED LIFECYCLE APPLIANCE GENERATOR (PATH-ARMORED)
+# CRON-10: AUTOMATED LIFECYCLE APPLIANCE GENERATOR (ATOMIC SWAP)
 # ==============================================================================
 UpdaterScript="${ScriptsDir}/UpdateSovereignNode.sh"
-sudo tee "$UpdaterScript" > /dev/null << EOF
+# Write to .tmp first to prevent EOF truncation panics if executed concurrently
+sudo tee "${UpdaterScript}.tmp" > /dev/null << EOF
 #!/bin/bash
 # Sovereign Node Autonomous Lifecycle Updater
 # Managed by DeploySovereignNode.sh
@@ -653,15 +654,12 @@ exec > >(logger -t SovereignNodeUpdater) 2>&1
 echo "[Sovereign Node] Initiating weekly lifecycle update..."
 cd "${StackDir}" || exit 1
 
-# Fetch fresh root hints
 curl -sS https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
 if [ -s "${ConfigDir}/Unbound/RootHints.txt.tmp" ]; then
     mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
-    # Flush the DNS resolver to ingest the new anchors into RAM
     docker compose --env-file "${EnvFile}" restart unbound_dns
 fi
 
-# Rotate Matrix
 docker compose --env-file "${EnvFile}" pull --quiet
 docker compose --env-file "${EnvFile}" up -d --remove-orphans
 docker image prune -af --filter "until=168h"
@@ -669,7 +667,8 @@ docker image prune -af --filter "until=168h"
 echo "[Sovereign Node] Update cycle complete."
 EOF
 
-sudo chmod 700 "$UpdaterScript"
+sudo chmod 700 "${UpdaterScript}.tmp"
+sudo mv "${UpdaterScript}.tmp" "$UpdaterScript"
 sudo ln -sf "$UpdaterScript" /etc/cron.weekly/sovereign-node-update
 
 # Ignition
@@ -749,7 +748,7 @@ http:
       middlewares: [${mw_string}]
       service: "${clean_name}-service"
       tls:
-        certResolver: "letsencrypt"
+        certResolver: "cloudflare"
   services:
     ${clean_name}-service:
       loadBalancer:
