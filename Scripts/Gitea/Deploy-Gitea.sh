@@ -3,18 +3,17 @@
 # ==============================================================================
 # File: DeployGitea.sh
 # Description: Tier-3 Hardened Provisioner for Gitea / Ollama / DevOps Stack.
-#              Target OS: ParrotOS / Debian Bookworm.
+#              Target OS: Linux ParrotOS / Debian.
 #              Logic: Vault-first secrets, Heuristic LAN Hunter, PascalCase.
 #              Compliance: Directive 1, 2, 3 (Full Secret Isolation).
 #              Features: Integrated Forensic Audit, Self-Healing, Zero-Touch.
-# Patched: The Surgical Master (Rev 109).
-#          - Pre-Migration Teardown (Protects Active Mounts).
-#          - Snake_case Docker Secrets override (Fixes DB Lockout).
-#          - Forced Password Sync (Fixes API 401 Lockout).
-#          - Profile-Based Runner Boot (Fixes Crash Loop).
+# Patched: The Citadel Master (Rev 110).
+#          - [FIX 1] Pre-migration check includes legacy docker-compose.yml.
+#          - [FIX 2] Direct SQL injection removes Zombie Password flags.
+#          - [FIX 3] Added python3-venv to LSIO Aider bootstrap.
 # Author: Tier-3 Support
 # Date: 2026-03-13
-# Status: SURGICAL MASTER (Rev 109)
+# Status: CITADEL MASTER (Rev 110)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -575,10 +574,16 @@ configure_storage_wizard() {
 pre_migration_teardown() {
     if [ -d "${STACK_DIR}/data" ] || [ -d "${STACK_DIR}/secrets" ]; then
         log_info "Legacy lowercase directories detected. Spinning down stack to release file locks..."
-        if [ -f "$COMPOSE_FILE" ]; then
-            $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" down || true
+        
+        # [FIX 1] Catch all variations of the Compose file and project labels
+        if [ -f "${STACK_DIR}/DockerCompose.yml" ]; then
+            $DOCKER_COMPOSE_CMD -f "${STACK_DIR}/DockerCompose.yml" down || true
+        elif [ -f "${STACK_DIR}/docker-compose.yml" ]; then
+            $DOCKER_COMPOSE_CMD -f "${STACK_DIR}/docker-compose.yml" down || true
         else
+            docker stop $(docker ps -qa -f "label=com.docker.compose.project=${PROJECT_NAME,,}") 2>/dev/null || true
             docker stop $(docker ps -qa -f "label=com.docker.compose.project=gitea-monolith") 2>/dev/null || true
+            docker stop $(docker ps -qa -f "label=com.docker.compose.project=gitea-controller") 2>/dev/null || true
         fi
         sleep 2
     fi
@@ -620,12 +625,13 @@ setup_directories() {
         mkdir -p "${DATA_DIR}/CodeServer"
         mkdir -p "${DATA_DIR}/CodeServerInit"
         
+        # [FIX 3] Added python3-venv to satisfy PEP 668 on base Ubuntu
         cat << EOF > "${DATA_DIR}/CodeServerInit/99-aider-install.sh"
 #!/bin/bash
 # Automatically injected by Omega Monolith script
 echo "[INFO] Initializing Aider AI Partner Integration..."
 apt-get update -qq
-apt-get install -y -qq python3-pip git > /dev/null
+apt-get install -y -qq python3-pip python3-venv git > /dev/null
 
 echo "[INFO] Installing Aider (User context: abc)..."
 su -s /bin/bash abc -c "pip3 install aider-chat --break-system-packages > /dev/null 2>&1"
@@ -1302,11 +1308,22 @@ finalize_stack() {
                 log_succ "Gitea Online."
                 local ADM_U=$(cat "${SECRETS_DIR}/gitea_admin_username.txt" 2>/dev/null || echo "gitea_admin")
                 local ADM_P=$(cat "${SECRETS_DIR}/gitea_admin_password.txt" 2>/dev/null)
+                local DB_PASS_VAL=$(cat "${SECRETS_DIR}/gitea_db_password.txt" 2>/dev/null)
                 
-                # Password Sync Safety Net
+                # [FIX 2] Password Sync & Direct SQL Zombie Flag override
                 docker exec -u 1000 Gitea gitea admin user create --username "$ADM_U" --password "$ADM_P" --email "admin@${HOST_IP}" --admin --must-change-password=false 2>/dev/null || {
                     log_info "User exists. Synchronizing vault credentials to database..."
                     docker exec -u 1000 Gitea gitea admin user change-password --username "$ADM_U" --password "$ADM_P" 2>/dev/null || true
+                    
+                    log_info "Scrubbing Zombie Password Flag via direct SQL injection..."
+                    docker exec -e PGPASSWORD="$DB_PASS_VAL" Gitea-DB psql -U gitea -d gitea -c "UPDATE \"user\" SET must_change_password=false WHERE lower(name)=lower('$ADM_U');" > /dev/null 2>&1 || log_warn "SQL override failed. API calls may return 401."
+                    
+                    log_info "Restarting Gitea to flush user cache..."
+                    docker restart Gitea >/dev/null
+                    for j in {1..20}; do
+                        if docker exec Gitea curl -s -f http://127.0.0.1:3000/api/healthz >/dev/null 2>&1; then break; fi
+                        sleep 2
+                    done
                 }
                 
                 TOKEN=$(docker exec -u 1000 Gitea gitea actions generate-runner-token | tr -d '\r')
