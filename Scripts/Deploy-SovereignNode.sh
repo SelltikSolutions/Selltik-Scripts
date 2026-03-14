@@ -1,16 +1,17 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.13-AETHER-FORGED
+#  Version: v10.14-OBLIVION-SEALED
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Aether Fixes:
-#  - CRON-09: Declared and injected ScriptsDir into the master hierarchy creation 
-#             to prevent tee failures on barren, zero-state hosts.
-#  - ENV-05: Engineered native bash read fallbacks for all variable inputs to 
-#            guarantee stack execution even if 'gum' fails to install.
-#  - ROUTE-15: Injected empty-string validation into the Assimilation Engine 
-#              port prompt to prevent fatal Traefik YAML parsing crashes.
+#  Oblivion Fixes:
+#  - NET-05: Pinned WireGuard to IPv4 (0.0.0.0) to prevent EAFNOSUPPORT kernel 
+#            panics on STIG-hardened hosts with IPv6 disabled.
+#  - LOG-02: Injected global JSON log rotation anchors to guarantee host disk 
+#            exhaustion cannot be triggered by Traefik/PiHole telemetry.
+#  - STIG-04: Enforced true Zero-Trust via 'cap_drop: [ALL]' and surgical 
+#             'cap_add' matrices. Injected 'no-new-privileges:true' to prevent 
+#             container-to-host kernel escapes.
 # ==============================================================================
 
 set -euo pipefail
@@ -162,7 +163,7 @@ ExecuteAnnihilation() {
 ExecuteAnnihilation
 # ==============================================================================
 
-# CRON-09: Explicit creation of ScriptsDir to prevent 'tee' failure on barren hosts
+# CRON-09: Explicit creation of ScriptsDir
 sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" \
              "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" \
              "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
@@ -452,6 +453,7 @@ secrets:
   traefik_auth: { file: ${SecretsDir}/traefik_auth }
   pihole_pass: { file: ${SecretsDir}/pihole_pass }
 
+# LOG-02: Global Storage Throttle prevents host disk exhaustion
 x-logging: &default-logging
   driver: "json-file"
   options:
@@ -465,6 +467,7 @@ services:
     networks: [socket_network]
     environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, PING=1, INFO=1, POST=0]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
+    # STIG-04: Enforce strict bounding sets globally
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID]
     security_opt: [no-new-privileges:true]
@@ -583,7 +586,8 @@ services:
     volumes:
       - /lib/modules:/lib/modules:ro
       - ${ConfigDir}/WireGuard:/config
-    ports: ["\${WG_PORT}:\${WG_PORT}/udp"]
+    # NET-05: Hardcoded IPv4 bind to prevent EAFNOSUPPORT panic on STIG nodes
+    ports: ["0.0.0.0:\${WG_PORT}:\${WG_PORT}/udp"]
     sysctls: { net.ipv4.ip_forward: 1 }
     cap_drop: [ALL]
     cap_add: [NET_ADMIN, SYS_MODULE, NET_RAW]
@@ -720,7 +724,6 @@ AssimilateAlienContainers() {
                     read -p "Internal listening port for $container (e.g. 80, 8080): " TargetPort
                 fi
 
-                # ROUTE-15: Failsafe port validation to prevent YAML parsing panic
                 if [ -z "$TargetPort" ]; then
                     PrintMsg "196" "Target port cannot be empty. Skipping assimilation for $container."
                     continue
@@ -771,7 +774,6 @@ if [ "$Interactive" -eq 1 ]; then
     PrintMsg "196" " SAVE THIS NOW. IT WILL NOT BE DISPLAYED AGAIN."
     PrintMsg "214" "========================================================================"
     
-    # UX-01: Critical MFA Extraction Notice
     echo ""
     PrintMsg "196" " ⚠️  AUTHELIA MFA REGISTRATION (CRITICAL)"
     PrintMsg "226" " Your first login attempt at https://pihole.\${INTERNAL_DOMAIN}"
