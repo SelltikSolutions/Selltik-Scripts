@@ -7,14 +7,13 @@
 #              Logic: Vault-first secrets, Heuristic LAN Hunter, PascalCase.
 #              Compliance: Directive 1, 2, 3 (Full Secret Isolation).
 #              Features: Integrated Forensic Audit, Self-Healing, Zero-Touch.
-# Patched: The Surgical Master (Rev 107).
-#          - [FIX 1] Seeded empty GITEA_RUNNER_TOKEN in .env for sed targeting.
-#          - [FIX 2] Added legacy Runner directory migration logic.
-#          - [FIX 3] Replaced sudo with native su -s in LSIO init script.
-#          - [FIX 4] Forced default_branch="main" in API repo creation payload.
+# Patched: The Validated Master (Rev 108).
+#          - Removed undefined 'secrets:' mapping from Runner Farm.
+#          - Implemented blocking wait-loop for async 'git' installation.
+#          - Enforced strict PascalCase on base directories with zero-loss migration.
 # Author: Tier-3 Support
 # Date: 2026-03-13
-# Status: SURGICAL MASTER (Rev 107)
+# Status: VALIDATED MASTER (Rev 108)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -23,9 +22,11 @@
 BASE_DIR="/opt/Docker/Stacks"
 PROJECT_NAME="Gitea"
 STACK_DIR="${BASE_DIR}/${PROJECT_NAME}"
-SECRETS_DIR="${STACK_DIR}/secrets"
-DATA_DIR="${STACK_DIR}/data"
-AUDIT_DIR="${STACK_DIR}/audit"
+
+# PascalCase Enforcement
+SECRETS_DIR="${STACK_DIR}/Secrets"
+DATA_DIR="${STACK_DIR}/Data"
+AUDIT_DIR="${STACK_DIR}/Audit"
 
 COMPOSE_FILE="${STACK_DIR}/DockerCompose.yml"
 ENV_FILE="${STACK_DIR}/.env"
@@ -580,10 +581,16 @@ configure_storage_wizard() {
 # 10. Setup & Generate (Atomic)
 # ------------------------------------------------------------------------------
 setup_directories() {
-    log_info "Enforcing directory structure with PascalCase mapping..."
+    log_info "Enforcing PascalCase directory structure and migrating legacy data..."
+    
+    # Base Directory PascalCase Migration
+    [ -d "${STACK_DIR}/data" ] && [ ! -d "${STACK_DIR}/Data" ] && mv "${STACK_DIR}/data" "${STACK_DIR}/Data"
+    [ -d "${STACK_DIR}/secrets" ] && [ ! -d "${STACK_DIR}/Secrets" ] && mv "${STACK_DIR}/secrets" "${STACK_DIR}/Secrets"
+    [ -d "${STACK_DIR}/audit" ] && [ ! -d "${STACK_DIR}/Audit" ] && mv "${STACK_DIR}/audit" "${STACK_DIR}/Audit"
+    
     (umask 022; mkdir -p "$SECRETS_DIR" "$STACK_DIR" "$DATA_DIR" "$AUDIT_DIR")
     
-    echo "secrets/" > "${STACK_DIR}/.gitignore"
+    echo "Secrets/" > "${STACK_DIR}/.gitignore"
     echo ".env" >> "${STACK_DIR}/.gitignore"
     
     # Vault Sentry
@@ -591,7 +598,7 @@ setup_directories() {
     echo "!.gitignore" >> "${SECRETS_DIR}/.gitignore"
     
     if [ "$DEPLOY_GITEA" == "true" ]; then
-        # [FIX 2] Architectural Migration: Salvage legacy Runner data to prevent orphaning
+        # Runner Architecture Migration
         if [ -d "${DATA_DIR}/Runner" ] && [ ! -d "${DATA_DIR}/RunnerGeneric" ]; then
             log_info "Migrating legacy Runner directory to RunnerGeneric..."
             mv "${DATA_DIR}/Runner" "${DATA_DIR}/RunnerGeneric"
@@ -610,7 +617,6 @@ setup_directories() {
         mkdir -p "${DATA_DIR}/CodeServer"
         mkdir -p "${DATA_DIR}/CodeServerInit"
         
-        # [FIX 3] Inject Aider Installation Script using native 'su' to bypass missing sudo
         cat << EOF > "${DATA_DIR}/CodeServerInit/99-aider-install.sh"
 #!/bin/bash
 # Automatically injected by Omega Monolith script
@@ -650,15 +656,13 @@ setup_environment() {
     log_info "Vaulting secrets and initializing environment..."
     mkdir -p "$SECRETS_DIR"
     
-    # Retrieve previous token if hydrating, else empty
     local PREV_TOKEN=""
     if [ -f "$ENV_FILE" ]; then
-        PREV_TOKEN=$(grep "GITEA_RUNNER_TOKEN=" "$ENV_FILE" | cut -d= -f2)
+        PREV_TOKEN=$(grep "GITEA_RUNNER_TOKEN=" "$ENV_FILE" | cut -d= -f2 || true)
     fi
 
     rm -f "$ENV_FILE"
 
-    # 1. Global Constants
     (umask 077; cat > "$ENV_FILE" <<EOF
 # Generated on $(date)
 HOST_IP=${HOST_IP}
@@ -667,7 +671,6 @@ AGENT_PORT=${CFG_AGENT_PORT}
 EOF
 )
 
-    # 2. Add Gitea Secrets only if needed
     if [ "$DEPLOY_GITEA" == "true" ]; then
         get_secret "GiteaDbPassword" 16 > /dev/null
         get_secret "GiteaRedisPassword" 16 > /dev/null
@@ -677,7 +680,6 @@ EOF
         if [ ! -f "$ADMIN_USER_FILE" ]; then (umask 077; echo -n "gitea_admin" > "$ADMIN_USER_FILE"); fi
         local G_ADMIN_USER=$(cat "$ADMIN_USER_FILE")
 
-        # [FIX 1] Critical Regression Fix: Inject token placeholder for sed logic later
         cat >> "$ENV_FILE" <<EOF
 GITEA_RUNNER_TOKEN=${PREV_TOKEN}
 GITEA_WEB_PORT=${CFG_GITEA_WEB}
@@ -692,7 +694,6 @@ EOF
         fi
     fi
 
-    # 3. Add VSCode Secrets
     if [ "$DEPLOY_VSCODE" == "true" ]; then
         get_secret "VsCodePassword" 12 > /dev/null
         cat >> "$ENV_FILE" <<EOF
@@ -702,7 +703,6 @@ VSCODE_PGID=${REAL_GID}
 EOF
     fi
 
-    # 4. Add AI Config
     if [ "$DEPLOY_AI" == "true" ]; then
         local GPU_L=0
         if [ "$HAS_GPU" == "true" ]; then GPU_L=20; fi
@@ -1318,23 +1318,19 @@ finalize_stack() {
                 local ADM_P=$(cat "${SECRETS_DIR}/GiteaAdminPassword.txt" 2>/dev/null)
                 docker exec -u 1000 Gitea gitea admin user create --username "$ADM_U" --password "$ADM_P" --email "admin@${HOST_IP}" --admin --must-change-password=false 2>/dev/null || log_warn "Admin exists."
                 
-                # Runner Token Generation (ENV-based to prevent Immutable Secret Bug)
                 TOKEN=$(docker exec -u 1000 Gitea gitea actions generate-runner-token | tr -d '\r')
                 if [ -n "$TOKEN" ]; then
-                    # Update .env and force recreation to inject ENV var securely
                     sed -i "s|GITEA_RUNNER_TOKEN=.*|GITEA_RUNNER_TOKEN=${TOKEN}|" "$ENV_FILE"
                     log_info "Hot-patching Runner Farm (Recreating to sync token)..."
                     $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --force-recreate runner-generic runner-gemini runner-gcloud
                     log_succ "Runner Farm Registered & Online."
                 fi
                 
-                # Zero-Touch AI Repository Pre-Seeding
                 log_info "Initializing Native AI Workflows..."
                 local REPO_NAME="ai-playground"
                 local REPO_CHECK=$(curl -s -u "${ADM_U}:${ADM_P}" "http://127.0.0.1:3000/api/v1/repos/${ADM_U}/${REPO_NAME}")
                 
                 if ! echo "$REPO_CHECK" | grep -q "\"id\":"; then
-                    # [FIX 4] Forcing default branch to "main" via API
                     curl -s -X POST "http://127.0.0.1:3000/api/v1/user/repos" \
                         -H "Content-Type: application/json" \
                         -u "${ADM_U}:${ADM_P}" \
@@ -1385,6 +1381,15 @@ EOF
                 fi
                 
                 if [ "$DEPLOY_VSCODE" == "true" ]; then
+                    log_info "Waiting for Code-Server asynchronous package installations (git/python)..."
+                    for j in {1..30}; do
+                        if docker exec -u abc Code-Server command -v git >/dev/null 2>&1; then
+                            log_succ "Code-Server environment ready."
+                            break
+                        fi
+                        sleep 3
+                    done
+                    
                     if ! docker exec -u abc Code-Server test -d "/config/workspace/${REPO_NAME}"; then
                         log_info "Seeding VS Code Workspace..."
                         local CLONE_URL="http://${ADM_U}:${ADM_P}@Gitea:3000/${ADM_U}/${REPO_NAME}.git"
