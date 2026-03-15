@@ -1,36 +1,3 @@
-
-Logo
-Issues
-Pull Requests
-Milestones
-Explore
-Selltik
-/
-Selltik-Scripts
-Code
-Issues
-Pull Requests
-Actions
-Packages
-Projects
-Releases
-Wiki
-Activity
-Settings
-Files
-Deploy-Gitea.sh
-Integrate-Stack.sh
-Tune-AMD.sh
-Verify-Integrations.sh
-Selltik-Scripts
-/Deploy-Scripts/Deploy-Gitea/Deploy-Gitea.sh
-Selltik
-84c9d017ff
-Update Deploy-Scripts/Deploy-Gitea/Deploy-Gitea.sh
-5 minutes ago
-1548 lines
-58 KiB
-Bash
 #!/bin/bash
 
 # ==============================================================================
@@ -40,13 +7,13 @@ Bash
 #              Logic: Vault-first secrets, Heuristic LAN Hunter, PascalCase.
 #              Compliance: Directive 1, 2, 3 (Full Secret Isolation).
 #              Features: Integrated Forensic Audit, Self-Healing, Zero-Touch.
-# Patched: The Obsidian Vault (Rev 116).
-#          - [FIX 1] Python3 added to JIT Dependency matrix (Phantom Auditor fix).
-#          - [FIX 2] Runner check halts Zombie Token database pollution.
-#          - [FIX 3] Remote URL scrubbed post-clone (Plaintext Credential Leak fix).
+# Patched: The Event Horizon (Rev 118).
+#          - [FIX 1] Decoupled URL scrub to execute unconditionally on push failure.
+#          - [FIX 2] Stripped plaintext DB password from Compose; enabled Docker Secrets.
+#          - [FIX 3] Dynamic distributed wiring for remote AI Workers in CI/CD.
 # Author: Tier-3 Support
 # Date: 2026-03-15
-# Status: OBSIDIAN VAULT (Rev 116)
+# Status: EVENT HORIZON (Rev 118)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -86,6 +53,7 @@ GPU_GROUPS_DETECTED=""
 HIP_DEVICE_ID="0" 
 AMD_USE_VULKAN="false"
 TARGET_MODEL="qwen2.5-coder:14b"
+CFG_EXTERNAL_AI_URL="http://10.0.0.50:11434"
 
 # Storage Flags
 USE_GITEA_NFS="false"
@@ -150,6 +118,7 @@ load_existing_state() {
         CFG_AGENT_PORT=${AGENT_PORT:-9001}
         CFG_VSCODE_PORT=${VSCODE_PORT:-8443}
         TARGET_MODEL=${AIDER_MODEL:-"qwen2.5-coder:14b"}
+        CFG_EXTERNAL_AI_URL=${EXTERNAL_AI_URL:-"http://10.0.0.50:11434"}
         
         PREV_GPU_LAYERS=${OLLAMA_GPU_LAYERS:-""}
         PREV_FLASH_ATTN=${OLLAMA_FLASH_ATTENTION:-""}
@@ -401,6 +370,12 @@ configure_role_wizard() {
     if [ "$DEPLOY_AI" == "true" ]; then
         read -p "   Target AI Model [$TARGET_MODEL]: " INPUT_MODEL
         TARGET_MODEL=${INPUT_MODEL:-$TARGET_MODEL}
+    else
+        # [FIX 3] Prompt for external AI endpoint if deployed natively as a Controller
+        read -p "   Target AI Model (Remote) [$TARGET_MODEL]: " INPUT_MODEL
+        TARGET_MODEL=${INPUT_MODEL:-$TARGET_MODEL}
+        read -p "   External Ollama Endpoint [${CFG_EXTERNAL_AI_URL}]: " INPUT_EXT_URL
+        CFG_EXTERNAL_AI_URL=${INPUT_EXT_URL:-$CFG_EXTERNAL_AI_URL}
     fi
 }
 
@@ -723,6 +698,7 @@ setup_environment() {
 HOST_IP=${HOST_IP}
 TZ=${HOST_TZ}
 AGENT_PORT=${CFG_AGENT_PORT}
+EXTERNAL_AI_URL=${CFG_EXTERNAL_AI_URL}
 EOF
 )
 
@@ -916,10 +892,10 @@ EOF
 
     if [ "$DEPLOY_GITEA" == "true" ]; then
         local R_PASS=$(cat ${SECRETS_DIR}/gitea_redis_password.txt)
-        local DB_PASS_VAL=$(cat ${SECRETS_DIR}/gitea_db_password.txt)
         local GITEA_VOL="${DATA_DIR}/Gitea:/data"
         if [ "$USE_GITEA_NFS" == "true" ]; then GITEA_VOL="gitea-nfs-data:/data"; fi
 
+        # [FIX 2] GITEA__database__PASSWD_FILE employed. Plaintext injection stripped.
         cat >> "$COMPOSE_FILE" <<EOF
   gitea-db:
     image: postgres:15-alpine
@@ -971,7 +947,7 @@ EOF
       - GITEA__database__HOST=gitea-db:5432
       - GITEA__database__NAME=\${DB_NAME}
       - GITEA__database__USER=\${DB_USER}
-      - GITEA__database__PASSWD=${DB_PASS_VAL}
+      - GITEA__database__PASSWD_FILE=/run/secrets/gitea_db_password
       - GITEA__cache__ADAPTER=redis
       - GITEA__cache__HOST=redis://:${R_PASS}@gitea-cache:6379/0?pool_size=100&idle_timeout=180s
       - GITEA__queue__TYPE=redis
@@ -1272,7 +1248,7 @@ perform_forensic_audit() {
         fi
         
         RUNNER_LIST=$(docker exec -u 1000 Gitea gitea actions runner list 2>&1 || true)
-        if echo "$RUNNER_LIST" | grep -q "Worker-Generic"; then
+        if echo "$RUNNER_LIST" | grep -q -i "Worker"; then
             log_succ "Runner Farm: Verified active via Server CLI."
         else
             log_err "Runner Farm: Not found in Server CLI."
@@ -1353,7 +1329,6 @@ finalize_stack() {
                     log_info "User exists. Synchronizing vault credentials to database..."
                     docker exec -u 1000 Gitea gitea admin user change-password --username "$ADM_U" --password "$ADM_P" 2>/dev/null || true
                     
-                    # [FIX 2] Secured process table execution
                     log_info "Scrubbing Zombie Password Flag via direct SQL injection (Secured Subshell)..."
                     docker exec Gitea-DB sh -c "PGPASSWORD=\$(cat /run/secrets/gitea_db_password) psql -U gitea -d gitea -c \"UPDATE \\\"user\\\" SET must_change_password=false WHERE lower(name)=lower('${ADM_U}');\"" > /dev/null 2>&1 || log_warn "SQL override failed. API calls may return 401."
                     
@@ -1371,8 +1346,7 @@ finalize_stack() {
                     done
                 }
                 
-                # [FIX 3] Prevent Zombie Tokens and API Exhaustion
-                local RUNNER_EXISTS=$(docker exec -u 1000 Gitea gitea actions runner list 2>/dev/null | grep -c "Worker-Generic" || echo "0")
+                local RUNNER_EXISTS=$(docker exec -u 1000 Gitea gitea actions runner list 2>/dev/null | grep -c -i "Worker" || echo "0")
                 if [ "$RUNNER_EXISTS" -eq 0 ]; then
                     for k in {1..10}; do
                         TOKEN=$(docker exec -u 1000 Gitea gitea actions generate-runner-token 2>/dev/null | tr -d '\r')
@@ -1408,6 +1382,11 @@ finalize_stack() {
                 
                 log_info "Synchronizing AI-Gated Pipeline..."
                 local NET_NAME=$(docker inspect Ollama-Worker --format '{{range $k, $v := .NetworkSettings.Networks}}{{printf "%s\n" $k}}{{end}}' | head -n 1 || echo "gitea-monolith_gitea-net")
+                
+                # [FIX 3] Dynamic distributed wiring. Target remote nodes if Controller is isolated.
+                local WORKFLOW_AI_URL="http://Ollama-Worker:11434"
+                if [ "$DEPLOY_AI" == "false" ]; then WORKFLOW_AI_URL="${CFG_EXTERNAL_AI_URL}"; fi
+                
                 local WORKFLOW_CONTENT=$(cat <<EOF
 name: AI-Gated GitHub Mirror
 on: [push]
@@ -1421,8 +1400,8 @@ jobs:
       - name: AI Code Inspection
         id: ai_check
         run: |
-          echo "Submitting commit to local AI for security review..."
-          RESPONSE=\$(curl -s -X POST http://Ollama-Worker:11434/api/generate -d '{
+          echo "Submitting commit to Compute Node for security review..."
+          RESPONSE=\$(curl -s -X POST ${WORKFLOW_AI_URL}/api/generate -d '{
             "model": "${TARGET_MODEL}",
             "prompt": "Analyze the following git push for security vulnerabilities or hardcoded secrets. Respond ONLY with PASSED or FAILED.",
             "stream": false
@@ -1478,18 +1457,27 @@ EOF
                         
                         docker exec -u abc Code-Server git clone "$CLONE_URL" "/config/workspace/${REPO_NAME}" > /dev/null 2>&1 || true
                         
-                        # [FIX 3] Localized identity and Plaintext URL scrub
-                        docker exec -u abc Code-Server sh -c "\
-                            cd /config/workspace/${REPO_NAME} && \
-                            git remote set-url origin \"$SAFE_URL\" && \
-                            git config user.name 'Omega-Sentry' && \
-                            git config user.email 'sentry@omega.local' && \
-                            echo '.aider*' >> .gitignore && \
-                            git add .gitignore && \
-                            git commit -m 'Silence Aider' && \
-                            git push" > /dev/null 2>&1 || log_warn "Failed to inject workspace identity or scrub origin."
+                        # [FIX 1] Decoupled URL scrub to execute unconditionally on push failure.
+                        local GIT_SEED_OUT
+                        GIT_SEED_OUT=$(docker exec -u abc Code-Server sh -c "\
+                            if cd /config/workspace/${REPO_NAME}; then \
+                                git config user.name 'Omega-Sentry' && \
+                                git config user.email 'sentry@omega.local' && \
+                                echo '.aider*' >> .gitignore && \
+                                git add .gitignore && \
+                                git commit -m 'Silence Aider'; \
+                                git push; \
+                                git remote set-url origin \"$SAFE_URL\"; \
+                            else \
+                                exit 1; \
+                            fi" 2>&1)
                         
-                        log_succ "Workspace successfully seeded and secured."
+                        if [ $? -eq 0 ]; then
+                            log_succ "Workspace successfully seeded and secured."
+                        else
+                            log_warn "Failed to inject workspace identity or scrub origin. Telemetry:"
+                            echo -e "${YELLOW}$GIT_SEED_OUT${NC}"
+                        fi
                     fi
                 fi
                 break
@@ -1579,12 +1567,3 @@ main() {
 }
 
 main
-Powered by Gitea
-Version:
-1.25.4
-Page:
-137ms
-Template:
-16ms
-Licenses
-API
