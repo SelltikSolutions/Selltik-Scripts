@@ -7,12 +7,13 @@
 #              Logic: Vault-first secrets, Heuristic LAN Hunter, PascalCase.
 #              Compliance: Directive 1, 2, 3 (Full Secret Isolation).
 #              Features: Integrated Forensic Audit, Self-Healing, Zero-Touch.
-# Patched: The Hermetic Seal (Rev 113).
-#          - [FIX 1] State Hydration actively protects manual GPU layer/tuning.
-#          - [FIX 2] Synthetic Git Identity injected into Code-Server for Zero-Touch.
+# Patched: The Unified Key (Rev 119).
+#          - [FIX 1] Unified all secret files/YAML keys to strict snake_case.
+#          - [FIX 2] Fixed POSTGRES_PASSWORD_FILE symmetric mount path.
+#          - [FIX 3] Scoped caching/admin credentials to prevent silent cache death.
 # Author: Tier-3 Support
 # Date: 2026-03-15
-# Status: HERMETIC SEAL (Rev 113)
+# Status: UNIFIED KEY (Rev 119)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -52,6 +53,7 @@ GPU_GROUPS_DETECTED=""
 HIP_DEVICE_ID="0" 
 AMD_USE_VULKAN="false"
 TARGET_MODEL="qwen2.5-coder:14b"
+CFG_EXTERNAL_AI_URL="http://10.0.0.50:11434"
 
 # Storage Flags
 USE_GITEA_NFS="false"
@@ -116,8 +118,8 @@ load_existing_state() {
         CFG_AGENT_PORT=${AGENT_PORT:-9001}
         CFG_VSCODE_PORT=${VSCODE_PORT:-8443}
         TARGET_MODEL=${AIDER_MODEL:-"qwen2.5-coder:14b"}
+        CFG_EXTERNAL_AI_URL=${EXTERNAL_AI_URL:-"http://10.0.0.50:11434"}
         
-        # [FIX 1] Capture legacy hardware tuning to prevent generic overwrite
         PREV_GPU_LAYERS=${OLLAMA_GPU_LAYERS:-""}
         PREV_FLASH_ATTN=${OLLAMA_FLASH_ATTENTION:-""}
         PREV_VULKAN=${OLLAMA_VULKAN:-""}
@@ -187,6 +189,7 @@ check_core_requirements() {
     ! command -v curl &> /dev/null && MISSING_DEPS+=("curl")
     ! command -v openssl &> /dev/null && MISSING_DEPS+=("openssl")
     ! command -v lspci &> /dev/null && MISSING_DEPS+=("pciutils")
+    ! command -v python3 &> /dev/null && MISSING_DEPS+=("python3")
 
     if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
         log_warn "Missing Core Dependencies: ${MISSING_DEPS[*]}"
@@ -367,6 +370,11 @@ configure_role_wizard() {
     if [ "$DEPLOY_AI" == "true" ]; then
         read -p "   Target AI Model [$TARGET_MODEL]: " INPUT_MODEL
         TARGET_MODEL=${INPUT_MODEL:-$TARGET_MODEL}
+    else
+        read -p "   Target AI Model (Remote) [$TARGET_MODEL]: " INPUT_MODEL
+        TARGET_MODEL=${INPUT_MODEL:-$TARGET_MODEL}
+        read -p "   External Ollama Endpoint [${CFG_EXTERNAL_AI_URL}]: " INPUT_EXT_URL
+        CFG_EXTERNAL_AI_URL=${INPUT_EXT_URL:-$CFG_EXTERNAL_AI_URL}
     fi
 }
 
@@ -630,6 +638,20 @@ setup_directories() {
         
         cat << EOF > "${DATA_DIR}/CodeServerInit/99-aider-install.sh"
 #!/bin/bash
+BASHRC="/config/.bashrc"
+touch "\$BASHRC"
+chown abc:abc "\$BASHRC"
+
+grep -q OLLAMA_API_BASE "\$BASHRC" || echo 'export OLLAMA_API_BASE=http://Ollama-Worker:11434' >> "\$BASHRC"
+if grep -q AIDER_MODEL "\$BASHRC"; then
+    sed -i "s|export AIDER_MODEL=.*|export AIDER_MODEL=ollama/${TARGET_MODEL}|" "\$BASHRC"
+else
+    echo 'export AIDER_MODEL=ollama/${TARGET_MODEL}' >> "\$BASHRC"
+fi
+grep -q AIDER_ANALYTICS "\$BASHRC" || echo 'export AIDER_ANALYTICS=false' >> "\$BASHRC"
+grep -q AIDER_CHECK_UPDATE "\$BASHRC" || echo 'export AIDER_CHECK_UPDATE=false' >> "\$BASHRC"
+grep -q 'PATH.*local/bin' "\$BASHRC" || echo 'export PATH=\$PATH:\$HOME/.local/bin' >> "\$BASHRC"
+
 if [ -f "/config/.aider_installed" ]; then
     echo "[INFO] Aider already installed. Bypassing bootstrap to prevent boot-loop."
     exit 0
@@ -641,16 +663,6 @@ apt-get install -y -qq python3-pip python3-venv git > /dev/null
 
 echo "[INFO] Installing Aider (User context: abc)..."
 su -s /bin/bash abc -c "pip3 install aider-chat --break-system-packages > /dev/null 2>&1"
-
-BASHRC="/config/.bashrc"
-touch "\$BASHRC"
-chown abc:abc "\$BASHRC"
-
-grep -q OLLAMA_API_BASE "\$BASHRC" || echo 'export OLLAMA_API_BASE=http://Ollama-Worker:11434' >> "\$BASHRC"
-grep -q AIDER_MODEL "\$BASHRC" || echo 'export AIDER_MODEL=ollama/${TARGET_MODEL}' >> "\$BASHRC"
-grep -q AIDER_ANALYTICS "\$BASHRC" || echo 'export AIDER_ANALYTICS=false' >> "\$BASHRC"
-grep -q AIDER_CHECK_UPDATE "\$BASHRC" || echo 'export AIDER_CHECK_UPDATE=false' >> "\$BASHRC"
-grep -q 'PATH.*local/bin' "\$BASHRC" || echo 'export PATH=\$PATH:\$HOME/.local/bin' >> "\$BASHRC"
 
 touch "/config/.aider_installed"
 chown abc:abc "/config/.aider_installed"
@@ -685,6 +697,7 @@ setup_environment() {
 HOST_IP=${HOST_IP}
 TZ=${HOST_TZ}
 AGENT_PORT=${CFG_AGENT_PORT}
+EXTERNAL_AI_URL=${CFG_EXTERNAL_AI_URL}
 EOF
 )
 
@@ -696,12 +709,16 @@ EOF
         local ADMIN_USER_FILE="${SECRETS_DIR}/gitea_admin_username.txt"
         if [ ! -f "$ADMIN_USER_FILE" ]; then (umask 077; echo -n "gitea_admin" > "$ADMIN_USER_FILE"); fi
         
+        # We must load REDIS_PASSWORD into the env file to avoid plaintext yaml interpolation
+        local REDIS_PASS_VAL=$(cat "${SECRETS_DIR}/gitea_redis_password.txt")
+        
         cat >> "$ENV_FILE" <<EOF
 GITEA_RUNNER_TOKEN=${PREV_TOKEN}
 GITEA_WEB_PORT=${CFG_GITEA_WEB}
 GITEA_SSH_PORT=${CFG_GITEA_SSH}
 DB_USER=gitea
 DB_NAME=gitea
+REDIS_PASSWORD=${REDIS_PASS_VAL}
 EOF
         
         if [ "$USE_GITEA_NFS" == "true" ]; then
@@ -720,7 +737,6 @@ EOF
     fi
 
     if [ "$DEPLOY_AI" == "true" ]; then
-        # [FIX 1] Priority given to State Hydration to protect tuning profiles
         local GPU_L=0
         if [ "$HAS_GPU" == "true" ]; then GPU_L=20; fi
         if [ -n "$PREV_GPU_LAYERS" ]; then GPU_L=$PREV_GPU_LAYERS; log_info "Hydrating tuning profile: GPU Layers ($GPU_L)"; fi
@@ -878,8 +894,6 @@ EOF
     fi
 
     if [ "$DEPLOY_GITEA" == "true" ]; then
-        local R_PASS=$(cat ${SECRETS_DIR}/gitea_redis_password.txt)
-        local DB_PASS_VAL=$(cat ${SECRETS_DIR}/gitea_db_password.txt)
         local GITEA_VOL="${DATA_DIR}/Gitea:/data"
         if [ "$USE_GITEA_NFS" == "true" ]; then GITEA_VOL="gitea-nfs-data:/data"; fi
 
@@ -909,7 +923,7 @@ EOF
     image: redis:7-alpine
     container_name: Gitea-Cache
     restart: unless-stopped
-    command: ["sh", "-c", "redis-server --requirepass \"\$(cat /run/secrets/gitea_redis_password)\" --appendonly yes"]
+    command: ["sh", "-c", "redis-server --requirepass \"\$\$(cat /run/secrets/gitea_redis_password)\" --appendonly yes"]
     secrets:
       - gitea_redis_password
     networks:
@@ -917,7 +931,7 @@ EOF
     volumes:
       - ${DATA_DIR}/Redis:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"\$(cat /run/secrets/gitea_redis_password)\" ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"\$\$(cat /run/secrets/gitea_redis_password)\" ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -934,17 +948,18 @@ EOF
       - GITEA__database__HOST=gitea-db:5432
       - GITEA__database__NAME=\${DB_NAME}
       - GITEA__database__USER=\${DB_USER}
-      - GITEA__database__PASSWD=${DB_PASS_VAL}
+      - GITEA__database__PASSWD_FILE=/run/secrets/gitea_db_password
       - GITEA__cache__ADAPTER=redis
-      - GITEA__cache__HOST=redis://:${R_PASS}@gitea-cache:6379/0?pool_size=100&idle_timeout=180s
+      - GITEA__cache__HOST=redis://:\${REDIS_PASSWORD}@gitea-cache:6379/0?pool_size=100&idle_timeout=180s
       - GITEA__queue__TYPE=redis
-      - GITEA__queue__CONN_STR=redis://:${R_PASS}@gitea-cache:6379/0
+      - GITEA__queue__CONN_STR=redis://:\${REDIS_PASSWORD}@gitea-cache:6379/0
       - GITEA__server__ROOT_URL=http://\${HOST_IP}:\${GITEA_WEB_PORT}/
       - GITEA__server__START_SSH_SERVER=true
       - GITEA__server__SSH_LISTEN_PORT=2222
       - GITEA__server__SSH_PORT=\${GITEA_SSH_PORT}
       - GITEA__security__INSTALL_LOCK=true
       - GITEA__server__LFS_START_SERVER=true
+      - GITEA__actions__ENABLED=true
       - GITEA__repository__ENABLE_PUSH_CREATE_USER=true
       - GITEA__repository__ENABLE_PUSH_CREATE_ORG=true
       - GITEA__mirror__ENABLED=true
@@ -1234,7 +1249,7 @@ perform_forensic_audit() {
         fi
         
         RUNNER_LIST=$(docker exec -u 1000 Gitea gitea actions runner list 2>&1 || true)
-        if echo "$RUNNER_LIST" | grep -q "Worker-Generic"; then
+        if echo "$RUNNER_LIST" | grep -q -i "Worker"; then
             log_succ "Runner Farm: Verified active via Server CLI."
         else
             log_err "Runner Farm: Not found in Server CLI."
@@ -1310,29 +1325,45 @@ finalize_stack() {
                 log_succ "Gitea Online."
                 local ADM_U=$(cat "${SECRETS_DIR}/gitea_admin_username.txt" 2>/dev/null || echo "gitea_admin")
                 local ADM_P=$(cat "${SECRETS_DIR}/gitea_admin_password.txt" 2>/dev/null)
-                local DB_PASS_VAL=$(cat "${SECRETS_DIR}/gitea_db_password.txt" 2>/dev/null)
                 
                 docker exec -u 1000 Gitea gitea admin user create --username "$ADM_U" --password "$ADM_P" --email "admin@${HOST_IP}" --admin --must-change-password=false 2>/dev/null || {
                     log_info "User exists. Synchronizing vault credentials to database..."
                     docker exec -u 1000 Gitea gitea admin user change-password --username "$ADM_U" --password "$ADM_P" 2>/dev/null || true
                     
-                    log_info "Scrubbing Zombie Password Flag via direct SQL injection..."
-                    docker exec -e PGPASSWORD="$DB_PASS_VAL" Gitea-DB psql -U gitea -d gitea -c "UPDATE \"user\" SET must_change_password=false WHERE lower(name)=lower('$ADM_U');" > /dev/null 2>&1 || log_warn "SQL override failed. API calls may return 401."
+                    log_info "Scrubbing Zombie Password Flag via direct SQL injection (Secured Subshell)..."
+                    docker exec Gitea-DB sh -c "PGPASSWORD=\$(cat /run/secrets/gitea_db_password) psql -U gitea -d gitea -c \"UPDATE \\\"user\\\" SET must_change_password=false WHERE lower(name)=lower('${ADM_U}');\"" > /dev/null 2>&1 || log_warn "SQL override failed. API calls may return 401."
                     
                     log_info "Restarting Gitea to flush user cache..."
                     docker restart Gitea >/dev/null
                     for j in {1..20}; do
-                        if docker exec Gitea curl -s -f http://127.0.0.1:3000/api/healthz >/dev/null 2>&1; then break; fi
+                        if docker exec Gitea curl -s -f http://127.0.0.1:3000/api/healthz >/dev/null 2>&1; then 
+                            log_info "Health check passed. Waiting for CLI backend stabilization..."
+                            sleep 3
+                            if docker exec -u 1000 Gitea gitea --version >/dev/null 2>&1; then
+                                break
+                            fi
+                        fi
                         sleep 2
                     done
                 }
                 
-                TOKEN=$(docker exec -u 1000 Gitea gitea actions generate-runner-token | tr -d '\r')
-                if [ -n "$TOKEN" ]; then
-                    sed -i "s|GITEA_RUNNER_TOKEN=.*|GITEA_RUNNER_TOKEN=${TOKEN}|" "$ENV_FILE"
-                    log_info "Booting Runner Farm with validated token..."
+                local RUNNER_EXISTS=$(docker exec -u 1000 Gitea gitea actions runner list 2>/dev/null | grep -c -i "Worker" || echo "0")
+                if [ "$RUNNER_EXISTS" -eq 0 ]; then
+                    for k in {1..10}; do
+                        TOKEN=$(docker exec -u 1000 Gitea gitea actions generate-runner-token 2>/dev/null | tr -d '\r')
+                        if [ -n "$TOKEN" ] && [[ "$TOKEN" != *"error"* ]]; then
+                            sed -i "s|GITEA_RUNNER_TOKEN=.*|GITEA_RUNNER_TOKEN=${TOKEN}|" "$ENV_FILE"
+                            log_info "Booting Runner Farm with new cryptographic token..."
+                            $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" --profile runners up -d
+                            log_succ "Runner Farm Registered & Online."
+                            break
+                        fi
+                        log_warn "CLI not ready for token generation. Retrying in 3s..."
+                        sleep 3
+                    done
+                else
+                    log_info "Runner Farm already registered. Bypassing token generation."
                     $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" --profile runners up -d
-                    log_succ "Runner Farm Registered & Online."
                 fi
                 
                 log_info "Initializing Native AI Workflows..."
@@ -1347,9 +1378,16 @@ finalize_stack() {
                     
                     log_info "Buffering Git backend for 3 seconds to prevent inode collision..."
                     sleep 3
-                    
-                    local NET_NAME=$(docker inspect Ollama-Worker --format '{{range $k, $v := .NetworkSettings.Networks}}{{printf "%s\n" $k}}{{end}}' | head -n 1 || echo "gitea-monolith_gitea-net")
-                    local WORKFLOW_CONTENT=$(cat <<EOF
+                    log_succ "Repository created."
+                fi
+                
+                log_info "Synchronizing AI-Gated Pipeline..."
+                local NET_NAME=$(docker inspect Ollama-Worker --format '{{range $k, $v := .NetworkSettings.Networks}}{{printf "%s\n" $k}}{{end}}' | head -n 1 || echo "gitea-monolith_gitea-net")
+                
+                local WORKFLOW_AI_URL="http://Ollama-Worker:11434"
+                if [ "$DEPLOY_AI" == "false" ]; then WORKFLOW_AI_URL="${CFG_EXTERNAL_AI_URL}"; fi
+                
+                local WORKFLOW_CONTENT=$(cat <<EOF
 name: AI-Gated GitHub Mirror
 on: [push]
 jobs:
@@ -1362,8 +1400,8 @@ jobs:
       - name: AI Code Inspection
         id: ai_check
         run: |
-          echo "Submitting commit to local AI for security review..."
-          RESPONSE=\$(curl -s -X POST http://Ollama-Worker:11434/api/generate -d '{
+          echo "Submitting commit to Compute Node for security review..."
+          RESPONSE=\$(curl -s -X POST ${WORKFLOW_AI_URL}/api/generate -d '{
             "model": "${TARGET_MODEL}",
             "prompt": "Analyze the following git push for security vulnerabilities or hardcoded secrets. Respond ONLY with PASSED or FAILED.",
             "stream": false
@@ -1384,12 +1422,22 @@ jobs:
         run: echo "AI Verified. Mirroring event authorized natively."
 EOF
 )
-                    local B64_CONTENT=$(echo "$WORKFLOW_CONTENT" | base64 -w 0)
+                local B64_CONTENT=$(echo "$WORKFLOW_CONTENT" | base64 -w 0)
+                
+                local SHA=$(curl -s -u "${ADM_U}:${ADM_P}" "http://127.0.0.1:3000/api/v1/repos/${ADM_U}/${REPO_NAME}/contents/.gitea/workflows/ai-review.yaml" | grep -o '"sha":"[^"]*"' | cut -d'"' -f4 || true)
+                
+                if [ -n "$SHA" ]; then
+                    curl -s -X PUT "http://127.0.0.1:3000/api/v1/repos/${ADM_U}/${REPO_NAME}/contents/.gitea/workflows/ai-review.yaml" \
+                        -H "Content-Type: application/json" \
+                        -u "${ADM_U}:${ADM_P}" \
+                        -d "{\"content\": \"$B64_CONTENT\", \"sha\": \"$SHA\", \"message\": \"Update AI Security Gate ($TARGET_MODEL)\", \"branch\": \"main\"}" > /dev/null
+                    log_succ "Repository seeded with AI-Gated Pipeline (Updated)."
+                else
                     curl -s -X POST "http://127.0.0.1:3000/api/v1/repos/${ADM_U}/${REPO_NAME}/contents/.gitea/workflows/ai-review.yaml" \
                         -H "Content-Type: application/json" \
                         -u "${ADM_U}:${ADM_P}" \
-                        -d "{\"content\": \"$B64_CONTENT\", \"message\": \"Initialize AI Security Gate\", \"branch\": \"main\"}" > /dev/null
-                    log_succ "Repository seeded with AI-Gated Pipeline."
+                        -d "{\"content\": \"$B64_CONTENT\", \"message\": \"Initialize AI Security Gate ($TARGET_MODEL)\", \"branch\": \"main\"}" > /dev/null
+                    log_succ "Repository seeded with AI-Gated Pipeline (Created)."
                 fi
                 
                 if [ "$DEPLOY_VSCODE" == "true" ]; then
@@ -1405,17 +1453,30 @@ EOF
                     if ! docker exec -u abc Code-Server test -d "/config/workspace/${REPO_NAME}"; then
                         log_info "Seeding VS Code Workspace..."
                         local CLONE_URL="http://${ADM_U}:${ADM_P}@Gitea:3000/${ADM_U}/${REPO_NAME}.git"
+                        local SAFE_URL="http://Gitea:3000/${ADM_U}/${REPO_NAME}.git"
+                        
                         docker exec -u abc Code-Server git clone "$CLONE_URL" "/config/workspace/${REPO_NAME}" > /dev/null 2>&1 || true
                         
-                        # [FIX 2] Inject Synthetic Identity to allow silent workspace commits
-                        docker exec -u abc Code-Server sh -c "\
-                            git config --global user.name 'Omega-Sentry' && \
-                            git config --global user.email 'sentry@omega.local' && \
-                            cd /config/workspace/${REPO_NAME} && \
-                            echo '.aider*' >> .gitignore && \
-                            git add .gitignore && \
-                            git commit -m 'Silence Aider' && \
-                            git push" > /dev/null 2>&1 || log_warn "Failed to inject workspace .gitignore identity."
+                        local GIT_SEED_OUT
+                        GIT_SEED_OUT=$(docker exec -u abc Code-Server sh -c "\
+                            if cd /config/workspace/${REPO_NAME}; then \
+                                git config user.name 'Omega-Sentry' && \
+                                git config user.email 'sentry@omega.local' && \
+                                echo '.aider*' >> .gitignore && \
+                                git add .gitignore && \
+                                git commit -m 'Silence Aider'; \
+                                git push; \
+                                git remote set-url origin \"$SAFE_URL\"; \
+                            else \
+                                exit 1; \
+                            fi" 2>&1)
+                        
+                        if [ $? -eq 0 ]; then
+                            log_succ "Workspace successfully seeded and secured."
+                        else
+                            log_warn "Failed to inject workspace identity or scrub origin. Telemetry:"
+                            echo -e "${YELLOW}$GIT_SEED_OUT${NC}"
+                        fi
                     fi
                 fi
                 break
