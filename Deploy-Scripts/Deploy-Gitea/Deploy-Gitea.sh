@@ -7,13 +7,13 @@
 #              Logic: Vault-first secrets, Heuristic LAN Hunter, PascalCase.
 #              Compliance: Directive 1, 2, 3 (Full Secret Isolation).
 #              Features: Integrated Forensic Audit, Self-Healing, Zero-Touch.
-# Patched: The Perpetual Engine (Rev 114).
-#          - [FIX 1] Decoupled LSIO Lockfile to enable continuous model switching.
-#          - [FIX 2] Split API calls to allow idempotent workflow updates (PUT vs POST).
-#          - [FIX 3] Added recursive CLI backend buffers to prevent silent token failures.
+# Patched: The Aegis Protocol (Rev 115).
+#          - [FIX 1] Enabled GITEA__actions__ENABLED (Awakens CI/CD Pipeline).
+#          - [FIX 2] Secured Postgres SQL injection to prevent process table leak.
+#          - [FIX 3] Localized Code-Server Git config to prevent global identity takeover.
 # Author: Tier-3 Support
 # Date: 2026-03-15
-# Status: PERPETUAL ENGINE (Rev 114)
+# Status: AEGIS PROTOCOL (Rev 115)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -628,7 +628,6 @@ setup_directories() {
         mkdir -p "${DATA_DIR}/CodeServer"
         mkdir -p "${DATA_DIR}/CodeServerInit"
         
-        # [FIX 1] Decoupled Environment Parsing from the Lockfile to enable Hot-Switching
         cat << EOF > "${DATA_DIR}/CodeServerInit/99-aider-install.sh"
 #!/bin/bash
 BASHRC="/config/.bashrc"
@@ -950,6 +949,7 @@ EOF
       - GITEA__server__SSH_PORT=\${GITEA_SSH_PORT}
       - GITEA__security__INSTALL_LOCK=true
       - GITEA__server__LFS_START_SERVER=true
+      - GITEA__actions__ENABLED=true
       - GITEA__repository__ENABLE_PUSH_CREATE_USER=true
       - GITEA__repository__ENABLE_PUSH_CREATE_ORG=true
       - GITEA__mirror__ENABLED=true
@@ -1315,21 +1315,19 @@ finalize_stack() {
                 log_succ "Gitea Online."
                 local ADM_U=$(cat "${SECRETS_DIR}/gitea_admin_username.txt" 2>/dev/null || echo "gitea_admin")
                 local ADM_P=$(cat "${SECRETS_DIR}/gitea_admin_password.txt" 2>/dev/null)
-                local DB_PASS_VAL=$(cat "${SECRETS_DIR}/gitea_db_password.txt" 2>/dev/null)
                 
                 docker exec -u 1000 Gitea gitea admin user create --username "$ADM_U" --password "$ADM_P" --email "admin@${HOST_IP}" --admin --must-change-password=false 2>/dev/null || {
                     log_info "User exists. Synchronizing vault credentials to database..."
                     docker exec -u 1000 Gitea gitea admin user change-password --username "$ADM_U" --password "$ADM_P" 2>/dev/null || true
                     
-                    log_info "Scrubbing Zombie Password Flag via direct SQL injection..."
-                    docker exec -e PGPASSWORD="$DB_PASS_VAL" Gitea-DB psql -U gitea -d gitea -c "UPDATE \"user\" SET must_change_password=false WHERE lower(name)=lower('$ADM_U');" > /dev/null 2>&1 || log_warn "SQL override failed. API calls may return 401."
+                    log_info "Scrubbing Zombie Password Flag via direct SQL injection (Secure Subshell)..."
+                    docker exec Gitea-DB sh -c "PGPASSWORD=\$(cat /run/secrets/gitea_db_password) psql -U gitea -d gitea -c \"UPDATE \\\"user\\\" SET must_change_password=false WHERE lower(name)=lower('${ADM_U}');\"" > /dev/null 2>&1 || log_warn "SQL override failed. API calls may return 401."
                     
                     log_info "Restarting Gitea to flush user cache..."
                     docker restart Gitea >/dev/null
                     for j in {1..20}; do
                         if docker exec Gitea curl -s -f http://127.0.0.1:3000/api/healthz >/dev/null 2>&1; then 
                             log_info "Health check passed. Waiting for CLI backend stabilization..."
-                            # [FIX 3] Buffer to prevent silent token failures
                             sleep 3
                             if docker exec -u 1000 Gitea gitea --version >/dev/null 2>&1; then
                                 break
@@ -1368,7 +1366,6 @@ finalize_stack() {
                     log_succ "Repository created."
                 fi
                 
-                # [FIX 2] Decoupled Workflow Injection (Idempotent Update)
                 log_info "Synchronizing AI-Gated Pipeline..."
                 local NET_NAME=$(docker inspect Ollama-Worker --format '{{range $k, $v := .NetworkSettings.Networks}}{{printf "%s\n" $k}}{{end}}' | head -n 1 || echo "gitea-monolith_gitea-net")
                 local WORKFLOW_CONTENT=$(cat <<EOF
@@ -1408,7 +1405,6 @@ EOF
 )
                 local B64_CONTENT=$(echo "$WORKFLOW_CONTENT" | base64 -w 0)
                 
-                # Fetch existing SHA to determine POST vs PUT
                 local SHA=$(curl -s -u "${ADM_U}:${ADM_P}" "http://127.0.0.1:3000/api/v1/repos/${ADM_U}/${REPO_NAME}/contents/.gitea/workflows/ai-review.yaml" | grep -o '"sha":"[^"]*"' | cut -d'"' -f4 || true)
                 
                 if [ -n "$SHA" ]; then
@@ -1440,10 +1436,11 @@ EOF
                         local CLONE_URL="http://${ADM_U}:${ADM_P}@Gitea:3000/${ADM_U}/${REPO_NAME}.git"
                         docker exec -u abc Code-Server git clone "$CLONE_URL" "/config/workspace/${REPO_NAME}" > /dev/null 2>&1 || true
                         
+                        # Localized identity to prevent overriding future user configurations
                         docker exec -u abc Code-Server sh -c "\
-                            git config --global user.name 'Omega-Sentry' && \
-                            git config --global user.email 'sentry@omega.local' && \
                             cd /config/workspace/${REPO_NAME} && \
+                            git config user.name 'Omega-Sentry' && \
+                            git config user.email 'sentry@omega.local' && \
                             echo '.aider*' >> .gitignore && \
                             git add .gitignore && \
                             git commit -m 'Silence Aider' && \
