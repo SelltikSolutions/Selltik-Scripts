@@ -1,3 +1,36 @@
+
+Logo
+Issues
+Pull Requests
+Milestones
+Explore
+Selltik
+/
+Selltik-Scripts
+Code
+Issues
+Pull Requests
+Actions
+Packages
+Projects
+Releases
+Wiki
+Activity
+Settings
+Files
+Deploy-Gitea.sh
+Integrate-Stack.sh
+Tune-AMD.sh
+Verify-Integrations.sh
+Selltik-Scripts
+/Deploy-Scripts/Deploy-Gitea/Deploy-Gitea.sh
+Selltik
+84c9d017ff
+Update Deploy-Scripts/Deploy-Gitea/Deploy-Gitea.sh
+5 minutes ago
+1548 lines
+58 KiB
+Bash
 #!/bin/bash
 
 # ==============================================================================
@@ -1546,3 +1579,12 @@ main() {
 }
 
 main
+Powered by Gitea
+Version:
+1.25.4
+Page:
+137ms
+Template:
+16ms
+Licenses
+API
