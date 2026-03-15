@@ -7,13 +7,13 @@
 #              Logic: Vault-first secrets, Heuristic LAN Hunter, PascalCase.
 #              Compliance: Directive 1, 2, 3 (Full Secret Isolation).
 #              Features: Integrated Forensic Audit, Self-Healing, Zero-Touch.
-# Patched: The Aegis Protocol (Rev 115).
-#          - [FIX 1] Enabled GITEA__actions__ENABLED (Awakens CI/CD Pipeline).
-#          - [FIX 2] Secured Postgres SQL injection to prevent process table leak.
-#          - [FIX 3] Localized Code-Server Git config to prevent global identity takeover.
+# Patched: The Obsidian Vault (Rev 116).
+#          - [FIX 1] Python3 added to JIT Dependency matrix (Phantom Auditor fix).
+#          - [FIX 2] Runner check halts Zombie Token database pollution.
+#          - [FIX 3] Remote URL scrubbed post-clone (Plaintext Credential Leak fix).
 # Author: Tier-3 Support
 # Date: 2026-03-15
-# Status: AEGIS PROTOCOL (Rev 115)
+# Status: OBSIDIAN VAULT (Rev 116)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -187,6 +187,7 @@ check_core_requirements() {
     ! command -v curl &> /dev/null && MISSING_DEPS+=("curl")
     ! command -v openssl &> /dev/null && MISSING_DEPS+=("openssl")
     ! command -v lspci &> /dev/null && MISSING_DEPS+=("pciutils")
+    ! command -v python3 &> /dev/null && MISSING_DEPS+=("python3")
 
     if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
         log_warn "Missing Core Dependencies: ${MISSING_DEPS[*]}"
@@ -634,7 +635,6 @@ BASHRC="/config/.bashrc"
 touch "\$BASHRC"
 chown abc:abc "\$BASHRC"
 
-# Wire environment silently (ALWAYS RUN to support model switching)
 grep -q OLLAMA_API_BASE "\$BASHRC" || echo 'export OLLAMA_API_BASE=http://Ollama-Worker:11434' >> "\$BASHRC"
 if grep -q AIDER_MODEL "\$BASHRC"; then
     sed -i "s|export AIDER_MODEL=.*|export AIDER_MODEL=ollama/${TARGET_MODEL}|" "\$BASHRC"
@@ -1320,7 +1320,8 @@ finalize_stack() {
                     log_info "User exists. Synchronizing vault credentials to database..."
                     docker exec -u 1000 Gitea gitea admin user change-password --username "$ADM_U" --password "$ADM_P" 2>/dev/null || true
                     
-                    log_info "Scrubbing Zombie Password Flag via direct SQL injection (Secure Subshell)..."
+                    # [FIX 2] Secured process table execution
+                    log_info "Scrubbing Zombie Password Flag via direct SQL injection (Secured Subshell)..."
                     docker exec Gitea-DB sh -c "PGPASSWORD=\$(cat /run/secrets/gitea_db_password) psql -U gitea -d gitea -c \"UPDATE \\\"user\\\" SET must_change_password=false WHERE lower(name)=lower('${ADM_U}');\"" > /dev/null 2>&1 || log_warn "SQL override failed. API calls may return 401."
                     
                     log_info "Restarting Gitea to flush user cache..."
@@ -1337,19 +1338,25 @@ finalize_stack() {
                     done
                 }
                 
-                # Robust Token Generation loop
-                for k in {1..10}; do
-                    TOKEN=$(docker exec -u 1000 Gitea gitea actions generate-runner-token 2>/dev/null | tr -d '\r')
-                    if [ -n "$TOKEN" ] && [[ "$TOKEN" != *"error"* ]]; then
-                        sed -i "s|GITEA_RUNNER_TOKEN=.*|GITEA_RUNNER_TOKEN=${TOKEN}|" "$ENV_FILE"
-                        log_info "Booting Runner Farm with validated token..."
-                        $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" --profile runners up -d
-                        log_succ "Runner Farm Registered & Online."
-                        break
-                    fi
-                    log_warn "CLI not ready for token generation. Retrying in 3s..."
-                    sleep 3
-                done
+                # [FIX 3] Prevent Zombie Tokens and API Exhaustion
+                local RUNNER_EXISTS=$(docker exec -u 1000 Gitea gitea actions runner list 2>/dev/null | grep -c "Worker-Generic" || echo "0")
+                if [ "$RUNNER_EXISTS" -eq 0 ]; then
+                    for k in {1..10}; do
+                        TOKEN=$(docker exec -u 1000 Gitea gitea actions generate-runner-token 2>/dev/null | tr -d '\r')
+                        if [ -n "$TOKEN" ] && [[ "$TOKEN" != *"error"* ]]; then
+                            sed -i "s|GITEA_RUNNER_TOKEN=.*|GITEA_RUNNER_TOKEN=${TOKEN}|" "$ENV_FILE"
+                            log_info "Booting Runner Farm with new cryptographic token..."
+                            $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" --profile runners up -d
+                            log_succ "Runner Farm Registered & Online."
+                            break
+                        fi
+                        log_warn "CLI not ready for token generation. Retrying in 3s..."
+                        sleep 3
+                    done
+                else
+                    log_info "Runner Farm already registered. Bypassing token generation."
+                    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" --profile runners up -d
+                fi
                 
                 log_info "Initializing Native AI Workflows..."
                 local REPO_NAME="ai-playground"
@@ -1434,17 +1441,22 @@ EOF
                     if ! docker exec -u abc Code-Server test -d "/config/workspace/${REPO_NAME}"; then
                         log_info "Seeding VS Code Workspace..."
                         local CLONE_URL="http://${ADM_U}:${ADM_P}@Gitea:3000/${ADM_U}/${REPO_NAME}.git"
+                        local SAFE_URL="http://Gitea:3000/${ADM_U}/${REPO_NAME}.git"
+                        
                         docker exec -u abc Code-Server git clone "$CLONE_URL" "/config/workspace/${REPO_NAME}" > /dev/null 2>&1 || true
                         
-                        # Localized identity to prevent overriding future user configurations
+                        # [FIX 3] Localized identity and Plaintext URL scrub
                         docker exec -u abc Code-Server sh -c "\
                             cd /config/workspace/${REPO_NAME} && \
+                            git remote set-url origin \"$SAFE_URL\" && \
                             git config user.name 'Omega-Sentry' && \
                             git config user.email 'sentry@omega.local' && \
                             echo '.aider*' >> .gitignore && \
                             git add .gitignore && \
                             git commit -m 'Silence Aider' && \
-                            git push" > /dev/null 2>&1 || log_warn "Failed to inject workspace .gitignore identity."
+                            git push" > /dev/null 2>&1 || log_warn "Failed to inject workspace identity or scrub origin."
+                        
+                        log_succ "Workspace successfully seeded and secured."
                     fi
                 fi
                 break
