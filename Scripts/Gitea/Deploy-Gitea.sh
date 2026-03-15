@@ -7,13 +7,14 @@
 #              Logic: Vault-first secrets, Heuristic LAN Hunter, PascalCase.
 #              Compliance: Directive 1, 2, 3 (Full Secret Isolation).
 #              Features: Integrated Forensic Audit, Self-Healing, Zero-Touch.
-# Patched: The Citadel Master (Rev 110).
-#          - [FIX 1] Pre-migration check includes legacy docker-compose.yml.
-#          - [FIX 2] Direct SQL injection removes Zombie Password flags.
-#          - [FIX 3] Added python3-venv to LSIO Aider bootstrap.
+# Patched: The Unbreakable Artifact (Rev 112).
+#          - [FIX 1] LSIO Init Lockfile (Neutralizes Boot-Loop Penalty).
+#          - [FIX 2] Removed --remove-orphans (Prevents Runner Massacre).
+#          - [FIX 3] API Sleep Buffer (Neutralizes Git Binary Race Condition).
+#          - [FIX 4] Symmetrical DooD Mounts (Fixes CI/CD Workspace Fracture).
 # Author: Tier-3 Support
-# Date: 2026-03-13
-# Status: CITADEL MASTER (Rev 110)
+# Date: 2026-03-15
+# Status: UNBREAKABLE ARTIFACT (Rev 112)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -384,7 +385,6 @@ check_port() {
     local CHECK_PORT=${PORT##*:}
     
     if ss -lntu | grep -q ":${CHECK_PORT} "; then
-        # --- IDEMPOTENCY BYPASS ---
         local CONT_NAME=$(docker ps --filter "publish=${CHECK_PORT}" --format "{{.Names}}" | head -n 1)
         if [[ -n "$CONT_NAME" ]] && { [[ "$CONT_NAME" == *"Gitea"* ]] || [[ "$CONT_NAME" == *"Ollama"* ]] || [[ "$CONT_NAME" == *"Code-Server"* ]] || [[ "$CONT_NAME" == *"Portainer-Agent"* ]] || [[ "$CONT_NAME" == *"gitea-"* ]]; }; then
             log_succ "Port ${CHECK_PORT} (${SERVICE}) is held by existing stack (${CONT_NAME}). Bypassing conflict check."
@@ -575,7 +575,6 @@ pre_migration_teardown() {
     if [ -d "${STACK_DIR}/data" ] || [ -d "${STACK_DIR}/secrets" ]; then
         log_info "Legacy lowercase directories detected. Spinning down stack to release file locks..."
         
-        # [FIX 1] Catch all variations of the Compose file and project labels
         if [ -f "${STACK_DIR}/DockerCompose.yml" ]; then
             $DOCKER_COMPOSE_CMD -f "${STACK_DIR}/DockerCompose.yml" down || true
         elif [ -f "${STACK_DIR}/docker-compose.yml" ]; then
@@ -592,7 +591,6 @@ pre_migration_teardown() {
 setup_directories() {
     log_info "Enforcing PascalCase architecture and migrating legacy data..."
     
-    # Base Directory PascalCase Migration (Safe because of teardown)
     [ -d "${STACK_DIR}/data" ] && [ ! -d "${STACK_DIR}/Data" ] && mv "${STACK_DIR}/data" "${STACK_DIR}/Data"
     [ -d "${STACK_DIR}/secrets" ] && [ ! -d "${STACK_DIR}/Secrets" ] && mv "${STACK_DIR}/secrets" "${STACK_DIR}/Secrets"
     [ -d "${STACK_DIR}/audit" ] && [ ! -d "${STACK_DIR}/Audit" ] && mv "${STACK_DIR}/audit" "${STACK_DIR}/Audit"
@@ -602,7 +600,6 @@ setup_directories() {
     echo "Secrets/" > "${STACK_DIR}/.gitignore"
     echo ".env" >> "${STACK_DIR}/.gitignore"
     
-    # Vault Sentry
     echo "*" > "${SECRETS_DIR}/.gitignore"
     echo "!.gitignore" >> "${SECRETS_DIR}/.gitignore"
     
@@ -625,10 +622,14 @@ setup_directories() {
         mkdir -p "${DATA_DIR}/CodeServer"
         mkdir -p "${DATA_DIR}/CodeServerInit"
         
-        # [FIX 3] Added python3-venv to satisfy PEP 668 on base Ubuntu
+        # [FIX 1] Lockfile to prevent 60-second boot-loop penalty on restart
         cat << EOF > "${DATA_DIR}/CodeServerInit/99-aider-install.sh"
 #!/bin/bash
-# Automatically injected by Omega Monolith script
+if [ -f "/config/.aider_installed" ]; then
+    echo "[INFO] Aider already installed. Bypassing bootstrap to prevent boot-loop."
+    exit 0
+fi
+
 echo "[INFO] Initializing Aider AI Partner Integration..."
 apt-get update -qq
 apt-get install -y -qq python3-pip python3-venv git > /dev/null
@@ -640,12 +641,14 @@ BASHRC="/config/.bashrc"
 touch "\$BASHRC"
 chown abc:abc "\$BASHRC"
 
-# Wire environment silently
 grep -q OLLAMA_API_BASE "\$BASHRC" || echo 'export OLLAMA_API_BASE=http://Ollama-Worker:11434' >> "\$BASHRC"
 grep -q AIDER_MODEL "\$BASHRC" || echo 'export AIDER_MODEL=ollama/${TARGET_MODEL}' >> "\$BASHRC"
 grep -q AIDER_ANALYTICS "\$BASHRC" || echo 'export AIDER_ANALYTICS=false' >> "\$BASHRC"
 grep -q AIDER_CHECK_UPDATE "\$BASHRC" || echo 'export AIDER_CHECK_UPDATE=false' >> "\$BASHRC"
 grep -q 'PATH.*local/bin' "\$BASHRC" || echo 'export PATH=\$PATH:\$HOME/.local/bin' >> "\$BASHRC"
+
+touch "/config/.aider_installed"
+chown abc:abc "/config/.aider_installed"
 EOF
         chmod +x "${DATA_DIR}/CodeServerInit/99-aider-install.sh"
     fi
@@ -681,7 +684,6 @@ EOF
 )
 
     if [ "$DEPLOY_GITEA" == "true" ]; then
-        # Snake_case strictly enforced for Docker secret compatibility
         get_secret "gitea_db_password.txt" 16 > /dev/null
         get_secret "gitea_redis_password.txt" 16 > /dev/null
         get_secret "gitea_admin_password.txt" 12 > /dev/null
@@ -971,19 +973,21 @@ EOF
       timeout: 10s
       retries: 10
 
+  # [FIX 4] Symmetrical Host Volumes and working_dir to eliminate DooD fractures
   runner-generic:
     image: gitea/act_runner:latest
     container_name: Runner-Generic
     restart: unless-stopped
     profiles: ["runners"]
+    working_dir: ${DATA_DIR}/RunnerGeneric
     environment:
-      - GITEA_INSTANCE_URL=http://gitea:3000
+      - GITEA_INSTANCE_URL=http://Gitea:3000
       - GITEA_RUNNER_REGISTRATION_TOKEN=\${GITEA_RUNNER_TOKEN}
       - GITEA_RUNNER_NAME=Worker-Generic-Alpha
-      - DOCKER_HOST=tcp://gitea-socket-proxy:2375
+      - DOCKER_HOST=tcp://Gitea-Socket-Proxy:2375
       - GITEA_RUNNER_LABELS=ubuntu-latest:docker://node:18-bullseye,ubuntu-22.04:docker://ubuntu:22.04
     volumes:
-      - ${DATA_DIR}/RunnerGeneric:/data
+      - ${DATA_DIR}/RunnerGeneric:${DATA_DIR}/RunnerGeneric
     networks:
       - gitea-net
     depends_on:
@@ -997,14 +1001,15 @@ EOF
     container_name: Runner-Gemini
     restart: unless-stopped
     profiles: ["runners"]
+    working_dir: ${DATA_DIR}/RunnerGemini
     environment:
-      - GITEA_INSTANCE_URL=http://gitea:3000
+      - GITEA_INSTANCE_URL=http://Gitea:3000
       - GITEA_RUNNER_REGISTRATION_TOKEN=\${GITEA_RUNNER_TOKEN}
       - GITEA_RUNNER_NAME=Worker-Gemini-Integration
-      - DOCKER_HOST=tcp://gitea-socket-proxy:2375
+      - DOCKER_HOST=tcp://Gitea-Socket-Proxy:2375
       - GITEA_RUNNER_LABELS=gemini-python:docker://python:3.11-bookworm,gemini-node:docker://node:20-bookworm
     volumes:
-      - ${DATA_DIR}/RunnerGemini:/data
+      - ${DATA_DIR}/RunnerGemini:${DATA_DIR}/RunnerGemini
     networks:
       - gitea-net
     depends_on:
@@ -1018,14 +1023,15 @@ EOF
     container_name: Runner-GCloud
     restart: unless-stopped
     profiles: ["runners"]
+    working_dir: ${DATA_DIR}/RunnerGCloud
     environment:
-      - GITEA_INSTANCE_URL=http://gitea:3000
+      - GITEA_INSTANCE_URL=http://Gitea:3000
       - GITEA_RUNNER_REGISTRATION_TOKEN=\${GITEA_RUNNER_TOKEN}
       - GITEA_RUNNER_NAME=Worker-GCloud-Deploy
-      - DOCKER_HOST=tcp://gitea-socket-proxy:2375
+      - DOCKER_HOST=tcp://Gitea-Socket-Proxy:2375
       - GITEA_RUNNER_LABELS=google-sdk:docker://google/cloud-sdk:slim
     volumes:
-      - ${DATA_DIR}/RunnerGCloud:/data
+      - ${DATA_DIR}/RunnerGCloud:${DATA_DIR}/RunnerGCloud
     networks:
       - gitea-net
     depends_on:
@@ -1298,7 +1304,8 @@ finalize_stack() {
     finalize_permissions
     
     log_info "Launching Core Stack (Excluding Runners)..."
-    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --build --remove-orphans || exit 1
+    # [FIX 2] --remove-orphans deleted; prevents the CI/CD Orchestrator Massacre
+    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --build || exit 1
 
     if [ "$DEPLOY_GITEA" == "true" ]; then
         log_info "Waiting for Gitea (Healthcheck)..."
@@ -1310,7 +1317,6 @@ finalize_stack() {
                 local ADM_P=$(cat "${SECRETS_DIR}/gitea_admin_password.txt" 2>/dev/null)
                 local DB_PASS_VAL=$(cat "${SECRETS_DIR}/gitea_db_password.txt" 2>/dev/null)
                 
-                # [FIX 2] Password Sync & Direct SQL Zombie Flag override
                 docker exec -u 1000 Gitea gitea admin user create --username "$ADM_U" --password "$ADM_P" --email "admin@${HOST_IP}" --admin --must-change-password=false 2>/dev/null || {
                     log_info "User exists. Synchronizing vault credentials to database..."
                     docker exec -u 1000 Gitea gitea admin user change-password --username "$ADM_U" --password "$ADM_P" 2>/dev/null || true
@@ -1343,6 +1349,10 @@ finalize_stack() {
                         -H "Content-Type: application/json" \
                         -u "${ADM_U}:${ADM_P}" \
                         -d "{\"name\": \"$REPO_NAME\", \"auto_init\": true, \"private\": false, \"default_branch\": \"main\"}" > /dev/null
+                    
+                    # [FIX 3] The 3-second buffer to neutralize the Git binary race condition
+                    log_info "Buffering Git backend for 3 seconds to prevent inode collision..."
+                    sleep 3
                     
                     local NET_NAME=$(docker inspect Ollama-Worker --format '{{range $k, $v := .NetworkSettings.Networks}}{{printf "%s\n" $k}}{{end}}' | head -n 1 || echo "gitea-monolith_gitea-net")
                     local WORKFLOW_CONTENT=$(cat <<EOF
