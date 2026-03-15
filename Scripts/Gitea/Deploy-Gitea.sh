@@ -7,14 +7,12 @@
 #              Logic: Vault-first secrets, Heuristic LAN Hunter, PascalCase.
 #              Compliance: Directive 1, 2, 3 (Full Secret Isolation).
 #              Features: Integrated Forensic Audit, Self-Healing, Zero-Touch.
-# Patched: The Unbreakable Artifact (Rev 112).
-#          - [FIX 1] LSIO Init Lockfile (Neutralizes Boot-Loop Penalty).
-#          - [FIX 2] Removed --remove-orphans (Prevents Runner Massacre).
-#          - [FIX 3] API Sleep Buffer (Neutralizes Git Binary Race Condition).
-#          - [FIX 4] Symmetrical DooD Mounts (Fixes CI/CD Workspace Fracture).
+# Patched: The Hermetic Seal (Rev 113).
+#          - [FIX 1] State Hydration actively protects manual GPU layer/tuning.
+#          - [FIX 2] Synthetic Git Identity injected into Code-Server for Zero-Touch.
 # Author: Tier-3 Support
 # Date: 2026-03-15
-# Status: UNBREAKABLE ARTIFACT (Rev 112)
+# Status: HERMETIC SEAL (Rev 113)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -119,6 +117,11 @@ load_existing_state() {
         CFG_VSCODE_PORT=${VSCODE_PORT:-8443}
         TARGET_MODEL=${AIDER_MODEL:-"qwen2.5-coder:14b"}
         
+        # [FIX 1] Capture legacy hardware tuning to prevent generic overwrite
+        PREV_GPU_LAYERS=${OLLAMA_GPU_LAYERS:-""}
+        PREV_FLASH_ATTN=${OLLAMA_FLASH_ATTENTION:-""}
+        PREV_VULKAN=${OLLAMA_VULKAN:-""}
+        
         [ -n "$GITEA_NFS_SERVER" ] && PREV_GITEA_NFS="true" || PREV_GITEA_NFS="false"
         [ -n "$OLLAMA_NFS_SERVER" ] && PREV_AI_NFS="true" || PREV_AI_NFS="false"
     else
@@ -130,6 +133,9 @@ load_existing_state() {
         CFG_AI_PORT="" 
         PREV_GITEA_NFS="false"
         PREV_AI_NFS="false"
+        PREV_GPU_LAYERS=""
+        PREV_FLASH_ATTN=""
+        PREV_VULKAN=""
     fi
 }
 
@@ -622,7 +628,6 @@ setup_directories() {
         mkdir -p "${DATA_DIR}/CodeServer"
         mkdir -p "${DATA_DIR}/CodeServerInit"
         
-        # [FIX 1] Lockfile to prevent 60-second boot-loop penalty on restart
         cat << EOF > "${DATA_DIR}/CodeServerInit/99-aider-install.sh"
 #!/bin/bash
 if [ -f "/config/.aider_installed" ]; then
@@ -715,26 +720,18 @@ EOF
     fi
 
     if [ "$DEPLOY_AI" == "true" ]; then
+        # [FIX 1] Priority given to State Hydration to protect tuning profiles
         local GPU_L=0
         if [ "$HAS_GPU" == "true" ]; then GPU_L=20; fi
+        if [ -n "$PREV_GPU_LAYERS" ]; then GPU_L=$PREV_GPU_LAYERS; log_info "Hydrating tuning profile: GPU Layers ($GPU_L)"; fi
         
         local OLLAMA_ATTN="1"
         if [ "$IS_MAXWELL" == "true" ]; then OLLAMA_ATTN="0"; fi
-        
-        local HSA_STR=""
-        if [ "$GPU_TYPE" == "AMD" ]; then
-            HSA_STR="HSA_OVERRIDE_GFX_VERSION=${AMD_HSA_VERSION}"
-        fi
-        
-        local SDMA_STR=""
-        if [ -n "$AMD_ENABLE_SDMA" ]; then
-            SDMA_STR="HSA_ENABLE_SDMA=${AMD_ENABLE_SDMA}"
-        fi
+        if [ -n "$PREV_FLASH_ATTN" ]; then OLLAMA_ATTN=$PREV_FLASH_ATTN; log_info "Hydrating tuning profile: Flash Attention ($OLLAMA_ATTN)"; fi
         
         local VULKAN_VAL="0"
-        if [ "$AMD_USE_VULKAN" == "true" ]; then
-             VULKAN_VAL="1"
-        fi
+        if [ "$AMD_USE_VULKAN" == "true" ]; then VULKAN_VAL="1"; fi
+        if [ -n "$PREV_VULKAN" ]; then VULKAN_VAL=$PREV_VULKAN; log_info "Hydrating tuning profile: Vulkan Provider ($VULKAN_VAL)"; fi
 
         cat >> "$ENV_FILE" <<EOF
 OLLAMA_HOST=0.0.0.0
@@ -973,7 +970,6 @@ EOF
       timeout: 10s
       retries: 10
 
-  # [FIX 4] Symmetrical Host Volumes and working_dir to eliminate DooD fractures
   runner-generic:
     image: gitea/act_runner:latest
     container_name: Runner-Generic
@@ -1304,7 +1300,6 @@ finalize_stack() {
     finalize_permissions
     
     log_info "Launching Core Stack (Excluding Runners)..."
-    # [FIX 2] --remove-orphans deleted; prevents the CI/CD Orchestrator Massacre
     $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --build || exit 1
 
     if [ "$DEPLOY_GITEA" == "true" ]; then
@@ -1350,7 +1345,6 @@ finalize_stack() {
                         -u "${ADM_U}:${ADM_P}" \
                         -d "{\"name\": \"$REPO_NAME\", \"auto_init\": true, \"private\": false, \"default_branch\": \"main\"}" > /dev/null
                     
-                    # [FIX 3] The 3-second buffer to neutralize the Git binary race condition
                     log_info "Buffering Git backend for 3 seconds to prevent inode collision..."
                     sleep 3
                     
@@ -1412,7 +1406,16 @@ EOF
                         log_info "Seeding VS Code Workspace..."
                         local CLONE_URL="http://${ADM_U}:${ADM_P}@Gitea:3000/${ADM_U}/${REPO_NAME}.git"
                         docker exec -u abc Code-Server git clone "$CLONE_URL" "/config/workspace/${REPO_NAME}" > /dev/null 2>&1 || true
-                        docker exec -u abc Code-Server sh -c "cd /config/workspace/${REPO_NAME} && echo '.aider*' >> .gitignore && git add .gitignore && git commit -m 'Silence Aider' && git push" > /dev/null 2>&1 || true
+                        
+                        # [FIX 2] Inject Synthetic Identity to allow silent workspace commits
+                        docker exec -u abc Code-Server sh -c "\
+                            git config --global user.name 'Omega-Sentry' && \
+                            git config --global user.email 'sentry@omega.local' && \
+                            cd /config/workspace/${REPO_NAME} && \
+                            echo '.aider*' >> .gitignore && \
+                            git add .gitignore && \
+                            git commit -m 'Silence Aider' && \
+                            git push" > /dev/null 2>&1 || log_warn "Failed to inject workspace .gitignore identity."
                     fi
                 fi
                 break
