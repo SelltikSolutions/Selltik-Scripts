@@ -1,45 +1,34 @@
 #!/bin/bash
 # ==============================================================================
-# File: /opt/BuildBanner.sh
-# Purpose: Compiles a raw ASCII file into a pre-rendered 256-color ANSI matrix.
-# Security: This runs once. It keeps complex logic completely out of the login path.
+# File: /etc/profile.d/MotdBanner.sh
+# Purpose: Safely display a colored, static MOTD banner upon interactive login.
+# Security: 
+#   - Execution is restricted to interactive shells only.
+#   - STRICTLY PROHIBITS loops or external binary dependencies (e.g., cmatrix).
+#   - Uses safe, single-pass `cat` outputs to prevent buffer hijacking.
+# Warning: Copy-pasting raw ANSI codes from untrusted sources can lead to terminal 
+# injection attacks. This layout relies on standard `tput` for safe color rendering.
 # ==============================================================================
 
-TARGET="/etc/Banner.ansi"
+# Error Handling: Ensure this script only executes for interactive terminal sessions.
+# If it runs during a non-interactive SCP or SFTP session, it will corrupt the data stream.
+if [[ $- != *i* ]]; then
+    return
+fi
 
-# Initialize/wipe the target file safely
-> "$TARGET"
+# Define terminal colors safely using tput
+COLOR_GOLD=$(tput setaf 3)
+COLOR_RED=$(tput setaf 1)
+COLOR_WHITE=$(tput setaf 7)
+COLOR_RESET=$(tput sgr0)
 
 # ------------------------------------------------------------------------------
-# Phase 1: The Gold Gradient Compiler
-# AWK calculates the character's distance from the horizontal center (column 47)
-# and assigns a hex color from the 256-color space. 
+# Section 1: The Eagle (Rendered in Gold)
+# Using single-quoted EOF prevents bash from attempting to parse/evaluate variables 
+# or escape characters within the ASCII art, ensuring safe string output.
 # ------------------------------------------------------------------------------
-cat << 'EOF' | awk '
-{
-    len = length($0)
-    center = 47
-    for(i=1; i<=len; i++) {
-        c = substr($0, i, 1)
-        if(c == " ") {
-            # Do not apply color codes to whitespace to prevent terminal bleeding
-            printf " "
-        } else {
-            dist = i - center
-            if(dist < 0) dist = -dist
-            
-            # 256-Color Mapping Matrix
-            if(dist <= 8) color = 226        # Center: High-Intensity Yellow
-            else if(dist <= 16) color = 220  # Inner: Gold
-            else if(dist <= 25) color = 214  # Mid: Orange-Gold
-            else if(dist <= 35) color = 208  # Outer: Dark Orange
-            else color = 166                 # Edges: Rust/Bronze
-            
-            printf "\033[38;5;%dm%s", color, c
-        }
-    }
-    printf "\033[0m\n"
-}' >> "$TARGET"
+echo -e "${COLOR_GOLD}"
+cat << 'EOF'
                              #                                      #                              
                      .    ## #  +                                 #  # ##                          
                        ## ## ## #                                  # ## ## ##                      
@@ -98,11 +87,10 @@ cat << 'EOF' | awk '
 EOF
 
 # ------------------------------------------------------------------------------
-# Phase 2: Append Static Elements
+# Section 2: The Warning Label (Rendered in Red)
 # ------------------------------------------------------------------------------
-# Add ANSI Red (196) for the warning block
-echo -e "\033[38;5;196m" >> "$TARGET"
-cat << 'EOF' >> "$TARGET"
+echo -e "${COLOR_RED}"
+cat << 'EOF'
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ ☣☣☠☣☣ ━┓
 ┃ PPPPPPPPPPPPPPPPP                                                                               ┃
 ┃ P::::::::::::::::P                                                                              ┃
@@ -126,9 +114,11 @@ cat << 'EOF' >> "$TARGET"
 ┗━ ☣☣☠☣☣ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 EOF
 
-# Add ANSI White (255) for the footer, then standard reset (0)
-echo -e "\033[38;5;255m" >> "$TARGET"
-cat << 'EOF' >> "$TARGET"
+# ------------------------------------------------------------------------------
+# Section 3: The Footer (Rendered in White)
+# ------------------------------------------------------------------------------
+echo -e "${COLOR_WHITE}"
+cat << 'EOF'
 .-.   .-..----..----.   .-. .----.     .--.     .----. .----. .-..-. .-..-..-.   .----..---. .----.
 | |   | || {_  | {_     | |{ {__      / {} \    | {}  }| {}  }| || | | || || |   | {_ /   __}| {_  
 | `--.| || |   | {__    | |.-._} }   /  /\  \   | .--' | .-. \| |\ \_/ /| || `--.| {__\  {_ }| {__ 
@@ -140,7 +130,6 @@ cat << 'EOF' >> "$TARGET"
      \/\/ \/\/ \/\/ \/\/ \/\/ \/\/ \/\/ \/\/ \/\/ \/\/ \/\/ \/\/ \/\/ \/\/ \/\/ \/\/ \/\/ \/\/     
 ⊱⋅ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ ⋅⊰
 EOF
-echo -e "\033[0m" >> "$TARGET"
 
-# Lock down the generated file
-chmod 644 "$TARGET"
+# Reset terminal color output to default before returning to the shell
+echo -e "${COLOR_RESET}"
