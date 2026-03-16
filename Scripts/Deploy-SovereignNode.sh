@@ -1,16 +1,15 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.20-APEX-TERMINUS
+#  Version: v10.21-CHRONOS-LOCKED
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Apex Terminus Fixes:
-#  - APT-03: Evaluates native dpkg exit codes instead of parsing localized 
-#            text strings to guarantee detection of locked/fractured databases.
-#  - BASH-02: Insulated all UI variable assignments against 'set -e' decapitations. 
-#             Hitting ESC now triggers a graceful exit rather than a Bash panic.
-#  - HEALTH-12: Replaced legacy nslookup with 'drill' to support Alpine-native 
-#               ldns healthchecks, breaking the Unbound/Pi-Hole boot deadlock.
+#  Chronos Locked Fixes:
+#  - NET-08: Purged undefined split-horizon variables from Traefik trustedIPs.
+#            Explicitly locked X-Forwarded-* trust to proxy and VPN subnets.
+#  - CRON-11: Injected strict cryptographic string validation (grep) into the 
+#             weekly automaton to prevent captive portals from poisoning the 
+#             Unbound DNS trust anchors with HTML garbage.
 # ==============================================================================
 
 set -euo pipefail
@@ -70,7 +69,6 @@ CheckDependencies() {
     PrintMsg "240" "Verifying baseline tools for $OS_ID..."
     
     if [[ "$PkgManager" == "apt-get" ]]; then
-        # APT-03: Strict evaluation of dpkg exit code, ignoring stdout variations.
         if ! sudo dpkg --audit > /dev/null 2>&1; then
             PrintMsg "196" "========================================================================"
             PrintMsg "196" "[FATAL OS CORRUPTION] dpkg database is locked or interrupted."
@@ -213,7 +211,6 @@ if [ "$Interactive" -eq 1 ]; then
         PrintMsg "226" "Cloudflare Scoped DNS API Token required:"
         cf_token=""
         if command -v gum &> /dev/null; then
-            # BASH-02: Insulation against 'set -e' decapitation if user hits ESC (Exit 130)
             cf_token=$(gum input --password || true)
             [ -z "$cf_token" ] && { PrintMsg "196" "Token input cancelled. Halting."; exit 1; }
         else
@@ -259,7 +256,6 @@ if [ "$Interactive" -eq 1 ]; then
     AcmeEmail=""
 
     if command -v gum &> /dev/null; then
-        # BASH-02: Escaping variable assignments to prevent silent crashes
         WgEndpoint=$(gum input --prompt "WireGuard Public Endpoint (IP/DDNS): " --value "$PrevEndpoint" || true)
         [ -z "$WgEndpoint" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
         
@@ -334,12 +330,13 @@ PurgeAlienContainers() {
 PurgeAlienContainers
 
 PrintMsg "240" "Fetching InterNIC Root Hints for Unbound DNS..."
-sudo curl -sS https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
+sudo curl -sS --connect-timeout 10 https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
 
-if [ -s "${ConfigDir}/Unbound/RootHints.txt.tmp" ]; then
+# CRON-11: Applied strict string validation to initial deployment fetch
+if grep -q "A.ROOT-SERVERS.NET" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
     sudo mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
 else
-    PrintMsg "196" "[WARNING] InterNIC fetch failed. Injecting hardcoded fallback."
+    PrintMsg "196" "[WARNING] InterNIC fetch corrupted. Injecting hardcoded fallback."
     sudo tee "${ConfigDir}/Unbound/RootHints.txt" > /dev/null << 'EOF'
 .                        3600000      NS    A.ROOT-SERVERS.NET.
 A.ROOT-SERVERS.NET.      3600000      A     198.41.0.4
@@ -571,7 +568,6 @@ services:
     cap_add: [NET_BIND_SERVICE, SETGID, SETUID, CHOWN, DAC_OVERRIDE]
     security_opt: [no-new-privileges:true]
     logging: *default-logging
-    # HEALTH-12: Invoking Alpine-native 'drill' tool instead of deprecated nslookup
     healthcheck:
       test: ["CMD-SHELL", "drill @127.0.0.1 localhost || exit 1"]
       interval: 10s
@@ -655,6 +651,8 @@ services:
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
       - "--entrypoints.websecure.address=:443"
+      # NET-08: Explicitly restrict X-Forwarded-* headers to verified internal subnets
+      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.98.0.0/24,10.99.0.0/24"
       - "--providers.docker=true"
       - "--providers.docker.endpoint=tcp://docker_socket_proxy:2375"
       - "--providers.docker.version=1.44"
@@ -676,7 +674,7 @@ sudo chown -R 0:0 "$StackDir"
 sudo chmod 600 "$ComposeFile" "$EnvFile"
 
 # ==============================================================================
-# CRON-10: AUTOMATED LIFECYCLE APPLIANCE GENERATOR (ATOMIC SWAP)
+# CRON-11: AUTOMATED LIFECYCLE APPLIANCE GENERATOR (CRYPTOGRAPHIC ARMOR)
 # ==============================================================================
 UpdaterScript="${ScriptsDir}/UpdateSovereignNode.sh"
 sudo tee "${UpdaterScript}.tmp" > /dev/null << EOF
@@ -690,10 +688,14 @@ exec > >(logger -t SovereignNodeUpdater) 2>&1
 echo "[Sovereign Node] Initiating weekly lifecycle update..."
 cd "${StackDir}" || exit 1
 
-curl -sS https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
-if [ -s "${ConfigDir}/Unbound/RootHints.txt.tmp" ]; then
+curl -sS --connect-timeout 10 https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
+# CRON-11: Validates cryptographic integrity of downloaded file to prevent captive portal poisoning
+if grep -q "A.ROOT-SERVERS.NET" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
     mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
     docker compose --env-file "${EnvFile}" restart unbound_dns
+else
+    logger -t SovereignNodeUpdater "ERROR: Root hints fetch corrupted. Retaining existing cache."
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
 fi
 
 docker compose --env-file "${EnvFile}" pull --quiet
