@@ -1,15 +1,16 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.21-CHRONOS-LOCKED
+#  Version: v10.22-OMEGA-STATE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Chronos Locked Fixes:
-#  - NET-08: Purged undefined split-horizon variables from Traefik trustedIPs.
-#            Explicitly locked X-Forwarded-* trust to proxy and VPN subnets.
-#  - CRON-11: Injected strict cryptographic string validation (grep) into the 
-#             weekly automaton to prevent captive portals from poisoning the 
-#             Unbound DNS trust anchors with HTML garbage.
+#  Omega State Fixes:
+#  - CORE-01: Injected bare-metal hypervisor provisioning. The script now 
+#             automatically installs Docker Engine if executed on a naked host.
+#  - ROUTE-17: Engineered a self-healing Glass Bridge. The Assimilation Engine 
+#              now outputs declarative YAML for permanent bridging, and the 
+#              cron automaton automatically heals severed Zero-Trust connections 
+#              caused by third-party container recreations.
 # ==============================================================================
 
 set -euo pipefail
@@ -96,6 +97,16 @@ CheckDependencies() {
             fi
         fi
     done
+
+    # CORE-01: Bare-Metal Hypervisor Provisioning
+    if ! command -v docker &> /dev/null || ! docker compose version &> /dev/null; then
+        PrintMsg "214" "Docker Engine missing. Initiating bare-metal hypervisor provision..."
+        if ! eval "$InstallCmd docker.io docker-compose-plugin" > /dev/null 2>&1; then
+            PrintMsg "196" "[FATAL] Failed to natively provision Docker Engine. Halting."
+            exit 1
+        fi
+        sudo systemctl enable --now docker > /dev/null 2>&1 || true
+    fi
 
     if ! command -v gum &> /dev/null; then
         sudo mkdir -p /etc/apt/keyrings
@@ -332,7 +343,6 @@ PurgeAlienContainers
 PrintMsg "240" "Fetching InterNIC Root Hints for Unbound DNS..."
 sudo curl -sS --connect-timeout 10 https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
 
-# CRON-11: Applied strict string validation to initial deployment fetch
 if grep -q "A.ROOT-SERVERS.NET" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
     sudo mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
 else
@@ -651,7 +661,6 @@ services:
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
       - "--entrypoints.websecure.address=:443"
-      # NET-08: Explicitly restrict X-Forwarded-* headers to verified internal subnets
       - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.98.0.0/24,10.99.0.0/24"
       - "--providers.docker=true"
       - "--providers.docker.endpoint=tcp://docker_socket_proxy:2375"
@@ -674,7 +683,7 @@ sudo chown -R 0:0 "$StackDir"
 sudo chmod 600 "$ComposeFile" "$EnvFile"
 
 # ==============================================================================
-# CRON-11: AUTOMATED LIFECYCLE APPLIANCE GENERATOR (CRYPTOGRAPHIC ARMOR)
+# CRON-10 & ROUTE-17: AUTOMATED LIFECYCLE & SELF-HEALING BRIDGE
 # ==============================================================================
 UpdaterScript="${ScriptsDir}/UpdateSovereignNode.sh"
 sudo tee "${UpdaterScript}.tmp" > /dev/null << EOF
@@ -689,7 +698,6 @@ echo "[Sovereign Node] Initiating weekly lifecycle update..."
 cd "${StackDir}" || exit 1
 
 curl -sS --connect-timeout 10 https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
-# CRON-11: Validates cryptographic integrity of downloaded file to prevent captive portal poisoning
 if grep -q "A.ROOT-SERVERS.NET" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
     mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
     docker compose --env-file "${EnvFile}" restart unbound_dns
@@ -701,6 +709,20 @@ fi
 docker compose --env-file "${EnvFile}" pull --quiet
 docker compose --env-file "${EnvFile}" up -d --remove-orphans
 docker image prune -af --filter "until=168h"
+
+# ROUTE-17: Self-Healing Glass Bridge
+# Automatically reconnects alien containers if user recreates them and severs the bridge.
+for manifest in "${ConfigDir}/Traefik/Dynamic/"*_assimilation.yml; do
+    [ -e "\$manifest" ] || continue
+    alien=\$(grep "^# ALIEN_CONTAINER: " "\$manifest" | cut -d' ' -f3 || true)
+    [ -z "\$alien" ] && continue
+    if docker ps --format '{{.Names}}' | grep -q "^\${alien}\$"; then
+        if ! docker inspect "\$alien" --format '{{json .NetworkSettings.Networks}}' | grep -q "sovereign_node_proxy_network"; then
+            logger -t SovereignNodeUpdater "Healing broken Zero-Trust bridge for alien: \$alien"
+            docker network connect sovereign_node_proxy_network "\$alien" || true
+        fi
+    fi
+done
 
 echo "[Sovereign Node] Update cycle complete."
 EOF
@@ -778,7 +800,9 @@ AssimilateAlienContainers() {
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
                 sudo docker network connect sovereign_node_proxy_network "$container" >/dev/null 2>&1 || true
 
+                # ROUTE-17: Track actual container name for self-healing cron
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
+# ALIEN_CONTAINER: $container
 http:
   routers:
     ${clean_name}-router:
@@ -795,6 +819,24 @@ http:
           - url: "http://${container}:${TargetPort}"
 MANIFEST_EOF
                 PrintMsg "82" "✔ Assimilated: https://${clean_name}.${INTERNAL_DOMAIN}"
+                
+                # ROUTE-17: Declarative Warning
+                echo ""
+                PrintMsg "196" " ⚠️  DECLARATIVE STATE WARNING (CRITICAL)"
+                PrintMsg "226" " The Zero-Trust bridge to $container is currently EPHEMERAL."
+                PrintMsg "226" " If you recreate the alien stack, Docker will sever the bridge."
+                PrintMsg "226" " To make it mathematically permanent, inject this into the alien's compose file:"
+                PrintMsg "82"  " --------------------------------------------------"
+                PrintMsg "82"  " networks:"
+                PrintMsg "82"  "   sovereign_node_proxy_network:"
+                PrintMsg "82"  "     external: true"
+                PrintMsg "82"  " "
+                PrintMsg "82"  " services:"
+                PrintMsg "82"  "   $container:"
+                PrintMsg "82"  "     networks:"
+                PrintMsg "82"  "       - sovereign_node_proxy_network"
+                PrintMsg "82"  " --------------------------------------------------"
+                sleep 2
             done
         fi
     fi
