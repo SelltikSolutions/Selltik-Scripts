@@ -1,15 +1,16 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.17-EVENT-HORIZON
+#  Version: v10.19-STIG-ABSOLUTE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Event Horizon Fixes:
-#  - ROUTE-16: Removed bash escapes from INTERNAL_DOMAIN inside the Assimilation 
-#              Engine to allow native interpolation. Traefik now receives a 
-#              functional FQDN instead of a literal string variable.
-#  - HEALTH-11: Replaced deprecated Authelia healthcheck binary with a native 
-#               wget spider ping to the /api/health endpoint to prevent boot deadlocks.
+#  Apt Armor Fixes:
+#  - APT-02: Enforced strict dependency resolution. Script now audits dpkg 
+#            health before execution and violently aborts if core tools 
+#            fail to install, preventing half-state deployments.
+#  STIG Absolute Fixes:
+#  - NET-07: Pinned Traefik proxy ports to IPv4 (0.0.0.0) to prevent socket 
+#            panics on IPv6-disabled hosts, mirroring the WireGuard anchor.
 # ==============================================================================
 
 set -euo pipefail
@@ -67,20 +68,42 @@ DetectOsFamily() {
 
 CheckDependencies() {
     PrintMsg "240" "Verifying baseline tools for $OS_ID..."
+    
+    if [[ "$PkgManager" == "apt-get" ]]; then
+        if sudo dpkg --audit 2>&1 | grep -E -q "interrupted|configure -a"; then
+            PrintMsg "196" "========================================================================"
+            PrintMsg "196" "[FATAL OS CORRUPTION] dpkg database is locked or interrupted."
+            PrintMsg "196" "========================================================================"
+            PrintMsg "226" "The host package manager crashed during a previous operation."
+            PrintMsg "226" "Deploying the Sovereign Matrix in this state will result in a fractured"
+            PrintMsg "226" "environment missing critical cryptographic and chronometric dependencies."
+            PrintMsg "196" ""
+            PrintMsg "196" "==> ACTION REQUIRED: Run 'sudo dpkg --configure -a' manually."
+            PrintMsg "196" "========================================================================"
+            exit 1
+        fi
+    fi
+
     eval "$UpdateCmd" > /dev/null 2>&1 || true
+    
     local deps="curl jq openssl cron tzdata dnsutils wget"
     for dep in $deps; do
         if ! command -v "$dep" &> /dev/null; then
             PrintMsg "226" "Installing missing dependency: $dep"
-            eval "$InstallCmd $dep" > /dev/null || true
+            if ! eval "$InstallCmd $dep" > /dev/null 2>&1; then
+                PrintMsg "196" "[FATAL] Dependency installation failed for: $dep"
+                PrintMsg "196" "Cannot proceed without critical infrastructure tools. Halting."
+                exit 1
+            fi
         fi
     done
+
     if ! command -v gum &> /dev/null; then
         sudo mkdir -p /etc/apt/keyrings
         curl --connect-timeout 5 -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/charm.gpg || true
         echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list > /dev/null
-        eval "$UpdateCmd" > /dev/null || true
-        eval "$InstallCmd gum" > /dev/null || true
+        eval "$UpdateCmd" > /dev/null 2>&1 || true
+        eval "$InstallCmd gum" > /dev/null 2>&1 || true
     fi
 }
 
@@ -105,7 +128,6 @@ PurgeLegacyState() {
             sudo rm -f "${StackDir}/DockerCompose.yml"
         fi
 
-        # Wipe generated configs but SPARE the databases, secrets, and integration manifests
         sudo rm -f "${ConfigDir}/Traefik/Dynamic"/DynamicRules*.yml 2>/dev/null || true
         sudo rm -f "${ConfigDir}/Unbound/UnboundConfig.conf" 2>/dev/null || true
         sudo rm -f "${ConfigDir}/Unbound/RootHints.txt" 2>/dev/null || true
@@ -511,7 +533,6 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     logging: *default-logging
-    # HEALTH-11: Corrected API spider ping prevents healthcheck binary path failures.
     healthcheck:
       test: ["CMD-SHELL", "wget --quiet --spider http://127.0.0.1:9091/api/health || exit 1"]
       interval: 10s
@@ -598,7 +619,8 @@ services:
       socket_network:
       proxy_network:
       vpn_network: { ipv4_address: 10.99.0.13 }
-    ports: ["80:80", "443:443"]
+    # NET-07: Pinned Traefik ports explicitly to IPv4 to prevent EAFNOSUPPORT panics
+    ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
       - ${ConfigDir}/Traefik/acme.json:/acme.json:rw
@@ -735,7 +757,6 @@ AssimilateAlienContainers() {
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
                 sudo docker network connect sovereign_node_proxy_network "$container" >/dev/null 2>&1 || true
 
-                # ROUTE-16: Removed bash escape (\) to ensure the domain correctly interpolates
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 http:
   routers:
@@ -772,7 +793,6 @@ if [ "$Interactive" -eq 1 ]; then
     
     echo ""
     PrintMsg "196" " ⚠️  AUTHELIA MFA REGISTRATION (CRITICAL)"
-    # ROUTE-16: Removed bash escape here as well for clean terminal output
     PrintMsg "226" " Your first login attempt at https://pihole.${INTERNAL_DOMAIN}"
     PrintMsg "226" " will trigger an email to register your biometric/2FA device."
     PrintMsg "226" " Because no SMTP server is configured, the link is intercepted locally."
