@@ -9,27 +9,51 @@ TARGET_USER_DIR="${HOME}"
 TARGET_RC="${TARGET_USER_DIR}/.bashrc"
 BACKUP_DIR="${TARGET_USER_DIR}/.bashrc_backups"
 
-# Ensure we aren't running this as root to configure a standard user's shell
+# Enforce User Space
 if [[ "${EUID}" -eq 0 && "${USER}" != "root" ]]; then
-    echo "[!] FATAL: Do not run this via raw sudo to configure your personal shell. It will break ownership."
+    echo "[!] FATAL: Running this via raw sudo shatters ownership. Aborting."
     exit 1
 fi
 
-echo "[*] Initiating .bashrc Hardening Protocol..."
+# Dependency Validation
+if ! command -v gum >/dev/null 2>&1; then
+    echo "[!] FATAL: 'gum' binary not found in PATH."
+    echo "    I will not compromise the air-gap to fetch it for you. Provision it securely and retry."
+    exit 1
+fi
 
-# --- WIZARD: DATA COLLECTION ---
-read -r -p "Enter session timeout in seconds (STIG demands 900 or less) [900]: " USER_TMOUT
+gum style --border double --margin "1" --padding "1" --border-foreground 212 "Initiating STIG-Compliant .bashrc Hardening Protocol"
+
+# --- WIZARD: AESTHETIC DATA COLLECTION ---
+
+# Timeout Collection & Validation
+gum style "Select Session Timeout (STIG demands <= 900 seconds)"
+USER_TMOUT=$(gum input --placeholder "900" --prompt "Seconds > " --width 20)
 USER_TMOUT=${USER_TMOUT:-900}
-if ! [[ "$USER_TMOUT" =~ ^[0-9]+$ ]]; then
-    echo "[!] FATAL: Invalid timeout value."
+
+if ! [[ "${USER_TMOUT}" =~ ^[0-9]+$ ]] || [[ "${USER_TMOUT}" -gt 900 ]]; then
+    gum style --foreground 196 "[!] FATAL: Invalid or non-compliant timeout. Discarding input."
     exit 1
 fi
 
-read -r -p "Enter default umask (027 for group read, 077 for absolute isolation) [077]: " USER_UMASK
-USER_UMASK=${USER_UMASK:-077}
-if ! [[ "$USER_UMASK" =~ ^[0-7]{3}$ ]]; then
-    echo "[!] FATAL: Invalid umask."
+# Umask Collection & Validation
+gum style "Select Default Umask Level"
+UMASK_CHOICE=$(gum choose "077 (Paranoid - Absolute Isolation)" "027 (Group Read - STIG Minimum)")
+
+if [[ "${UMASK_CHOICE}" == *"077"* ]]; then
+    USER_UMASK="077"
+elif [[ "${UMASK_CHOICE}" == *"027"* ]]; then
+    USER_UMASK="027"
+else
+    gum style --foreground 196 "[!] FATAL: Unknown umask selection."
     exit 1
+fi
+
+# Final Confirmation before touching the filesystem
+gum style "Configuration Ready. Target: ${TARGET_RC} | Umask: ${USER_UMASK} | Timeout: ${USER_TMOUT}"
+if ! gum confirm "Execute Atomic Swap?"; then
+    gum style --foreground 214 "[*] Operation aborted by user. The filesystem remains untouched."
+    exit 0
 fi
 
 # --- ATOMIC BACKUP ---
@@ -39,20 +63,17 @@ chmod 700 "${BACKUP_DIR}"
 if [[ -f "${TARGET_RC}" ]]; then
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
     BACKUP_FILE="${BACKUP_DIR}/bashrc_backup_${TIMESTAMP}"
-    echo "[*] Creating atomic backup at ${BACKUP_FILE}..."
     cp -a "${TARGET_RC}" "${BACKUP_FILE}"
     chmod 600 "${BACKUP_FILE}"
+    gum style --foreground 70 "[*] Atomic backup created at: ${BACKUP_FILE}"
 fi
 
 # --- CLEAN ROOM: CONFIGURATION GENERATION ---
-# Create a temporary file that only we can read/write
 TMP_RC=$(mktemp /tmp/bashrc_staged.XXXXXX)
 chmod 600 "${TMP_RC}"
 
-# Trap ensures we destroy the temporary file if the script dies before the atomic swap
+# Trap ensures temporary file destruction upon sudden termination
 trap 'rm -f "${TMP_RC}"; echo "[!] Script interrupted. Cleared temporary staging file."' EXIT
-
-echo "[*] Forging new configuration..."
 
 cat << 'EOF' > "${TMP_RC}"
 # =========================================================================
@@ -60,7 +81,6 @@ cat << 'EOF' > "${TMP_RC}"
 # Any manual modifications to this file may be overwritten by the auditor.
 # =========================================================================
 
-# If not running interactively, don't do anything
 case $- in
     *i*) ;;
       *) return;;
@@ -68,54 +88,40 @@ esac
 
 EOF
 
-# Append our hardened configurations dynamically
+# Inject sanitized variables
 cat << EOF >> "${TMP_RC}"
 # --- DISA STIG / HARDENING SETTINGS ---
-
-# 1. Enforce umask (File creation privacy)
 umask ${USER_UMASK}
-
-# 2. Prevent core dumps (No memory secrets written to disk)
 ulimit -c 0
 
-# 3. Session Timeout (Kill inactive shells)
-# Declared readonly so the user cannot simply 'unset TMOUT'
 TMOUT=${USER_TMOUT}
 readonly TMOUT
 export TMOUT
 
-# 4. History Configuration
-# Increase history size, timestamp everything, ignore duplicates
 HISTSIZE=10000
 HISTFILESIZE=20000
 HISTCONTROL=ignoreboth
 HISTTIMEFORMAT="%F %T "
-# Append to the history file, don't overwrite it
 shopt -s histappend
 
 # --- ALIAS PROTECTIONS ---
-# Defensive aliases to prevent catastrophic typos
 alias rm='rm -i'
 alias cp='cp -i'
 alias mv='mv -i'
 
-# --- DEFAULT PARROT/DEBIAN PATH SANITIZATION ---
+# --- DEFAULT PATH SANITIZATION ---
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 EOF
 
-echo "[*] Hardened configuration written to temporary enclave."
-
 # --- THE ATOMIC SWAP ---
-echo "[*] Executing atomic replacement..."
 mv "${TMP_RC}" "${TARGET_RC}"
 
-# Remove the trap since the swap succeeded
+# Disarm the trap; the swap succeeded
 trap - EXIT
 
-# Ensure final permissions are absolute
+# Lock permissions down
 chmod 640 "${TARGET_RC}"
 chown "${USER}":"$(id -gn "${USER}")" "${TARGET_RC}"
 
-echo "[+] Operation complete. The execution vector is secured."
-echo "    Run 'source ~/.bashrc' or spawn a new shell to enforce the new reality."
+gum style --foreground 70 --border normal --padding "1" "Operation complete. The execution vector is secured. Spawn a new shell to enforce the new reality."
