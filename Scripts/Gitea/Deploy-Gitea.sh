@@ -7,13 +7,14 @@
 #              Logic: Vault-first secrets, Heuristic LAN Hunter, PascalCase.
 #              Compliance: Directive 1, 2, 3 (Full Secret Isolation).
 #              Features: Integrated Forensic Audit, Self-Healing, Zero-Touch.
-# Patched: The Terminal Directive (Rev 121).
-#          - [FIX 1] Injected BUILD=1 to Socket Proxy for Runner image builds.
-#          - [FIX 2] Zero-Touch SSH Keygen and API push added to Code-Server.
-#          - [FIX 3] Renamed state variables to resolve Forensic Auditor paradox.
+# Patched: The Vanguard (Rev 122).
+#          - [FIX 1] Anonymous stdin pipe eliminates process table leak on git clone.
+#          - [FIX 2] Runner Tokens secured via Docker Secrets (no env var exposure).
+#          - [FIX 3] Subshell payload sanitizer prevents REST API JSON shatter.
+#          - [FIX 4] Remote Primer POST request added for distributed architectures.
 # Author: Tier-3 Support
 # Date: 2026-03-16
-# Status: TERMINAL DIRECTIVE (Rev 121)
+# Status: VANGUARD (Rev 122)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -685,13 +686,6 @@ setup_environment() {
     log_info "Vaulting secrets and initializing environment..."
     mkdir -p "$SECRETS_DIR"
     
-    local PREV_TOKEN=""
-    if [ -f "$ENV_FILE" ]; then
-        # [FIX 3] Renamed from GITEA_RUNNER_TOKEN to evade Forensic Audit paradox
-        PREV_TOKEN=$(grep "RUNNER_REG_KEY=" "$ENV_FILE" | cut -d= -f2 || true)
-        if [ -z "$PREV_TOKEN" ]; then PREV_TOKEN=$(grep "GITEA_RUNNER_TOKEN=" "$ENV_FILE" | cut -d= -f2 || true); fi
-    fi
-
     rm -f "$ENV_FILE"
 
     (umask 077; cat > "$ENV_FILE" <<EOF
@@ -708,14 +702,18 @@ EOF
         get_secret "gitea_redis_password.txt" 16 > /dev/null
         get_secret "gitea_admin_password.txt" 12 > /dev/null
         
+        # [FIX 2] Touch the secret file so Docker mounts correctly, preventing crash before generation
+        if [ ! -f "${SECRETS_DIR}/runner_registration_token.txt" ]; then
+            touch "${SECRETS_DIR}/runner_registration_token.txt"
+            chmod 600 "${SECRETS_DIR}/runner_registration_token.txt"
+        fi
+        
         local ADMIN_USER_FILE="${SECRETS_DIR}/gitea_admin_username.txt"
         if [ ! -f "$ADMIN_USER_FILE" ]; then (umask 077; echo -n "gitea_admin" > "$ADMIN_USER_FILE"); fi
         
         local REDIS_PASS_VAL=$(cat "${SECRETS_DIR}/gitea_redis_password.txt")
         
-        # [FIX 3] Renamed REDIS_PASSWORD to REDIS_AUTH_KEY
         cat >> "$ENV_FILE" <<EOF
-RUNNER_REG_KEY=${PREV_TOKEN}
 GITEA_WEB_PORT=${CFG_GITEA_WEB}
 GITEA_SSH_PORT=${CFG_GITEA_SSH}
 DB_USER=gitea
@@ -803,6 +801,8 @@ EOF
     file: ${SECRETS_DIR}/gitea_db_password.txt
   gitea_redis_password:
     file: ${SECRETS_DIR}/gitea_redis_password.txt
+  runner_registration_token:
+    file: ${SECRETS_DIR}/runner_registration_token.txt
 EOF
     fi
 
@@ -819,7 +819,6 @@ services:
 EOF
 
     if [ "$USE_PROXY" == "true" ]; then
-        # [FIX 1] BUILD=1 flag appended to proxy whitelist
         cat >> "$COMPOSE_FILE" <<EOF
   gitea-socket-proxy:
     image: tecnativa/docker-socket-proxy:latest
@@ -998,10 +997,12 @@ EOF
     working_dir: ${DATA_DIR}/RunnerGeneric
     environment:
       - GITEA_INSTANCE_URL=http://Gitea:3000
-      - GITEA_RUNNER_REGISTRATION_TOKEN=\${RUNNER_REG_KEY}
+      - GITEA_RUNNER_REGISTRATION_TOKEN_FILE=/run/secrets/runner_registration_token
       - GITEA_RUNNER_NAME=Worker-Generic-Alpha
       - DOCKER_HOST=tcp://Gitea-Socket-Proxy:2375
       - GITEA_RUNNER_LABELS=ubuntu-latest:docker://node:18-bullseye,ubuntu-22.04:docker://ubuntu:22.04
+    secrets:
+      - runner_registration_token
     volumes:
       - ${DATA_DIR}/RunnerGeneric:${DATA_DIR}/RunnerGeneric
     networks:
@@ -1020,10 +1021,12 @@ EOF
     working_dir: ${DATA_DIR}/RunnerGemini
     environment:
       - GITEA_INSTANCE_URL=http://Gitea:3000
-      - GITEA_RUNNER_REGISTRATION_TOKEN=\${RUNNER_REG_KEY}
+      - GITEA_RUNNER_REGISTRATION_TOKEN_FILE=/run/secrets/runner_registration_token
       - GITEA_RUNNER_NAME=Worker-Gemini-Integration
       - DOCKER_HOST=tcp://Gitea-Socket-Proxy:2375
       - GITEA_RUNNER_LABELS=gemini-python:docker://python:3.11-bookworm,gemini-node:docker://node:20-bookworm
+    secrets:
+      - runner_registration_token
     volumes:
       - ${DATA_DIR}/RunnerGemini:${DATA_DIR}/RunnerGemini
     networks:
@@ -1042,10 +1045,12 @@ EOF
     working_dir: ${DATA_DIR}/RunnerGCloud
     environment:
       - GITEA_INSTANCE_URL=http://Gitea:3000
-      - GITEA_RUNNER_REGISTRATION_TOKEN=\${RUNNER_REG_KEY}
+      - GITEA_RUNNER_REGISTRATION_TOKEN_FILE=/run/secrets/runner_registration_token
       - GITEA_RUNNER_NAME=Worker-GCloud-Deploy
       - DOCKER_HOST=tcp://Gitea-Socket-Proxy:2375
       - GITEA_RUNNER_LABELS=google-sdk:docker://google/cloud-sdk:slim
+    secrets:
+      - runner_registration_token
     volumes:
       - ${DATA_DIR}/RunnerGCloud:${DATA_DIR}/RunnerGCloud
     networks:
@@ -1355,9 +1360,10 @@ finalize_stack() {
                 local RUNNER_EXISTS=$(docker exec -u 1000 Gitea gitea actions runner list 2>/dev/null | grep -c -i "Worker" || echo "0")
                 if [ "$RUNNER_EXISTS" -eq 0 ]; then
                     for k in {1..10}; do
-                        TOKEN=$(docker exec -u 1000 Gitea gitea actions generate-runner-token 2>/dev/null | tr -d '\r')
+                        TOKEN=$(docker exec -u 1000 Gitea gitea actions generate-runner-token 2>/dev/null | tr -d '\r\n')
                         if [ -n "$TOKEN" ] && [[ "$TOKEN" != *"error"* ]]; then
-                            sed -i "s|RUNNER_REG_KEY=.*|RUNNER_REG_KEY=${TOKEN}|" "$ENV_FILE"
+                            # [FIX 2] Overwrite the Docker Secret mount file directly with the raw token
+                            echo -n "$TOKEN" > "${SECRETS_DIR}/runner_registration_token.txt"
                             log_info "Booting Runner Farm with new cryptographic token..."
                             $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" --profile runners up -d
                             log_succ "Runner Farm Registered & Online."
@@ -1455,13 +1461,14 @@ EOF
                         sleep 3
                     done
                     
-                    # [FIX 2] Inject Zero-Touch SSH Keys
                     log_info "Provisioning Zero-Touch SSH Identity for Code-Server..."
                     docker exec -u abc Code-Server mkdir -p /config/.ssh
                     if ! docker exec -u abc Code-Server test -f /config/.ssh/id_ed25519; then
                         docker exec -u abc Code-Server ssh-keygen -t ed25519 -N "" -f /config/.ssh/id_ed25519 > /dev/null 2>&1
                     fi
-                    local PUB_KEY=$(docker exec -u abc Code-Server cat /config/.ssh/id_ed25519.pub)
+                    
+                    # [FIX 3] Subshell sanitization ensures JSON payload does not shatter on newlines
+                    local PUB_KEY=$(docker exec -u abc Code-Server cat /config/.ssh/id_ed25519.pub | tr -d '\n\r')
                     
                     curl -s -X POST "http://127.0.0.1:3000/api/v1/user/keys" \
                          -u "${ADM_U}:${ADM_P}" \
@@ -1472,22 +1479,22 @@ EOF
                     docker exec -u abc Code-Server chmod 600 /config/.ssh/config
                     
                     if ! docker exec -u abc Code-Server test -d "/config/workspace/${REPO_NAME}"; then
-                        log_info "Seeding VS Code Workspace..."
-                        local CLONE_URL="http://${ADM_U}:${ADM_P}@Gitea:3000/${ADM_U}/${REPO_NAME}.git"
+                        log_info "Seeding VS Code Workspace (Process-Secure Clone)..."
                         local SAFE_URL="ssh://git@Gitea:2222/${ADM_U}/${REPO_NAME}.git"
                         
-                        docker exec -u abc Code-Server git clone "$CLONE_URL" "/config/workspace/${REPO_NAME}" > /dev/null 2>&1 || true
+                        # [FIX 1] Anonymous pipe totally isolates basic auth from the host's process table
+                        echo -n "${ADM_U}:${ADM_P}" | docker exec -i -u abc Code-Server sh -c "git -c http.extraHeader=\"Authorization: Basic \$(cat | base64 | tr -d '\\n')\" clone http://Gitea:3000/${ADM_U}/${REPO_NAME}.git /config/workspace/${REPO_NAME}" > /dev/null 2>&1 || true
                         
                         local GIT_SEED_OUT
                         GIT_SEED_OUT=$(docker exec -u abc Code-Server sh -c "\
                             if cd /config/workspace/${REPO_NAME}; then \
+                                git remote set-url origin \"$SAFE_URL\" && \
                                 git config user.name 'Omega-Sentry' && \
                                 git config user.email 'sentry@omega.local' && \
                                 echo '.aider*' >> .gitignore && \
                                 git add .gitignore && \
-                                git commit -m 'Silence Aider'; \
-                                git push; \
-                                git remote set-url origin \"$SAFE_URL\"; \
+                                git commit -m 'Silence Aider' && \
+                                git push --set-upstream origin main; \
                             else \
                                 exit 1; \
                             fi" 2>&1)
@@ -1517,6 +1524,12 @@ EOF
              fi
              sleep 3
         done
+    else
+        # [FIX 4] Priming remote compute nodes if deployed as isolated Controller
+        if [ -n "$CFG_EXTERNAL_AI_URL" ]; then
+             log_info "Priming External Compute Node via API ($TARGET_MODEL)..."
+             curl -s -X POST "${CFG_EXTERNAL_AI_URL}/api/pull" -H "Content-Type: application/json" -d "{\"name\": \"$TARGET_MODEL\"}" > /dev/null &
+        fi
     fi
 }
 
