@@ -7,14 +7,13 @@
 #              Logic: Vault-first secrets, Heuristic LAN Hunter, PascalCase.
 #              Compliance: Directive 1, 2, 3 (Full Secret Isolation).
 #              Features: Integrated Forensic Audit, Self-Healing, Zero-Touch.
-# Patched: The Vanguard (Rev 122).
-#          - [FIX 1] Anonymous stdin pipe eliminates process table leak on git clone.
-#          - [FIX 2] Runner Tokens secured via Docker Secrets (no env var exposure).
-#          - [FIX 3] Subshell payload sanitizer prevents REST API JSON shatter.
-#          - [FIX 4] Remote Primer POST request added for distributed architectures.
+# Patched: The Zenith (Rev 124).
+#          - [FIX 1] Context Injector added to CI/CD via actions/checkout and Node.js.
+#          - [FIX 2] Gitea volume ownership dynamically aligned to REAL_UID.
+#          - [FIX 3] Redis security theater stripped; relies on strict network isolation.
 # Author: Tier-3 Support
 # Date: 2026-03-16
-# Status: VANGUARD (Rev 122)
+# Status: ZENITH (Rev 124)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -686,6 +685,12 @@ setup_environment() {
     log_info "Vaulting secrets and initializing environment..."
     mkdir -p "$SECRETS_DIR"
     
+    local PREV_TOKEN=""
+    if [ -f "$ENV_FILE" ]; then
+        PREV_TOKEN=$(grep "RUNNER_REG_KEY=" "$ENV_FILE" | cut -d= -f2 || true)
+        if [ -z "$PREV_TOKEN" ]; then PREV_TOKEN=$(grep "GITEA_RUNNER_TOKEN=" "$ENV_FILE" | cut -d= -f2 || true); fi
+    fi
+
     rm -f "$ENV_FILE"
 
     (umask 077; cat > "$ENV_FILE" <<EOF
@@ -699,10 +704,8 @@ EOF
 
     if [ "$DEPLOY_GITEA" == "true" ]; then
         get_secret "gitea_db_password.txt" 16 > /dev/null
-        get_secret "gitea_redis_password.txt" 16 > /dev/null
         get_secret "gitea_admin_password.txt" 12 > /dev/null
         
-        # [FIX 2] Touch the secret file so Docker mounts correctly, preventing crash before generation
         if [ ! -f "${SECRETS_DIR}/runner_registration_token.txt" ]; then
             touch "${SECRETS_DIR}/runner_registration_token.txt"
             chmod 600 "${SECRETS_DIR}/runner_registration_token.txt"
@@ -711,14 +714,12 @@ EOF
         local ADMIN_USER_FILE="${SECRETS_DIR}/gitea_admin_username.txt"
         if [ ! -f "$ADMIN_USER_FILE" ]; then (umask 077; echo -n "gitea_admin" > "$ADMIN_USER_FILE"); fi
         
-        local REDIS_PASS_VAL=$(cat "${SECRETS_DIR}/gitea_redis_password.txt")
-        
         cat >> "$ENV_FILE" <<EOF
+RUNNER_REG_KEY=${PREV_TOKEN}
 GITEA_WEB_PORT=${CFG_GITEA_WEB}
 GITEA_SSH_PORT=${CFG_GITEA_SSH}
 DB_USER=gitea
 DB_NAME=gitea
-REDIS_AUTH_KEY=${REDIS_PASS_VAL}
 EOF
         
         if [ "$USE_GITEA_NFS" == "true" ]; then
@@ -799,8 +800,6 @@ EOF
         cat >> "$COMPOSE_FILE" <<EOF
   gitea_db_password:
     file: ${SECRETS_DIR}/gitea_db_password.txt
-  gitea_redis_password:
-    file: ${SECRETS_DIR}/gitea_redis_password.txt
   runner_registration_token:
     file: ${SECRETS_DIR}/runner_registration_token.txt
 EOF
@@ -901,6 +900,7 @@ EOF
         local GITEA_VOL="${DATA_DIR}/Gitea:/data"
         if [ "$USE_GITEA_NFS" == "true" ]; then GITEA_VOL="gitea-nfs-data:/data"; fi
 
+        # [FIX 3] Cache security theater removed. Internal network isolation is superior.
         cat >> "$COMPOSE_FILE" <<EOF
   gitea-db:
     image: postgres:15-alpine
@@ -927,15 +927,12 @@ EOF
     image: redis:7-alpine
     container_name: Gitea-Cache
     restart: unless-stopped
-    command: ["sh", "-c", "redis-server --requirepass \"\$\$(cat /run/secrets/gitea_redis_password)\" --appendonly yes"]
-    secrets:
-      - gitea_redis_password
     networks:
       - gitea-net
     volumes:
       - ${DATA_DIR}/Redis:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"\$\$(cat /run/secrets/gitea_redis_password)\" ping"]
+      test: ["CMD-SHELL", "redis-cli ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -954,9 +951,9 @@ EOF
       - GITEA__database__USER=\${DB_USER}
       - GITEA__database__PASSWD_FILE=/run/secrets/gitea_db_password
       - GITEA__cache__ADAPTER=redis
-      - GITEA__cache__HOST=redis://:\${REDIS_AUTH_KEY}@gitea-cache:6379/0?pool_size=100&idle_timeout=180s
+      - GITEA__cache__HOST=redis://gitea-cache:6379/0?pool_size=100&idle_timeout=180s
       - GITEA__queue__TYPE=redis
-      - GITEA__queue__CONN_STR=redis://:\${REDIS_AUTH_KEY}@gitea-cache:6379/0
+      - GITEA__queue__CONN_STR=redis://gitea-cache:6379/0
       - GITEA__server__ROOT_URL=http://\${HOST_IP}:\${GITEA_WEB_PORT}/
       - GITEA__server__START_SSH_SERVER=true
       - GITEA__server__SSH_LISTEN_PORT=2222
@@ -1303,7 +1300,8 @@ finalize_permissions() {
     if [ "$DEPLOY_GITEA" == "true" ]; then
         if [ -d "${DATA_DIR}/Postgres" ]; then chown -R 999:999 "${DATA_DIR}/Postgres"; fi
         if [ -d "${DATA_DIR}/Redis" ]; then chown -R 999:999 "${DATA_DIR}/Redis"; fi
-        if [ -d "${DATA_DIR}/Gitea" ] && [ "$USE_NFS" != "true" ]; then chown -R 1000:1000 "${DATA_DIR}/Gitea"; fi
+        # [FIX 2] Align Gitea mount with REAL_UID to prevent permission crash loop
+        if [ -d "${DATA_DIR}/Gitea" ] && [ "$USE_NFS" != "true" ]; then chown -R "$REAL_UID:$REAL_GID" "${DATA_DIR}/Gitea"; fi
         
         if [ -d "${DATA_DIR}/RunnerGeneric" ]; then chown -R 1000:1000 "${DATA_DIR}/RunnerGeneric"; fi
         if [ -d "${DATA_DIR}/RunnerGemini" ]; then chown -R 1000:1000 "${DATA_DIR}/RunnerGemini"; fi
@@ -1362,7 +1360,6 @@ finalize_stack() {
                     for k in {1..10}; do
                         TOKEN=$(docker exec -u 1000 Gitea gitea actions generate-runner-token 2>/dev/null | tr -d '\r\n')
                         if [ -n "$TOKEN" ] && [[ "$TOKEN" != *"error"* ]]; then
-                            # [FIX 2] Overwrite the Docker Secret mount file directly with the raw token
                             echo -n "$TOKEN" > "${SECRETS_DIR}/runner_registration_token.txt"
                             log_info "Booting Runner Farm with new cryptographic token..."
                             $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" --profile runners up -d
@@ -1379,10 +1376,10 @@ finalize_stack() {
                 
                 log_info "Initializing Native AI Workflows..."
                 local REPO_NAME="ai-playground"
-                local REPO_CHECK=$(curl -s -u "${ADM_U}:${ADM_P}" "http://127.0.0.1:3000/api/v1/repos/${ADM_U}/${REPO_NAME}")
+                local REPO_CHECK=$(curl -s -u "${ADM_U}:${ADM_P}" "http://127.0.0.1:${CFG_GITEA_WEB}/api/v1/repos/${ADM_U}/${REPO_NAME}")
                 
                 if ! echo "$REPO_CHECK" | grep -q "\"id\":"; then
-                    curl -s -X POST "http://127.0.0.1:3000/api/v1/user/repos" \
+                    curl -s -X POST "http://127.0.0.1:${CFG_GITEA_WEB}/api/v1/user/repos" \
                         -H "Content-Type: application/json" \
                         -u "${ADM_U}:${ADM_P}" \
                         -d "{\"name\": \"$REPO_NAME\", \"auto_init\": true, \"private\": false, \"default_branch\": \"main\"}" > /dev/null
@@ -1398,6 +1395,7 @@ finalize_stack() {
                 local WORKFLOW_AI_URL="http://Ollama-Worker:11434"
                 if [ "$DEPLOY_AI" == "false" ]; then WORKFLOW_AI_URL="${CFG_EXTERNAL_AI_URL}"; fi
                 
+                # [FIX 1] Context Injector explicitly targets node:18-bullseye to leverage Node serialization and actions/checkout
                 local WORKFLOW_CONTENT=$(cat <<EOF
 name: AI-Gated GitHub Mirror
 on: [push]
@@ -1405,46 +1403,68 @@ jobs:
   ai-security-review:
     runs-on: ubuntu-latest
     container:
-      image: curlimages/curl:latest
+      image: node:18-bullseye
       options: --network ${NET_NAME}
     steps:
-      - name: AI Code Inspection
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: AI Context Extraction & Inspection
         id: ai_check
         run: |
-          echo "Submitting commit to Compute Node for security review..."
-          RESPONSE=\$(curl -s -X POST ${WORKFLOW_AI_URL}/api/generate -d '{
-            "model": "${TARGET_MODEL}",
-            "prompt": "Analyze the following git push for security vulnerabilities or hardcoded secrets. Respond ONLY with PASSED or FAILED.",
-            "stream": false
-          }')
-          VERDICT=\$(echo \$RESPONSE | grep -o 'PASSED\|FAILED' || echo 'FAILED')
-          echo "AI_RESULT=\$VERDICT" >> \$GITHUB_OUTPUT
-          if [ "\$VERDICT" != "PASSED" ]; then
-             echo "Security Review Failed. Halting pipeline."
-             exit 1
-          fi
-
-  mirror-to-github:
-    needs: ai-security-review
-    if: needs.ai-security-review.outputs.ai_result == 'PASSED'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Push Mirror Status
-        run: echo "AI Verified. Mirroring event authorized natively."
+          echo "Extracting Git Diff..."
+          export DIFF_DATA=\$\(git diff HEAD~1 HEAD 2>/dev/null || git show HEAD\)
+          echo "Submitting payload to Compute Node (${WORKFLOW_AI_URL})..."
+          node -e "
+          const http = require('http');
+          const diff = process.env.DIFF_DATA;
+          const data = JSON.stringify({
+            model: '${TARGET_MODEL}',
+            prompt: 'Analyze the following git diff for security vulnerabilities or hardcoded secrets. Respond ONLY with PASSED or FAILED.\\n\\n' + diff,
+            stream: false
+          });
+          const url = new URL('${WORKFLOW_AI_URL}/api/generate');
+          const req = require(url.protocol === 'https:' ? 'https' : 'http').request(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data)}
+          }, (res) => {
+            let body = '';
+            res.on('data', d => body += d);
+            res.on('end', () => {
+              try {
+                const result = JSON.parse(body).response || '';
+                if(result.includes('PASSED')) {
+                  console.log('AI Verdict: PASSED');
+                  process.exit(0);
+                } else {
+                  console.log('AI Verdict: FAILED. Output:', result);
+                  process.exit(1);
+                }
+              } catch(e) {
+                console.error('Failed to parse AI response:', body);
+                process.exit(1);
+              }
+            });
+          });
+          req.on('error', (e) => { console.error('API Error:', e); process.exit(1); });
+          req.write(data);
+          req.end();
+          "
 EOF
 )
                 local B64_CONTENT=$(echo "$WORKFLOW_CONTENT" | base64 -w 0)
                 
-                local SHA=$(curl -s -u "${ADM_U}:${ADM_P}" "http://127.0.0.1:3000/api/v1/repos/${ADM_U}/${REPO_NAME}/contents/.gitea/workflows/ai-review.yaml" | grep -o '"sha":"[^"]*"' | cut -d'"' -f4 || true)
+                local SHA=$(curl -s -u "${ADM_U}:${ADM_P}" "http://127.0.0.1:${CFG_GITEA_WEB}/api/v1/repos/${ADM_U}/${REPO_NAME}/contents/.gitea/workflows/ai-review.yaml" | grep -o '"sha":"[^"]*"' | cut -d'"' -f4 || true)
                 
                 if [ -n "$SHA" ]; then
-                    curl -s -X PUT "http://127.0.0.1:3000/api/v1/repos/${ADM_U}/${REPO_NAME}/contents/.gitea/workflows/ai-review.yaml" \
+                    curl -s -X PUT "http://127.0.0.1:${CFG_GITEA_WEB}/api/v1/repos/${ADM_U}/${REPO_NAME}/contents/.gitea/workflows/ai-review.yaml" \
                         -H "Content-Type: application/json" \
                         -u "${ADM_U}:${ADM_P}" \
                         -d "{\"content\": \"$B64_CONTENT\", \"sha\": \"$SHA\", \"message\": \"Update AI Security Gate ($TARGET_MODEL)\", \"branch\": \"main\"}" > /dev/null
                     log_succ "Repository seeded with AI-Gated Pipeline (Updated)."
                 else
-                    curl -s -X POST "http://127.0.0.1:3000/api/v1/repos/${ADM_U}/${REPO_NAME}/contents/.gitea/workflows/ai-review.yaml" \
+                    curl -s -X POST "http://127.0.0.1:${CFG_GITEA_WEB}/api/v1/repos/${ADM_U}/${REPO_NAME}/contents/.gitea/workflows/ai-review.yaml" \
                         -H "Content-Type: application/json" \
                         -u "${ADM_U}:${ADM_P}" \
                         -d "{\"content\": \"$B64_CONTENT\", \"message\": \"Initialize AI Security Gate ($TARGET_MODEL)\", \"branch\": \"main\"}" > /dev/null
@@ -1467,23 +1487,21 @@ EOF
                         docker exec -u abc Code-Server ssh-keygen -t ed25519 -N "" -f /config/.ssh/id_ed25519 > /dev/null 2>&1
                     fi
                     
-                    # [FIX 3] Subshell sanitization ensures JSON payload does not shatter on newlines
                     local PUB_KEY=$(docker exec -u abc Code-Server cat /config/.ssh/id_ed25519.pub | tr -d '\n\r')
                     
-                    curl -s -X POST "http://127.0.0.1:3000/api/v1/user/keys" \
+                    curl -s -X POST "http://127.0.0.1:${CFG_GITEA_WEB}/api/v1/user/keys" \
                          -u "${ADM_U}:${ADM_P}" \
                          -H "Content-Type: application/json" \
                          -d "{\"title\": \"VSCode-Automated-Key\", \"key\": \"$PUB_KEY\", \"read_only\": false}" > /dev/null 2>&1 || true
 
-                    docker exec -u abc Code-Server sh -c "echo 'Host Gitea\n  HostName Gitea\n  Port 2222\n  User git\n  StrictHostKeyChecking no\n  IdentityFile ~/.ssh/id_ed25519' > /config/.ssh/config"
+                    docker exec -u abc Code-Server sh -c "printf 'Host Gitea\n  HostName Gitea\n  Port 2222\n  User git\n  StrictHostKeyChecking no\n  IdentityFile ~/.ssh/id_ed25519\n' > /config/.ssh/config"
                     docker exec -u abc Code-Server chmod 600 /config/.ssh/config
                     
                     if ! docker exec -u abc Code-Server test -d "/config/workspace/${REPO_NAME}"; then
                         log_info "Seeding VS Code Workspace (Process-Secure Clone)..."
                         local SAFE_URL="ssh://git@Gitea:2222/${ADM_U}/${REPO_NAME}.git"
                         
-                        # [FIX 1] Anonymous pipe totally isolates basic auth from the host's process table
-                        echo -n "${ADM_U}:${ADM_P}" | docker exec -i -u abc Code-Server sh -c "git -c http.extraHeader=\"Authorization: Basic \$(cat | base64 | tr -d '\\n')\" clone http://Gitea:3000/${ADM_U}/${REPO_NAME}.git /config/workspace/${REPO_NAME}" > /dev/null 2>&1 || true
+                        echo -n "http://${ADM_U}:${ADM_P}@Gitea:3000" | docker exec -i -u abc Code-Server sh -c "cat > /tmp/.git-creds && git config --global credential.helper 'store --file /tmp/.git-creds' && git clone http://Gitea:3000/${ADM_U}/${REPO_NAME}.git /config/workspace/${REPO_NAME}; rm -f /tmp/.git-creds; git config --global --unset credential.helper" > /dev/null 2>&1 || true
                         
                         local GIT_SEED_OUT
                         GIT_SEED_OUT=$(docker exec -u abc Code-Server sh -c "\
@@ -1525,7 +1543,6 @@ EOF
              sleep 3
         done
     else
-        # [FIX 4] Priming remote compute nodes if deployed as isolated Controller
         if [ -n "$CFG_EXTERNAL_AI_URL" ]; then
              log_info "Priming External Compute Node via API ($TARGET_MODEL)..."
              curl -s -X POST "${CFG_EXTERNAL_AI_URL}/api/pull" -H "Content-Type: application/json" -d "{\"name\": \"$TARGET_MODEL\"}" > /dev/null &
