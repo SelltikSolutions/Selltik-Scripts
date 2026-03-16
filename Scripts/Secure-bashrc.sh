@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+# =========================================================================
+# PHANTOMBYTE: TIER-3 BASHRC HARDENING PROTOCOL
+# TARGET: Debian-derivatives (ParrotOS, Ubuntu, Raspbian)
+# =========================================================================
+
 # STRICT MODE ENFORCEMENT
 set -euo pipefail
 IFS=$'\n\t'
@@ -8,55 +13,71 @@ IFS=$'\n\t'
 TARGET_USER_DIR="${HOME}"
 TARGET_RC="${TARGET_USER_DIR}/.bashrc"
 BACKUP_DIR="${TARGET_USER_DIR}/.bashrc_backups"
+ALLOWED_OS=("parrot" "ubuntu" "debian" "raspbian" "kali")
 
-# Enforce User Space
+# --- 1. HOST FINGERPRINTING & SANITY CHECKS ---
+
+# Sudo Hygiene: Never run this script as root to configure a user space
 if [[ "${EUID}" -eq 0 && "${USER}" != "root" ]]; then
-    echo "[!] FATAL: Running this via raw sudo shatters ownership. Aborting."
+    echo "[!] FATAL: EUID is 0 but USER is not root. Sudo execution shatters file ownership."
     exit 1
 fi
 
-# Dependency Validation
-if ! command -v gum >/dev/null 2>&1; then
-    echo "[!] FATAL: 'gum' binary not found in PATH."
-    echo "    I will not compromise the air-gap to fetch it for you. Provision it securely and retry."
-    exit 1
+# OS Fingerprinting
+if [[ -f /etc/os-release ]]; then
+    # Source the file to extract variables like $ID
+    # shellcheck disable=SC1091
+    source /etc/os-release
+    HOST_OS="${ID:-unknown}"
+else
+    HOST_OS="unknown"
 fi
 
-gum style --border double --margin "1" --padding "1" --border-foreground 212 "Initiating STIG-Compliant .bashrc Hardening Protocol"
+# Dependency Validation (Air-Gap Enforcement)
+for cmd in gum logger sed mktemp; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "[!] FATAL: Required binary '$cmd' not found in PATH."
+        echo "    Provision it securely via verified media. The air-gap remains intact."
+        exit 1
+    fi
+done
 
-# --- WIZARD: AESTHETIC DATA COLLECTION ---
+# --- 2. INTERACTIVE WIZARD (GUM) ---
 
-# Timeout Collection & Validation
+gum style --border double --margin "1" --padding "1" --border-foreground 212 "PhantomByte Interactive Target Hardening: OS [${HOST_OS}]"
+
+# OS Validation Warning
+if [[ ! " ${ALLOWED_OS[*]} " =~ ${HOST_OS} ]]; then
+    gum style --foreground 196 "[!] WARNING: OS '${HOST_OS}' is not a recognized Debian derivative."
+    if ! gum confirm "You are operating in uncharted territory. Proceed anyway?"; then
+        gum style --foreground 214 "[*] Abort acknowledged. Terminating."
+        exit 0
+    fi
+fi
+
+# Timeout Collection
 gum style "Select Session Timeout (STIG demands <= 900 seconds)"
 USER_TMOUT=$(gum input --placeholder "900" --prompt "Seconds > " --width 20)
 USER_TMOUT=${USER_TMOUT:-900}
 
 if ! [[ "${USER_TMOUT}" =~ ^[0-9]+$ ]] || [[ "${USER_TMOUT}" -gt 900 ]]; then
-    gum style --foreground 196 "[!] FATAL: Invalid or non-compliant timeout. Discarding input."
+    gum style --foreground 196 "[!] FATAL: Invalid or non-compliant timeout. Input rejected."
     exit 1
 fi
 
-# Umask Collection & Validation
+# Umask Collection
 gum style "Select Default Umask Level"
 UMASK_CHOICE=$(gum choose "077 (Paranoid - Absolute Isolation)" "027 (Group Read - STIG Minimum)")
+USER_UMASK=$([[ "${UMASK_CHOICE}" == *"077"* ]] && echo "077" || echo "027")
 
-if [[ "${UMASK_CHOICE}" == *"077"* ]]; then
-    USER_UMASK="077"
-elif [[ "${UMASK_CHOICE}" == *"027"* ]]; then
-    USER_UMASK="027"
-else
-    gum style --foreground 196 "[!] FATAL: Unknown umask selection."
-    exit 1
-fi
-
-# Final Confirmation before touching the filesystem
+# Execution Confirmation
 gum style "Configuration Ready. Target: ${TARGET_RC} | Umask: ${USER_UMASK} | Timeout: ${USER_TMOUT}"
-if ! gum confirm "Execute Atomic Swap?"; then
-    gum style --foreground 214 "[*] Operation aborted by user. The filesystem remains untouched."
+if ! gum confirm "Initiate Atomic Overwrite?"; then
+    gum style --foreground 214 "[*] Operation aborted. The filesystem remains untouched."
     exit 0
 fi
 
-# --- ATOMIC BACKUP ---
+# --- 3. ATOMIC BACKUP ---
 mkdir -p "${BACKUP_DIR}"
 chmod 700 "${BACKUP_DIR}"
 
@@ -65,31 +86,28 @@ if [[ -f "${TARGET_RC}" ]]; then
     BACKUP_FILE="${BACKUP_DIR}/bashrc_backup_${TIMESTAMP}"
     cp -a "${TARGET_RC}" "${BACKUP_FILE}"
     chmod 600 "${BACKUP_FILE}"
-    gum style --foreground 70 "[*] Atomic backup created at: ${BACKUP_FILE}"
+    gum style --foreground 70 "[*] Atomic backup secured at: ${BACKUP_FILE}"
 fi
 
-# --- CLEAN ROOM: CONFIGURATION GENERATION ---
+# --- 4. CLEAN ROOM: CONFIGURATION GENERATION ---
 TMP_RC=$(mktemp /tmp/bashrc_staged.XXXXXX)
 chmod 600 "${TMP_RC}"
 
-# Trap ensures temporary file destruction upon sudden termination
+# Trap ensures temporary file destruction upon sudden termination (Ctrl+C during generation)
 trap 'rm -f "${TMP_RC}"; echo "[!] Script interrupted. Cleared temporary staging file."' EXIT
 
-cat << 'EOF' > "${TMP_RC}"
+# 4a. Base STIG Configuration (Unquoted HEREDOC to expand variables)
+cat << EOF > "${TMP_RC}"
 # =========================================================================
-# HARDENED .bashrc - AUTOGENERATED
-# Any manual modifications to this file may be overwritten by the auditor.
+# HARDENED .bashrc - AUTOGENERATED VIA PHANTOMBYTE PROTOCOL
+# OS FINGERPRINT: ${HOST_OS}
 # =========================================================================
 
-case $- in
+case \$- in
     *i*) ;;
       *) return;;
 esac
 
-EOF
-
-# Inject sanitized variables
-cat << EOF >> "${TMP_RC}"
 # --- DISA STIG / HARDENING SETTINGS ---
 umask ${USER_UMASK}
 ulimit -c 0
@@ -114,14 +132,70 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 EOF
 
-# --- THE ATOMIC SWAP ---
+# 4b. Syslog Panopticon & Tactical Prompt (Quoted HEREDOC to protect raw Bash syntax)
+cat << 'EOF_PROMPT' >> "${TMP_RC}"
+# --- VISUAL AWARENESS & AUDIT HOOK ---
+__phantom_prompt_and_audit() {
+    local EXIT_CODE=$?
+    
+    # 1. THE SYSLOG AUDIT
+    local LAST_CMD
+    LAST_CMD=$(history 1 | sed -e "s/^[ ]*[0-9]*[ ]*//g")
+    
+    if [[ -n "${LAST_CMD}" && "${LAST_CMD}" != "${__PHANTOM_LAST_LOGGED_CMD:-}" ]]; then
+        logger -p user.notice -t "phantom-audit[$$]" "USER:${USER} EUID:${EUID} PWD:${PWD} CMD:${LAST_CMD} EXIT:${EXIT_CODE}"
+        export __PHANTOM_LAST_LOGGED_CMD="${LAST_CMD}"
+    fi
+
+    # 2. THE TACTICAL PROMPT
+    local C_BLUE='\[\e[38;5;39m\]'
+    local C_PINK='\[\e[38;5;213m\]'
+    local C_GREY='\[\e[38;2;128;128;128m\]'
+    local C_WHITE='\[\e[97m\]' 
+    local C_RESET='\[\e[0m\]'
+    
+    local C_B
+    local SYMB
+    local C_PRIV
+    
+    # Exit Code State Engine
+    if [[ ${EXIT_CODE} -eq 0 ]]; then
+        C_B='\[\e[38;5;46m\]' # Green (Clean)
+        SYMB="✓"
+    elif [[ ${EXIT_CODE} -eq 130 ]]; then
+        C_B='\[\e[38;5;226m\]' # Yellow (SIGINT)
+        SYMB="✗ INT"
+    else
+        C_B='\[\e[38;5;196m\]' # Red (Fatal)
+        SYMB="✗ ${EXIT_CODE}"
+    fi
+    
+    # Privilege Escalation Sensor
+    if [[ "${EUID}" -eq 0 ]]; then
+        C_PRIV='\[\e[38;5;208m\]' # Toxic Amber (Root)
+    else
+        C_PRIV='\[\e[38;5;136m\]' # Tarnished Bronze (Standard User)
+    fi
+
+    # Assembly
+    PS1="${C_BLUE}╔${C_B}〖${C_RESET}${C_B}${SYMB}${C_B}〗${C_BLUE}═${C_B}〖${C_PINK}\u@\h${C_B}〗${C_BLUE}═${C_B}〖${C_PINK}\D{%m/%d/%y} \D{%H:%M}${C_B}〗${C_BLUE}═${C_B}〖${C_GREY}\D{%s}${C_B}〗${C_RESET}\n${C_BLUE}╚══${C_PRIV}⭆ ${C_RESET}\$ ${C_WHITE}"
+}
+
+if [[ -z "${PROMPT_COMMAND:-}" ]]; then
+    PROMPT_COMMAND="__phantom_prompt_and_audit"
+else
+    PROMPT_COMMAND="__phantom_prompt_and_audit; ${PROMPT_COMMAND}"
+fi
+EOF_PROMPT
+
+# --- 5. THE ATOMIC SWAP ---
 mv "${TMP_RC}" "${TARGET_RC}"
 
 # Disarm the trap; the swap succeeded
 trap - EXIT
 
-# Lock permissions down
+# Lock permissions down permanently
 chmod 640 "${TARGET_RC}"
 chown "${USER}":"$(id -gn "${USER}")" "${TARGET_RC}"
 
-gum style --foreground 70 --border normal --padding "1" "Operation complete. The execution vector is secured. Spawn a new shell to enforce the new reality."
+gum style --foreground 70 --border normal --padding "1" "[+] Overwrite complete. The execution vector is secured. Source ~/.bashrc to enforce."
