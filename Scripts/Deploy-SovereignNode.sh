@@ -1,16 +1,16 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.19-STIG-ABSOLUTE
+#  Version: v10.20-APEX-TERMINUS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Apt Armor Fixes:
-#  - APT-02: Enforced strict dependency resolution. Script now audits dpkg 
-#            health before execution and violently aborts if core tools 
-#            fail to install, preventing half-state deployments.
-#  STIG Absolute Fixes:
-#  - NET-07: Pinned Traefik proxy ports to IPv4 (0.0.0.0) to prevent socket 
-#            panics on IPv6-disabled hosts, mirroring the WireGuard anchor.
+#  Apex Terminus Fixes:
+#  - APT-03: Evaluates native dpkg exit codes instead of parsing localized 
+#            text strings to guarantee detection of locked/fractured databases.
+#  - BASH-02: Insulated all UI variable assignments against 'set -e' decapitations. 
+#             Hitting ESC now triggers a graceful exit rather than a Bash panic.
+#  - HEALTH-12: Replaced legacy nslookup with 'drill' to support Alpine-native 
+#               ldns healthchecks, breaking the Unbound/Pi-Hole boot deadlock.
 # ==============================================================================
 
 set -euo pipefail
@@ -70,7 +70,8 @@ CheckDependencies() {
     PrintMsg "240" "Verifying baseline tools for $OS_ID..."
     
     if [[ "$PkgManager" == "apt-get" ]]; then
-        if sudo dpkg --audit 2>&1 | grep -E -q "interrupted|configure -a"; then
+        # APT-03: Strict evaluation of dpkg exit code, ignoring stdout variations.
+        if ! sudo dpkg --audit > /dev/null 2>&1; then
             PrintMsg "196" "========================================================================"
             PrintMsg "196" "[FATAL OS CORRUPTION] dpkg database is locked or interrupted."
             PrintMsg "196" "========================================================================"
@@ -212,10 +213,13 @@ if [ "$Interactive" -eq 1 ]; then
         PrintMsg "226" "Cloudflare Scoped DNS API Token required:"
         cf_token=""
         if command -v gum &> /dev/null; then
-            cf_token=$(gum input --password)
+            # BASH-02: Insulation against 'set -e' decapitation if user hits ESC (Exit 130)
+            cf_token=$(gum input --password || true)
+            [ -z "$cf_token" ] && { PrintMsg "196" "Token input cancelled. Halting."; exit 1; }
         else
             read -s -p "Token: " cf_token
             echo ""
+            [ -z "$cf_token" ] && { PrintMsg "196" "Token input cancelled. Halting."; exit 1; }
         fi
         WriteSecret "cf_api_token" "$cf_token"
     }
@@ -223,10 +227,12 @@ if [ "$Interactive" -eq 1 ]; then
         PrintMsg "226" "Provide a secure password for the Traefik BasicAuth fallback:"
         TraefikPass=""
         if command -v gum &> /dev/null; then
-            TraefikPass=$(gum input --password)
+            TraefikPass=$(gum input --password || true)
+            [ -z "$TraefikPass" ] && { PrintMsg "196" "Password input cancelled. Halting."; exit 1; }
         else
             read -s -p "Password: " TraefikPass
             echo ""
+            [ -z "$TraefikPass" ] && { PrintMsg "196" "Password input cancelled. Halting."; exit 1; }
         fi
         WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"
     }
@@ -253,22 +259,34 @@ if [ "$Interactive" -eq 1 ]; then
     AcmeEmail=""
 
     if command -v gum &> /dev/null; then
-        WgEndpoint=$(gum input --prompt "WireGuard Public Endpoint (IP/DDNS): " --value "$PrevEndpoint")
-        WgPort=$(gum input --prompt "WireGuard UDP Listen Port: " --value "$PrevPort")
-        InternalDomain=$(gum input --prompt "Root Internal Domain: " --value "$PrevDomain")
-        AcmeEmail=$(gum input --prompt "Let's Encrypt Email: " --value "$PrevEmail")
+        # BASH-02: Escaping variable assignments to prevent silent crashes
+        WgEndpoint=$(gum input --prompt "WireGuard Public Endpoint (IP/DDNS): " --value "$PrevEndpoint" || true)
+        [ -z "$WgEndpoint" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
+        
+        WgPort=$(gum input --prompt "WireGuard UDP Listen Port: " --value "$PrevPort" || true)
+        [ -z "$WgPort" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
+        
+        InternalDomain=$(gum input --prompt "Root Internal Domain: " --value "$PrevDomain" || true)
+        [ -z "$InternalDomain" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
+        
+        AcmeEmail=$(gum input --prompt "Let's Encrypt Email: " --value "$PrevEmail" || true)
+        [ -z "$AcmeEmail" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
     else
         read -p "WireGuard Public Endpoint (IP/DDNS) [$PrevEndpoint]: " input_endpoint
         WgEndpoint="${input_endpoint:-$PrevEndpoint}"
+        [ -z "$WgEndpoint" ] && exit 1
         
         read -p "WireGuard UDP Listen Port [$PrevPort]: " input_port
         WgPort="${input_port:-$PrevPort}"
+        [ -z "$WgPort" ] && exit 1
         
         read -p "Root Internal Domain [$PrevDomain]: " input_domain
         InternalDomain="${input_domain:-$PrevDomain}"
+        [ -z "$InternalDomain" ] && exit 1
         
         read -p "Let's Encrypt Email [$PrevEmail]: " input_email
         AcmeEmail="${input_email:-$PrevEmail}"
+        [ -z "$AcmeEmail" ] && exit 1
     fi
 
     sudo tee "$EnvFile" > /dev/null << EOF
@@ -553,8 +571,9 @@ services:
     cap_add: [NET_BIND_SERVICE, SETGID, SETUID, CHOWN, DAC_OVERRIDE]
     security_opt: [no-new-privileges:true]
     logging: *default-logging
+    # HEALTH-12: Invoking Alpine-native 'drill' tool instead of deprecated nslookup
     healthcheck:
-      test: ["CMD-SHELL", "nslookup localhost 127.0.0.1 || exit 1"]
+      test: ["CMD-SHELL", "drill @127.0.0.1 localhost || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -619,7 +638,6 @@ services:
       socket_network:
       proxy_network:
       vpn_network: { ipv4_address: 10.99.0.13 }
-    # NET-07: Pinned Traefik ports explicitly to IPv4 to prevent EAFNOSUPPORT panics
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
@@ -720,7 +738,8 @@ AssimilateAlienContainers() {
                 
                 local posture_choice=""
                 if command -v gum &> /dev/null; then
-                    local choice=$(gum choose "1) MFA Protected (Authelia) [SUGGESTED]" "2) VPN-Only (Air-Gapped)" "3) BasicAuth (Legacy Form)" "4) Fully Public" "5) Internal (Skip)")
+                    local choice=$(gum choose "1) MFA Protected (Authelia) [SUGGESTED]" "2) VPN-Only (Air-Gapped)" "3) BasicAuth (Legacy Form)" "4) Fully Public" "5) Internal (Skip)" || true)
+                    [ -z "$choice" ] && continue
                     posture_choice=${choice:0:1}
                 else
                     echo "1) MFA Protected (Authelia) [SUGGESTED]"
@@ -736,7 +755,7 @@ AssimilateAlienContainers() {
 
                 local TargetPort=""
                 if command -v gum &> /dev/null; then
-                    TargetPort=$(gum input --prompt "Internal listening port for $container (e.g. 80, 8080): ")
+                    TargetPort=$(gum input --prompt "Internal listening port for $container (e.g. 80, 8080): " || true)
                 else
                     read -p "Internal listening port for $container (e.g. 80, 8080): " TargetPort
                 fi
