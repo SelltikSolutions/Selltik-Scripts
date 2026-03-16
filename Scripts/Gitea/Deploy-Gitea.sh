@@ -7,13 +7,13 @@
 #              Logic: Vault-first secrets, Heuristic LAN Hunter, PascalCase.
 #              Compliance: Directive 1, 2, 3 (Full Secret Isolation).
 #              Features: Integrated Forensic Audit, Self-Healing, Zero-Touch.
-# Patched: The Unified Key (Rev 119).
-#          - [FIX 1] Unified all secret files/YAML keys to strict snake_case.
-#          - [FIX 2] Fixed POSTGRES_PASSWORD_FILE symmetric mount path.
-#          - [FIX 3] Scoped caching/admin credentials to prevent silent cache death.
+# Patched: The Singularity (Rev 120).
+#          - [FIX 1] Hard-locked SSH internal/external routing ports.
+#          - [FIX 2] Dynamic CI/CD Network topology discovery via NODE_ROLE.
+#          - [FIX 3] Compose State-Drift Enforcer added to LSIO Code-Server.
 # Author: Tier-3 Support
 # Date: 2026-03-15
-# Status: UNIFIED KEY (Rev 119)
+# Status: SINGULARITY (Rev 120)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -709,7 +709,6 @@ EOF
         local ADMIN_USER_FILE="${SECRETS_DIR}/gitea_admin_username.txt"
         if [ ! -f "$ADMIN_USER_FILE" ]; then (umask 077; echo -n "gitea_admin" > "$ADMIN_USER_FILE"); fi
         
-        # We must load REDIS_PASSWORD into the env file to avoid plaintext yaml interpolation
         local REDIS_PASS_VAL=$(cat "${SECRETS_DIR}/gitea_redis_password.txt")
         
         cat >> "$ENV_FILE" <<EOF
@@ -866,6 +865,7 @@ EOF
     fi
 
     if [ "$DEPLOY_VSCODE" == "true" ]; then
+        # [FIX 3] AIDER_STATE_TRIGGER injected to force container recreation on model switch.
         cat >> "$COMPOSE_FILE" <<EOF
   code-server:
     image: linuxserver/code-server:latest
@@ -877,6 +877,7 @@ EOF
       - TZ=\${TZ}
       - FILE__PASSWORD=/run/secrets/vscode_password
       - DOCKER_HOST=tcp://gitea-socket-proxy:2375
+      - AIDER_STATE_TRIGGER=\${AIDER_MODEL}
     secrets:
       - vscode_password
     volumes:
@@ -1382,7 +1383,8 @@ finalize_stack() {
                 fi
                 
                 log_info "Synchronizing AI-Gated Pipeline..."
-                local NET_NAME=$(docker inspect Ollama-Worker --format '{{range $k, $v := .NetworkSettings.Networks}}{{printf "%s\n" $k}}{{end}}' | head -n 1 || echo "gitea-monolith_gitea-net")
+                # [FIX 2] Extracted the robust dynamic network discovery for distributed Runner architectures.
+                local NET_NAME=$(docker inspect Ollama-Worker --format '{{range $k, $v := .NetworkSettings.Networks}}{{printf "%s\n" $k}}{{end}}' 2>/dev/null | head -n 1 || echo "gitea-${NODE_ROLE}_gitea-net")
                 
                 local WORKFLOW_AI_URL="http://Ollama-Worker:11434"
                 if [ "$DEPLOY_AI" == "false" ]; then WORKFLOW_AI_URL="${CFG_EXTERNAL_AI_URL}"; fi
