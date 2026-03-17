@@ -1,16 +1,15 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.22-OMEGA-STATE
+#  Version: v10.25-THE-SINGULARITY
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Omega State Fixes:
-#  - CORE-01: Injected bare-metal hypervisor provisioning. The script now 
-#             automatically installs Docker Engine if executed on a naked host.
-#  - ROUTE-17: Engineered a self-healing Glass Bridge. The Assimilation Engine 
-#              now outputs declarative YAML for permanent bridging, and the 
-#              cron automaton automatically heals severed Zero-Trust connections 
-#              caused by third-party container recreations.
+#  The Singularity Fixes:
+#  - BASH-03: Insulated all native 'read' fallbacks with '|| true' booleans to 
+#             prevent strict 'set -e' guillotine executions upon SIGINT (Ctrl+C).
+#  - IAM-04: Relocated Authelia directory chown execution to strictly occur 
+#            AFTER root-executed 'tee' file generation, ensuring zero root 
+#            artifacts exist within the unprivileged UID 1000 vault.
 # ==============================================================================
 
 set -euo pipefail
@@ -98,10 +97,9 @@ CheckDependencies() {
         fi
     done
 
-    # CORE-01: Bare-Metal Hypervisor Provisioning
     if ! command -v docker &> /dev/null || ! docker compose version &> /dev/null; then
         PrintMsg "214" "Docker Engine missing. Initiating bare-metal hypervisor provision..."
-        if ! eval "$InstallCmd docker.io docker-compose-plugin" > /dev/null 2>&1; then
+        if ! curl -fsSL --connect-timeout 10 https://get.docker.com | sudo sh > /dev/null 2>&1; then
             PrintMsg "196" "[FATAL] Failed to natively provision Docker Engine. Halting."
             exit 1
         fi
@@ -164,7 +162,8 @@ ExecuteAnnihilation() {
         if command -v gum &> /dev/null; then
             if gum confirm "OBLITERATE EVERYTHING and restart fresh?"; then confirm="yes"; fi
         else
-            read -p "OBLITERATE EVERYTHING and restart fresh? (y/N): " input_conf
+            # BASH-03: Insulated native read confirmation
+            read -p "OBLITERATE EVERYTHING and restart fresh? (y/N): " input_conf || true
             [[ "${input_conf:-}" =~ ^[Yy]$ ]] && confirm="yes"
         fi
         
@@ -197,6 +196,9 @@ sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$Confi
              "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
              "$ConfigDir/Unbound"
 
+# DB-01: Enforce UID 70 ownership for Postgres-Alpine to drop DAC_OVERRIDE STIG violation
+sudo chown -R 70:70 "$ConfigDir/Postgres"
+
 sudo touch "${ConfigDir}/Traefik/acme.json"
 sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 
@@ -225,7 +227,8 @@ if [ "$Interactive" -eq 1 ]; then
             cf_token=$(gum input --password || true)
             [ -z "$cf_token" ] && { PrintMsg "196" "Token input cancelled. Halting."; exit 1; }
         else
-            read -s -p "Token: " cf_token
+            # BASH-03: Insulated against SIGINT
+            read -s -p "Token: " cf_token || true
             echo ""
             [ -z "$cf_token" ] && { PrintMsg "196" "Token input cancelled. Halting."; exit 1; }
         fi
@@ -238,7 +241,8 @@ if [ "$Interactive" -eq 1 ]; then
             TraefikPass=$(gum input --password || true)
             [ -z "$TraefikPass" ] && { PrintMsg "196" "Password input cancelled. Halting."; exit 1; }
         else
-            read -s -p "Password: " TraefikPass
+            # BASH-03: Insulated against SIGINT
+            read -s -p "Password: " TraefikPass || true
             echo ""
             [ -z "$TraefikPass" ] && { PrintMsg "196" "Password input cancelled. Halting."; exit 1; }
         fi
@@ -279,21 +283,22 @@ if [ "$Interactive" -eq 1 ]; then
         AcmeEmail=$(gum input --prompt "Let's Encrypt Email: " --value "$PrevEmail" || true)
         [ -z "$AcmeEmail" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
     else
-        read -p "WireGuard Public Endpoint (IP/DDNS) [$PrevEndpoint]: " input_endpoint
+        # BASH-03: Insulated native read fallbacks to prevent locked file states
+        read -p "WireGuard Public Endpoint (IP/DDNS) [$PrevEndpoint]: " input_endpoint || true
         WgEndpoint="${input_endpoint:-$PrevEndpoint}"
-        [ -z "$WgEndpoint" ] && exit 1
+        [ -z "$WgEndpoint" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
         
-        read -p "WireGuard UDP Listen Port [$PrevPort]: " input_port
+        read -p "WireGuard UDP Listen Port [$PrevPort]: " input_port || true
         WgPort="${input_port:-$PrevPort}"
-        [ -z "$WgPort" ] && exit 1
+        [ -z "$WgPort" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
         
-        read -p "Root Internal Domain [$PrevDomain]: " input_domain
+        read -p "Root Internal Domain [$PrevDomain]: " input_domain || true
         InternalDomain="${input_domain:-$PrevDomain}"
-        [ -z "$InternalDomain" ] && exit 1
+        [ -z "$InternalDomain" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
         
-        read -p "Let's Encrypt Email [$PrevEmail]: " input_email
+        read -p "Let's Encrypt Email [$PrevEmail]: " input_email || true
         AcmeEmail="${input_email:-$PrevEmail}"
-        [ -z "$AcmeEmail" ] && exit 1
+        [ -z "$AcmeEmail" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
     fi
 
     sudo tee "$EnvFile" > /dev/null << EOF
@@ -325,7 +330,8 @@ PurgeAlienContainers() {
             if command -v gum &> /dev/null; then
                 if gum confirm "DESTROY all listed alien containers permanently?"; then confirm="yes"; fi
             else
-                read -p "DESTROY all listed alien containers permanently? (y/N): " input_conf
+                # BASH-03: Insulated native read
+                read -p "DESTROY all listed alien containers permanently? (y/N): " input_conf || true
                 [[ "${input_conf:-}" =~ ^[Yy]$ ]] && confirm="yes"
             fi
 
@@ -423,6 +429,10 @@ users:
 EOF
 fi
 
+# IAM-04: Execute strict UID 1000 permissions AFTER root 'tee' file generation.
+# This prevents root-owned artifacts from silently lingering in an unprivileged volume.
+sudo chown -R 1000:1000 "$ConfigDir/Authelia"
+
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -451,6 +461,7 @@ http:
     auth-router:
       rule: "Host(\`auth.${INTERNAL_DOMAIN}\`)"
       entryPoints: ["websecure"]
+      middlewares: ["secure-headers"]
       service: "authelia-service"
       tls: { certResolver: "cloudflare" }
   services:
@@ -532,7 +543,7 @@ services:
     secrets: [postgres_password]
     volumes: [${ConfigDir}/Postgres:/var/lib/postgresql/data]
     cap_drop: [ALL]
-    cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]
+    cap_add: [CHOWN, SETUID, SETGID]
     security_opt: [no-new-privileges:true]
     logging: *default-logging
     healthcheck:
@@ -633,7 +644,7 @@ services:
       net.ipv4.ip_forward: 1
       net.ipv4.conf.all.src_valid_mark: 1
     cap_drop: [ALL]
-    cap_add: [NET_ADMIN, SYS_MODULE, NET_RAW]
+    cap_add: [NET_ADMIN, SYS_MODULE, NET_RAW, CHOWN, SETUID, SETGID]
     logging: *default-logging
     restart: unless-stopped
 
@@ -710,8 +721,6 @@ docker compose --env-file "${EnvFile}" pull --quiet
 docker compose --env-file "${EnvFile}" up -d --remove-orphans
 docker image prune -af --filter "until=168h"
 
-# ROUTE-17: Self-Healing Glass Bridge
-# Automatically reconnects alien containers if user recreates them and severs the bridge.
 for manifest in "${ConfigDir}/Traefik/Dynamic/"*_assimilation.yml; do
     [ -e "\$manifest" ] || continue
     alien=\$(grep "^# ALIEN_CONTAINER: " "\$manifest" | cut -d' ' -f3 || true)
@@ -771,7 +780,8 @@ AssimilateAlienContainers() {
                     echo "3) BasicAuth (Legacy Form)"
                     echo "4) Fully Public"
                     echo "5) Internal (Skip)"
-                    read -p "Select posture (1-5) [1]: " posture_choice
+                    # BASH-03: Insulate posture read prompt against SIGINT panic
+                    read -p "Select posture (1-5) [1]: " posture_choice || true
                     posture_choice=${posture_choice:-1}
                 fi
 
@@ -781,7 +791,8 @@ AssimilateAlienContainers() {
                 if command -v gum &> /dev/null; then
                     TargetPort=$(gum input --prompt "Internal listening port for $container (e.g. 80, 8080): " || true)
                 else
-                    read -p "Internal listening port for $container (e.g. 80, 8080): " TargetPort
+                    # BASH-03: Insulate port read prompt against SIGINT panic
+                    read -p "Internal listening port for $container (e.g. 80, 8080): " TargetPort || true
                 fi
 
                 if [ -z "$TargetPort" ]; then
@@ -800,7 +811,6 @@ AssimilateAlienContainers() {
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
                 sudo docker network connect sovereign_node_proxy_network "$container" >/dev/null 2>&1 || true
 
-                # ROUTE-17: Track actual container name for self-healing cron
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 # ALIEN_CONTAINER: $container
 http:
@@ -820,7 +830,6 @@ http:
 MANIFEST_EOF
                 PrintMsg "82" "✔ Assimilated: https://${clean_name}.${INTERNAL_DOMAIN}"
                 
-                # ROUTE-17: Declarative Warning
                 echo ""
                 PrintMsg "196" " ⚠️  DECLARATIVE STATE WARNING (CRITICAL)"
                 PrintMsg "226" " The Zero-Trust bridge to $container is currently EPHEMERAL."
