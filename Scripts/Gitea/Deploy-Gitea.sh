@@ -1,1619 +1,870 @@
 #!/bin/bash
-
 # ==============================================================================
-# File: DeployGitea.sh
-# Description: Tier-3 Hardened Provisioner for Gitea / Ollama / DevOps Stack.
-#              Target OS: Linux ParrotOS / Debian.
-#              Logic: Vault-first secrets, Heuristic LAN Hunter, PascalCase.
-#              Compliance: Directive 1, 2, 3 (Full Secret Isolation).
-#              Features: Integrated Forensic Audit, Self-Healing, Zero-Touch.
-# Patched: The Zenith (Rev 124).
-#          - [FIX 1] Context Injector added to CI/CD via actions/checkout and Node.js.
-#          - [FIX 2] Gitea volume ownership dynamically aligned to REAL_UID.
-#          - [FIX 3] Redis security theater stripped; relies on strict network isolation.
-# Author: Tier-3 Support
-# Date: 2026-03-16
-# Status: ZENITH (Rev 124)
+#  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
+#  Version: v10.23-VOID-FORGED
+# ==============================================================================
+#  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Void Forged Fixes:
+#  - CORE-02: Replaced phantom apt packages with the official Docker bootstrap 
+#             engine to guarantee bare-metal ignition on ParrotOS/Debian hosts.
+#  - IAM-02: Enforced strict UID 1000 permissions on the Authelia volume to 
+#            prevent notification.txt write panics after dropping DAC_OVERRIDE.
+#  - SEC-08: Injected 'secure-headers' middleware into the primary auth-router 
+#            to shield the IAM portal from XSS/Clickjacking (STIG compliance).
 # ==============================================================================
 
-# ------------------------------------------------------------------------------
-# 0. Global Configuration & Paths
-# ------------------------------------------------------------------------------
-BASE_DIR="/opt/Docker/Stacks"
-PROJECT_NAME="Gitea"
-STACK_DIR="${BASE_DIR}/${PROJECT_NAME}"
+set -euo pipefail
 
-# PascalCase Enforcement (Architecture only, not vault contents)
-SECRETS_DIR="${STACK_DIR}/Secrets"
-DATA_DIR="${STACK_DIR}/Data"
-AUDIT_DIR="${STACK_DIR}/Audit"
+# Force absolute path resolution
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-COMPOSE_FILE="${STACK_DIR}/DockerCompose.yml"
-ENV_FILE="${STACK_DIR}/.env"
-AUDIT_SCRIPT="${AUDIT_DIR}/VerifyGpu.py"
+StackName="SovereignNode"
+BaseDir="/opt/Docker"
+ConfigDir="${BaseDir}/Config"
+ScriptsDir="${BaseDir}/Scripts"
+StackDir="${BaseDir}/Stacks/${StackName}"
+SecretsDir="${StackDir}/Secrets"
+EnvFile="${StackDir}/Node.env"
+LogsDir="/opt/Docker/Logs/${StackName}"
+ComposeFile="${StackDir}/docker-compose.yml"
+LockFile="/var/lock/sovereign_node.lock"
 
-# ANSI Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# Atomic execution lock
+exec 200>"$LockFile"
+flock -n 200 || { echo "[FATAL] Another deployment instance is running."; exit 1; }
+[ "$EUID" -eq 0 ] || { echo "[FATAL] Elevated privileges required. Run with: sudo $0"; exit 1; }
 
-# Logic Defaults
-DEPLOY_PORTAINER_AGENT="true"
-DEPLOY_VSCODE="false"
-DOCKER_COMPOSE_CMD=""
-AUTO_KILL_CONFLICTS="false"
-HAS_GPU="false"
-GPU_TYPE="CPU"
-IS_MAXWELL="false"
-AMD_HSA_VERSION="10.3.0"
-AMD_ENABLE_SDMA="1"
-GPU_GROUPS_DETECTED=""
-HIP_DEVICE_ID="0" 
-AMD_USE_VULKAN="false"
-TARGET_MODEL="qwen2.5-coder:14b"
-CFG_EXTERNAL_AI_URL="http://10.0.0.50:11434"
+# TTY verification for ParrotOS chained sudo
+Interactive=$([ -t 0 ] && echo 1 || echo 0)
 
-# Storage Flags
-USE_GITEA_NFS="false"
-USE_AI_NFS="false"
-
-# Resource Limits
-LIMIT_CPU="2.0"
-LIMIT_MEM="4G"
-
-# Trap interrupts
-set -e
-trap 'echo -e "\n${RED}[ABORT]${NC} Script interrupted or logic failure."; exit 1' INT TERM ERR
-
-log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-log_err()  { echo -e "${RED}[ERR]${NC} $1"; }
-log_succ() { echo -e "${GREEN}[OK]${NC} $1"; }
-
-# ------------------------------------------------------------------------------
-# 1. Identity & Privilege Forensics
-# ------------------------------------------------------------------------------
-check_identity() {
-    log_info "Verifying User Identity..."
-    if [ "$EUID" -ne 0 ]; then
-        log_err "This script must be run as root (sudo)."
-        exit 1
-    fi
-
-    DETECTED_USER=${SUDO_USER:-$USER}
-    if [ "$DETECTED_USER" == "root" ]; then
-        log_warn "Running as direct ROOT session."
-        read -p "   Enter target non-root username for file ownership: " TARGET_USER
-        if id "$TARGET_USER" &>/dev/null; then
-            REAL_USER="$TARGET_USER"
-        else
-            log_err "User '$TARGET_USER' does not exist."
-            exit 1
-        fi
+PrintMsg() {
+    local color=$1
+    local msg=$2
+    if command -v gum &> /dev/null; then
+        gum style --foreground "$color" "$msg"
     else
-        REAL_USER=$DETECTED_USER
-    fi
-
-    REAL_UID=$(id -u "$REAL_USER")
-    REAL_GID=$(id -g "$REAL_USER")
-    log_succ "Target Identity: $REAL_USER (UID: $REAL_UID)"
-}
-
-# ------------------------------------------------------------------------------
-# 2. State Hydration (Idempotency)
-# ------------------------------------------------------------------------------
-load_existing_state() {
-    log_info "Scanning for existing deployment state..."
-    if [ -f "$ENV_FILE" ]; then
-        log_succ "Previous state detected. Hydrating configurations..."
-        set -a
-        source "$ENV_FILE"
-        set +a
-        
-        CFG_GITEA_WEB=${GITEA_WEB_PORT:-3000}
-        CFG_GITEA_SSH=${GITEA_SSH_PORT:-2222}
-        CFG_AI_PORT=${AI_PORT:-"127.0.0.1:11434"}
-        CFG_AGENT_PORT=${AGENT_PORT:-9001}
-        CFG_VSCODE_PORT=${VSCODE_PORT:-8443}
-        TARGET_MODEL=${AIDER_MODEL:-"qwen2.5-coder:14b"}
-        CFG_EXTERNAL_AI_URL=${EXTERNAL_AI_URL:-"http://10.0.0.50:11434"}
-        
-        PREV_GPU_LAYERS=${OLLAMA_GPU_LAYERS:-""}
-        PREV_FLASH_ATTN=${OLLAMA_FLASH_ATTENTION:-""}
-        PREV_VULKAN=${OLLAMA_VULKAN:-""}
-        
-        [ -n "$GITEA_NFS_SERVER" ] && PREV_GITEA_NFS="true" || PREV_GITEA_NFS="false"
-        [ -n "$OLLAMA_NFS_SERVER" ] && PREV_AI_NFS="true" || PREV_AI_NFS="false"
-    else
-        log_info "No previous state found. Initializing clean slate."
-        CFG_GITEA_WEB=3000
-        CFG_GITEA_SSH=2222
-        CFG_AGENT_PORT=9001
-        CFG_VSCODE_PORT=8443
-        CFG_AI_PORT="" 
-        PREV_GITEA_NFS="false"
-        PREV_AI_NFS="false"
-        PREV_GPU_LAYERS=""
-        PREV_FLASH_ATTN=""
-        PREV_VULKAN=""
+        echo -e "\033[1;33m$msg\033[0m"
     fi
 }
 
-# ------------------------------------------------------------------------------
-# 3. Host Networking Forensics
-# ------------------------------------------------------------------------------
-detect_host_context() {
-    log_info "Detecting Network Context..."
+DetectOsFamily() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS_ID=${ID:-unknown}
+        OS_FAMILY=${ID_LIKE:-$OS_ID}
+        OS_FAMILY=${OS_FAMILY,,}
+    else
+        echo "[FATAL] /etc/os-release missing."; exit 1
+    fi
 
-    HOST_IP=$(ip route get 1.1.1.1 2>/dev/null | awk -F'src ' '{print $2}' | awk '{print $1}')
+    if [[ "$OS_FAMILY" == *"debian"* ]] || [[ "$OS_ID" == "parrot" ]] || [[ "$OS_ID" == "ubuntu" ]]; then
+        PkgManager="apt-get"
+        UpdateCmd="apt-get update -y -q"
+        InstallCmd="DEBIAN_FRONTEND=noninteractive apt-get install -y -q"
+    else
+        echo "[FATAL] Unsupported OS Family: $OS_FAMILY."; exit 1
+    fi
+}
+
+CheckDependencies() {
+    PrintMsg "240" "Verifying baseline tools for $OS_ID..."
     
-    if [[ -z "$HOST_IP" ]] || [[ "$HOST_IP" =~ ^100\.64\. ]] || [[ "$HOST_IP" =~ ^172\. ]] || [[ "$HOST_IP" == "127.0.0.1" ]]; then
-         log_warn "Primary route ($HOST_IP) appears to be VPN/Tunnel."
-         local LAN_IP=$(ip -o -4 addr show scope global | awk '!/docker|br-|tun|veth|tailscale/ && (/inet 192\.168\./ || /inet 10\./) {print $4}' | cut -d/ -f1 | head -n 1)
-         
-         if [ -n "$LAN_IP" ]; then
-             log_info "LAN Hunter discovered physical address: $LAN_IP"
-             HOST_IP=$LAN_IP
-         fi
-    fi
-
-    HOST_IP=${HOST_IP:-127.0.0.1}
-    echo ""
-    read -e -p "   Verify Host IP for Service Root URLs: " -i "$HOST_IP" USER_IP
-    HOST_IP=${USER_IP:-$HOST_IP}
-    log_succ "Networking context: $HOST_IP"
-
-    if command -v timedatectl >/dev/null; then
-        HOST_TZ=$(timedatectl show -p Timezone --value)
-    elif [ -f /etc/timezone ]; then
-        HOST_TZ=$(cat /etc/timezone)
-    fi
-    HOST_TZ=${HOST_TZ:-Etc/UTC}
-}
-
-# ------------------------------------------------------------------------------
-# 4. Core Requirement Forensics
-# ------------------------------------------------------------------------------
-check_core_requirements() {
-    log_info "Auditing host dependencies..."
-
-    if docker compose version &> /dev/null; then DOCKER_COMPOSE_CMD="docker compose";
-    elif command -v docker-compose &> /dev/null; then DOCKER_COMPOSE_CMD="docker-compose"; fi
-
-    local MISSING_DEPS=()
-    ! command -v docker &> /dev/null && MISSING_DEPS+=("docker.io")
-    [ -z "$DOCKER_COMPOSE_CMD" ] && MISSING_DEPS+=("docker-compose-plugin")
-    ! command -v socat &> /dev/null && MISSING_DEPS+=("socat")
-    ! command -v curl &> /dev/null && MISSING_DEPS+=("curl")
-    ! command -v openssl &> /dev/null && MISSING_DEPS+=("openssl")
-    ! command -v lspci &> /dev/null && MISSING_DEPS+=("pciutils")
-    ! command -v python3 &> /dev/null && MISSING_DEPS+=("python3")
-
-    if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
-        log_warn "Missing Core Dependencies: ${MISSING_DEPS[*]}"
-        read -p "   Attempt automated install? (y/N): " -n 1 -r; echo ""
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            apt-get update -qq
-            DEBIAN_FRONTEND=noninteractive apt-get install -y "${MISSING_DEPS[@]}" || exit 1
-            systemctl enable --now docker
-            if docker compose version &> /dev/null; then DOCKER_COMPOSE_CMD="docker compose"; 
-            else DOCKER_COMPOSE_CMD="docker-compose"; fi
-        else
+    if [[ "$PkgManager" == "apt-get" ]]; then
+        if ! sudo dpkg --audit > /dev/null 2>&1; then
+            PrintMsg "196" "========================================================================"
+            PrintMsg "196" "[FATAL OS CORRUPTION] dpkg database is locked or interrupted."
+            PrintMsg "196" "========================================================================"
+            PrintMsg "226" "The host package manager crashed during a previous operation."
+            PrintMsg "226" "Deploying the Sovereign Matrix in this state will result in a fractured"
+            PrintMsg "226" "environment missing critical cryptographic and chronometric dependencies."
+            PrintMsg "196" ""
+            PrintMsg "196" "==> ACTION REQUIRED: Run 'sudo dpkg --configure -a' manually."
+            PrintMsg "196" "========================================================================"
             exit 1
         fi
     fi
 
-    if ! systemctl is-active --quiet docker; then
-        systemctl enable --now docker
-        sleep 2
-    fi
-}
-
-# ------------------------------------------------------------------------------
-# 5. Hardware Configuration (Isolated)
-# ------------------------------------------------------------------------------
-configure_hardware_acceleration() {
-    log_info "Scanning for AI Accelerators..."
+    eval "$UpdateCmd" > /dev/null 2>&1 || true
     
-    HAS_GPU="false"
-    GPU_TYPE="CPU"
-    IS_MAXWELL="false"
-    AMD_USE_VULKAN="false"
-
-    if command -v nvidia-smi &> /dev/null && docker info 2>/dev/null | grep -q "Runtimes:.*nvidia"; then
-        HAS_GPU="true"
-        GPU_TYPE="NVIDIA"
-        log_succ "Detected NVIDIA GPU."
-        
-        local GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n 1)
-        if [[ "$GPU_NAME" == *"750 Ti"* ]]; then 
-             IS_MAXWELL="true"
-             log_info "Architecture: Maxwell ($GPU_NAME). Optimizing..."
-        fi
-    
-    elif [ -e /dev/kfd ] && [ -e /dev/dri ]; then
-        HAS_GPU="true"
-        GPU_TYPE="AMD"
-        log_succ "Detected AMD Interface."
-        
-        local RENDER_COUNT=$(ls /dev/dri/renderD* 2>/dev/null | wc -l)
-        if [ "$RENDER_COUNT" -gt 1 ]; then
-            log_warn "Multiple Render Devices Detected ($RENDER_COUNT)."
-            echo "   Potential iGPU interference detected. Please select the dedicated GPU index."
-            ls -l /dev/dri/renderD*
-            read -p "   Target GPU Device Index [0]: " USER_GPU_IDX
-            HIP_DEVICE_ID=${USER_GPU_IDX:-0}
-            log_info "Pinning container to GPU Index: $HIP_DEVICE_ID"
-        fi
-        
-        if command -v lspci &> /dev/null; then
-            local GPU_MODEL=$(lspci | grep -i "VGA.*AMD" | cut -d: -f3 | xargs)
-            log_info "AMD Model: $GPU_MODEL"
-            
-            if [[ "$GPU_MODEL" =~ "Polaris" ]] || [[ "$GPU_MODEL" =~ "RX 580" ]]; then
-                AMD_USE_VULKAN="true"
-                log_info "Detected Polaris (GFX8). ROCm unstable. Defaulting to Vulkan."
-            elif [[ "$GPU_MODEL" =~ "Vega" ]]; then
-                AMD_HSA_VERSION="9.0.0"
-                log_info "Detected Vega (GFX9). Override: $AMD_HSA_VERSION"
-            elif [[ "$GPU_MODEL" =~ "Navi" ]] || [[ "$GPU_MODEL" =~ "RX 5" ]]; then
-                AMD_USE_VULKAN="true"
-                log_info "Detected Navi 1x (RDNA1). ROCm unstable. Defaulting to Vulkan."
-            elif [[ "$GPU_MODEL" =~ "RX 6" ]]; then
-                AMD_HSA_VERSION="10.3.0"
-                log_info "Detected Navi 2x (RDNA2). Override: $AMD_HSA_VERSION"
-            elif [[ "$GPU_MODEL" =~ "RX 7" ]]; then
-                AMD_HSA_VERSION="11.0.0"
-                log_info "Detected Navi 3x (RDNA3). Override: $AMD_HSA_VERSION"
-            else
-                log_warn "Architecture unclear. Defaulting to RDNA2 ($AMD_HSA_VERSION)."
+    local deps="curl jq openssl cron tzdata dnsutils wget"
+    for dep in $deps; do
+        if ! command -v "$dep" &> /dev/null; then
+            PrintMsg "226" "Installing missing dependency: $dep"
+            if ! eval "$InstallCmd $dep" > /dev/null 2>&1; then
+                PrintMsg "196" "[FATAL] Dependency installation failed for: $dep"
+                PrintMsg "196" "Cannot proceed without critical infrastructure tools. Halting."
+                exit 1
             fi
         fi
-
-        log_info "Verifying GPU permissions..."
-        set +e
-        local GROUPS_OK=true
-        GPU_GROUPS_DETECTED=""
-        for grp in render video; do
-            if getent group "$grp" >/dev/null 2>&1; then
-                local GID=$(getent group "$grp" | cut -d: -f3)
-                if [ -n "$GID" ]; then
-                    GPU_GROUPS_DETECTED="$GPU_GROUPS_DETECTED $GID"
-                    if ! id -nG "$REAL_USER" | grep -qw "$grp"; then
-                        usermod -aG "$grp" "$REAL_USER" 2>/dev/null || true
-                    fi
-                fi
-            fi
-        done
-        GPU_GROUPS_DETECTED=$(echo $GPU_GROUPS_DETECTED | xargs)
-        chmod 666 /dev/kfd /dev/dri/renderD* 2>/dev/null || true
-        set -e
-        
-        log_info "GPU GIDs for Injection: [ $GPU_GROUPS_DETECTED ]"
-
-    else
-        log_info "No supported GPU detected. AI will be CPU-bound."
-    fi
-}
-
-# ------------------------------------------------------------------------------
-# 6. Helper: JIT Dependency Installer
-# ------------------------------------------------------------------------------
-ensure_dependency() {
-    local PKG=$1
-    local BIN=$2
-    if ! command -v "$BIN" &> /dev/null; then
-        log_warn "Feature requires package '$PKG'. Installing..."
-        apt-get update -qq
-        DEBIAN_FRONTEND=noninteractive apt-get install -y "$PKG" || { log_err "Failed to install $PKG"; exit 1; }
-    fi
-}
-
-draw_service_box() {
-    local TITLE=$1
-    shift
-    local LINES=("$@")
-    local TOTAL_WIDTH=80
-    local CONTENT_WIDTH=76
-    
-    local TITLE_STR="[ $TITLE ]"
-    local TITLE_LEN=${#TITLE_STR}
-    local PAD_TOTAL=$((TOTAL_WIDTH - TITLE_LEN - 2))
-    local PAD_L=$((PAD_TOTAL / 2))
-    local PAD_R=$((PAD_TOTAL - PAD_L))
-
-    printf "${NC}┌"
-    printf '─%.0s' $(seq 1 $PAD_L)
-    printf "${YELLOW}%s${NC}" "$TITLE_STR"
-    printf '─%.0s' $(seq 1 $PAD_R)
-    printf "┐\n"
-    
-    for line in "${LINES[@]}"; do
-        local KEY=$(echo "$line" | awk -F'|' '{print $1}')
-        local VAL=$(echo "$line" | awk -F'|' '{print $2}')
-        VAL=${VAL:-""}
-        local CLEAN_VAL=$(echo -e "$VAL" | sed 's/\x1b\[[0-9;]*m//g')
-        local VAL_LEN=${#CLEAN_VAL}
-        local SPACE=$((CONTENT_WIDTH - 15 - VAL_LEN))
-        if [ $SPACE -lt 0 ]; then SPACE=0; fi
-        printf "│ %-12s : %b%*s │\n" "$KEY" "$VAL" "$SPACE" ""
     done
-    printf "└"
-    printf '─%.0s' $(seq 1 $((TOTAL_WIDTH - 2)))
-    printf "┘\n"
-}
 
-# ------------------------------------------------------------------------------
-# 7. Role & Feature Selection
-# ------------------------------------------------------------------------------
-configure_role_wizard() {
-    echo "=========================================="
-    echo "   Node Role Selection"
-    echo "=========================================="
-    echo "1) Monolith:        Gitea + DB + Redis + AI + Runner Farm"
-    echo "2) Controller (Main): Gitea + DB + Redis + Runner Farm"
-    echo "3) Compute (Worker):  Ollama Only"
-    read -p "   Select Role [1-3]: " ROLE_CHOICE
-
-    case $ROLE_CHOICE in
-        2) NODE_ROLE="controller"; DEPLOY_GITEA=true; DEPLOY_AI=false ;;
-        3) NODE_ROLE="worker"; DEPLOY_GITEA=false; DEPLOY_AI=true ;;
-        *) NODE_ROLE="monolith"; DEPLOY_GITEA=true; DEPLOY_AI=true ;;
-    esac
-    
-    if [ "$DEPLOY_GITEA" == "true" ]; then
-        ensure_dependency "git" "git"
+    # CORE-02: Universal Bare-Metal Hypervisor Provisioning via official bootstrap
+    if ! command -v docker &> /dev/null || ! docker compose version &> /dev/null; then
+        PrintMsg "214" "Docker Engine missing. Initiating bare-metal hypervisor provision..."
+        if ! curl -fsSL --connect-timeout 10 https://get.docker.com | sudo sh > /dev/null 2>&1; then
+            PrintMsg "196" "[FATAL] Failed to natively provision Docker Engine. Halting."
+            exit 1
+        fi
+        sudo systemctl enable --now docker > /dev/null 2>&1 || true
     fi
-    
-    if [ "$DEPLOY_AI" == "true" ]; then
-        read -p "   Target AI Model [$TARGET_MODEL]: " INPUT_MODEL
-        TARGET_MODEL=${INPUT_MODEL:-$TARGET_MODEL}
-    else
-        read -p "   Target AI Model (Remote) [$TARGET_MODEL]: " INPUT_MODEL
-        TARGET_MODEL=${INPUT_MODEL:-$TARGET_MODEL}
-        read -p "   External Ollama Endpoint [${CFG_EXTERNAL_AI_URL}]: " INPUT_EXT_URL
-        CFG_EXTERNAL_AI_URL=${INPUT_EXT_URL:-$CFG_EXTERNAL_AI_URL}
+
+    if ! command -v gum &> /dev/null; then
+        sudo mkdir -p /etc/apt/keyrings
+        curl --connect-timeout 5 -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/charm.gpg || true
+        echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list > /dev/null
+        eval "$UpdateCmd" > /dev/null 2>&1 || true
+        eval "$InstallCmd gum" > /dev/null 2>&1 || true
     fi
 }
 
-configure_vscode_wizard() {
-    echo ""
-    read -p "   Deploy VS Code Server? (y/N): " -n 1 -r; echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        DEPLOY_VSCODE="true"
-        ensure_dependency "git" "git"
-    else
-        DEPLOY_VSCODE="false"
-    fi
-}
+DetectOsFamily
+CheckDependencies
 
-# ------------------------------------------------------------------------------
-# 8. Context-Aware Port Conflict Resolution
-# ------------------------------------------------------------------------------
-check_port() {
-    local PORT=$1
-    local SERVICE=$2
-    local VAR_REF=$3
-    local CHECK_PORT=${PORT##*:}
-    
-    if ss -lntu | grep -q ":${CHECK_PORT} "; then
-        local CONT_NAME=$(docker ps --filter "publish=${CHECK_PORT}" --format "{{.Names}}" | head -n 1)
-        if [[ -n "$CONT_NAME" ]] && { [[ "$CONT_NAME" == *"Gitea"* ]] || [[ "$CONT_NAME" == *"Ollama"* ]] || [[ "$CONT_NAME" == *"Code-Server"* ]] || [[ "$CONT_NAME" == *"Portainer-Agent"* ]] || [[ "$CONT_NAME" == *"gitea-"* ]]; }; then
-            log_succ "Port ${CHECK_PORT} (${SERVICE}) is held by existing stack (${CONT_NAME}). Bypassing conflict check."
-            eval "$VAR_REF=$PORT"
-            return 0
+# ==============================================================================
+# CYCLE-05: GRACEFUL CLEANUP FALLBACK
+# ==============================================================================
+PurgeLegacyState() {
+    if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Initiating Graceful Cleanup..."; fi
+    if [ -d "$StackDir" ]; then
+        cd "$StackDir" || true
+        local EnvFlag=""
+        [ -f "$EnvFile" ] && EnvFlag="--env-file $EnvFile"
+
+        if [ -f "$ComposeFile" ]; then
+            sudo docker compose $EnvFlag down --remove-orphans > /dev/null 2>&1 || true
+        fi
+        if [ -f "${StackDir}/DockerCompose.yml" ]; then
+            sudo docker compose $EnvFlag -f DockerCompose.yml down --remove-orphans > /dev/null 2>&1 || true
+            sudo rm -f "${StackDir}/DockerCompose.yml"
         fi
 
-        log_warn "Conflict Detected: Port ${CHECK_PORT} ($SERVICE) is busy."
-        local PID=$(ss -lntup | grep ":${CHECK_PORT} " | grep -o "pid=[0-9]*" | cut -d= -f2 | head -n 1)
-        local COMM=""
-        if [ -n "$PID" ]; then COMM=$(ps -p "$PID" -o comm= 2>/dev/null); fi
-        echo "   Owner: ${COMM:-Unknown} (PID: ${PID:-Unknown})"
+        sudo rm -f "${ConfigDir}/Traefik/Dynamic"/DynamicRules*.yml 2>/dev/null || true
+        sudo rm -f "${ConfigDir}/Unbound/UnboundConfig.conf" 2>/dev/null || true
+        sudo rm -f "${ConfigDir}/Unbound/RootHints.txt" 2>/dev/null || true
+        sudo rm -f "${ConfigDir}/Authelia/configuration.yml" 2>/dev/null || true
+        sudo rm -f "${StackDir}/docker-compose.yml" 2>/dev/null || true
+    fi
+}
+
+# ==============================================================================
+# ANNIHILATION-01: TRUE SCORCHED EARTH PROTOCOL
+# ==============================================================================
+ExecuteAnnihilation() {
+    if [ "$Interactive" -eq 1 ] && [ -d "$StackDir" ]; then
+        PrintMsg "196" "========================================================================"
+        PrintMsg "196" " 🔥 TRUE SCORCHED EARTH PROTOCOL"
+        PrintMsg "196" "========================================================================"
+        PrintMsg "226" "WARNING: You are requesting a mathematically clean slate."
+        PrintMsg "226" "This will VAPORIZE your PostgreSQL MFA Database, Let's Encrypt"
+        PrintMsg "226" "Certificates, Pi-Hole telemetry, and ALL cryptographic secrets."
+        PrintMsg "196" "There is no undo. You will be punished for your mistakes."
+        echo ""
         
-        local RESOLVE_OPT=""
-        if [[ -n "$PID" ]]; then
-            if [ "$AUTO_KILL_CONFLICTS" == "true" ]; then
-                RESOLVE_OPT="1"
-            else
-                echo "   1) Kill Process $PID (${COMM:-Unknown}) & Reclaim Port"
-                echo "   2) Select Different Port"
-                echo "   3) Kill ALL Conflicts (Nuclear Option)"
-                read -p "   Select: " INPUT_OPT
-                case $INPUT_OPT in
-                    3) AUTO_KILL_CONFLICTS="true"; RESOLVE_OPT="1" ;;
-                    1) RESOLVE_OPT="1" ;;
-                    *) RESOLVE_OPT="2" ;;
-                esac
-            fi
-
-            if [[ "$RESOLVE_OPT" == "1" ]]; then
-                if [[ "$COMM" == "docker-proxy" ]]; then
-                    local CONT_ID=$(docker ps --filter "publish=${CHECK_PORT}" --format "{{.ID}}" | head -n 1)
-                    if [ -n "$CONT_ID" ]; then docker stop "$CONT_ID" >/dev/null 2>&1 || true; else kill -9 "$PID" 2>/dev/null || true; fi
-                elif [[ "$COMM" == "ollama" ]]; then
-                    systemctl stop ollama 2>/dev/null || kill -9 "$PID" 2>/dev/null || true
-                else
-                    kill -9 "$PID" 2>/dev/null || true
-                fi
-                log_succ "Process handled. Reclaiming port ${PORT}."
-                eval "$VAR_REF=$PORT"
-                return 0
-            fi
-        fi
-        read -p "   Enter new port for $SERVICE (Default: $((CHECK_PORT+1))): " NEW_PORT
-        NEW_PORT=${NEW_PORT:-$((CHECK_PORT+1))}
-        if [[ "$PORT" == *"127.0.0.1"* ]]; then eval "$VAR_REF=127.0.0.1:$NEW_PORT"
-        else eval "$VAR_REF=$NEW_PORT"; fi
-        check_port "$(eval echo \$$VAR_REF)" "$SERVICE" "$VAR_REF"
-    else
-        eval "$VAR_REF=$PORT"
-    fi
-}
-
-resolve_conflicts() {
-    log_info "Scanning ports..."
-    
-    if [ -z "${CFG_AI_PORT:-}" ]; then
-        if [ "$NODE_ROLE" == "worker" ]; then CFG_AI_PORT=11434; else CFG_AI_PORT="127.0.0.1:11434"; fi
-    else
-        if [ "$NODE_ROLE" == "worker" ] && [[ "$CFG_AI_PORT" == *"127.0.0.1"* ]]; then
-            CFG_AI_PORT=${CFG_AI_PORT##*:}
-        fi
-    fi
-
-    if [ "$DEPLOY_GITEA" == "true" ]; then
-        check_port "$CFG_GITEA_WEB" "Gitea Web" CFG_GITEA_WEB
-        check_port "$CFG_GITEA_SSH" "Gitea SSH" CFG_GITEA_SSH
-    fi
-    if [ "$DEPLOY_AI" == "true" ]; then
-        check_port "$CFG_AI_PORT" "Ollama" CFG_AI_PORT
-    fi
-    if [ "$DEPLOY_PORTAINER_AGENT" == "true" ]; then
-        check_port "$CFG_AGENT_PORT" "Portainer Agent" CFG_AGENT_PORT
-    fi
-    if [ "$DEPLOY_VSCODE" == "true" ]; then
-        check_port "$CFG_VSCODE_PORT" "VS Code" CFG_VSCODE_PORT
-    fi
-}
-
-# ------------------------------------------------------------------------------
-# 9. NFS Wizard
-# ------------------------------------------------------------------------------
-configure_storage_wizard() {
-    ensure_dependency "nfs-common" "showmount"
-
-    if [ "$DEPLOY_GITEA" == "true" ]; then
-        if [ "$PREV_GITEA_NFS" == "true" ]; then
-            echo "   --- Existing Gitea NFS Detected ---"
-            echo "   Server: $GITEA_NFS_SERVER | Path: $GITEA_NFS_PATH"
-            read -p "   Keep this configuration? (Y/n): " -n 1 -r; echo ""
-            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-                USE_GITEA_NFS="true"
-            else
-                PREV_GITEA_NFS="false"
-            fi
-        fi
-
-        if [ "$PREV_GITEA_NFS" != "true" ]; then
-            read -p "   Store Gitea Repos on NFS? (y/N): " -n 1 -r; echo ""
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                read -p "   NFS Server IP: " G_NFS_IP
-                if ping -c 1 -W 2 "$G_NFS_IP" &> /dev/null; then
-                    showmount -e "$G_NFS_IP" || true
-                    read -p "   NFS Export Path (e.g. /volume1/gitea): " G_NFS_PATH
-                    
-                    TEST_MNT="/tmp/deploy_test_gitea_mnt_$(date +%s)"
-                    mkdir -p "$TEST_MNT"
-                    if mount -t nfs "$G_NFS_IP:$G_NFS_PATH" "$TEST_MNT" -o retry=1,timeo=20; then
-                        if touch "$TEST_MNT/.write_check"; then
-                            rm "$TEST_MNT/.write_check"
-                            umount "$TEST_MNT"; rmdir "$TEST_MNT"
-                            USE_GITEA_NFS="true"
-                            export GITEA_NFS_SERVER=$G_NFS_IP
-                            export GITEA_NFS_PATH=$G_NFS_PATH
-                            log_succ "Gitea Mount R/W verified."
-                        else
-                            log_err "Mount Read-Only! Check NAS permissions."
-                            umount "$TEST_MNT"; rmdir "$TEST_MNT"
-                            USE_GITEA_NFS="false"
-                        fi
-                    else
-                        log_err "Mount failed. Check path."
-                        rmdir "$TEST_MNT" 2>/dev/null
-                        USE_GITEA_NFS="false"
-                    fi
-                else
-                    log_err "Server unreachable."
-                fi
-            fi
-        fi
-    fi
-
-    if [ "$DEPLOY_AI" == "true" ]; then
-        if [ "$PREV_AI_NFS" == "true" ]; then
-            echo "   --- Existing AI NFS Detected ---"
-            echo "   Server: $OLLAMA_NFS_SERVER | Path: $OLLAMA_NFS_PATH"
-            read -p "   Keep this configuration? (Y/n): " -n 1 -r; echo ""
-            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-                USE_AI_NFS="true"
-            else
-                PREV_AI_NFS="false"
-            fi
-        fi
-
-        if [ "$PREV_AI_NFS" != "true" ]; then
-            read -p "   Store AI Models on NFS? (y/N): " -n 1 -r; echo ""
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                DEFAULT_AI_IP=${GITEA_NFS_SERVER:-""}
-                read -p "   NFS Server IP [${DEFAULT_AI_IP}]: " AI_NFS_IP
-                AI_NFS_IP=${AI_NFS_IP:-$DEFAULT_AI_IP}
-                
-                if ! ping -c 1 -W 2 "$AI_NFS_IP" &> /dev/null; then
-                    log_err "Server unreachable."
-                else
-                    read -p "   NFS Export Path (e.g. /volume1/models): " AI_NFS_PATH
-                    
-                    TEST_MNT="/tmp/deploy_test_ai_mnt_$(date +%s)"
-                    mkdir -p "$TEST_MNT"
-                    
-                    if mount -t nfs "$AI_NFS_IP:$AI_NFS_PATH" "$TEST_MNT" -o retry=1,timeo=20; then
-                        if touch "$TEST_MNT/.write_check"; then
-                            rm "$TEST_MNT/.write_check"
-                            umount "$TEST_MNT"; rmdir "$TEST_MNT"
-                            USE_AI_NFS="true"
-                            export OLLAMA_NFS_SERVER=$AI_NFS_IP
-                            export OLLAMA_NFS_PATH=$AI_NFS_PATH
-                            log_succ "AI Mount R/W verified."
-                        else
-                            log_err "Mount Read-Only!"
-                            umount "$TEST_MNT"; rmdir "$TEST_MNT"
-                            USE_AI_NFS="false"
-                        fi
-                    else
-                        log_err "Mount failed."
-                        rmdir "$TEST_MNT" 2>/dev/null
-                        USE_AI_NFS="false"
-                    fi
-                fi
-            fi
-        fi
-    fi
-}
-
-# ------------------------------------------------------------------------------
-# 10. Pre-Migration Teardown & Setup
-# ------------------------------------------------------------------------------
-pre_migration_teardown() {
-    if [ -d "${STACK_DIR}/data" ] || [ -d "${STACK_DIR}/secrets" ]; then
-        log_info "Legacy lowercase directories detected. Spinning down stack to release file locks..."
-        
-        if [ -f "${STACK_DIR}/DockerCompose.yml" ]; then
-            $DOCKER_COMPOSE_CMD -f "${STACK_DIR}/DockerCompose.yml" down || true
-        elif [ -f "${STACK_DIR}/docker-compose.yml" ]; then
-            $DOCKER_COMPOSE_CMD -f "${STACK_DIR}/docker-compose.yml" down || true
+        confirm="no"
+        if command -v gum &> /dev/null; then
+            if gum confirm "OBLITERATE EVERYTHING and restart fresh?"; then confirm="yes"; fi
         else
-            docker stop $(docker ps -qa -f "label=com.docker.compose.project=${PROJECT_NAME,,}") 2>/dev/null || true
-            docker stop $(docker ps -qa -f "label=com.docker.compose.project=gitea-monolith") 2>/dev/null || true
-            docker stop $(docker ps -qa -f "label=com.docker.compose.project=gitea-controller") 2>/dev/null || true
+            read -p "OBLITERATE EVERYTHING and restart fresh? (y/N): " input_conf
+            [[ "${input_conf:-}" =~ ^[Yy]$ ]] && confirm="yes"
         fi
-        sleep 2
+        
+        if [ "$confirm" == "yes" ]; then
+            PrintMsg "196" "Executing tactical nuke..."
+            cd "$StackDir" || true
+            local EnvFlag=""
+            [ -f "$EnvFile" ] && EnvFlag="--env-file $EnvFile"
+            if [ -f "$ComposeFile" ]; then
+                sudo docker compose $EnvFlag down -v --remove-orphans > /dev/null 2>&1 || true
+            fi
+            cd /tmp
+            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" \
+                        "${ConfigDir}/Traefik" "${ConfigDir}/WireGuard" \
+                        "${ConfigDir}/PiHole" "${ConfigDir}/Unbound"
+            PrintMsg "82" "✔ Earth scorched. Nothing survives."
+            sleep 2
+        else
+            PrintMsg "82" "✔ Scorched Earth aborted. Retaining persistent state."
+            PurgeLegacyState
+        fi
     fi
 }
 
-setup_directories() {
-    log_info "Enforcing PascalCase architecture and migrating legacy data..."
-    
-    [ -d "${STACK_DIR}/data" ] && [ ! -d "${STACK_DIR}/Data" ] && mv "${STACK_DIR}/data" "${STACK_DIR}/Data"
-    [ -d "${STACK_DIR}/secrets" ] && [ ! -d "${STACK_DIR}/Secrets" ] && mv "${STACK_DIR}/secrets" "${STACK_DIR}/Secrets"
-    [ -d "${STACK_DIR}/audit" ] && [ ! -d "${STACK_DIR}/Audit" ] && mv "${STACK_DIR}/audit" "${STACK_DIR}/Audit"
-    
-    (umask 022; mkdir -p "$SECRETS_DIR" "$STACK_DIR" "$DATA_DIR" "$AUDIT_DIR")
-    
-    echo "Secrets/" > "${STACK_DIR}/.gitignore"
-    echo ".env" >> "${STACK_DIR}/.gitignore"
-    
-    echo "*" > "${SECRETS_DIR}/.gitignore"
-    echo "!.gitignore" >> "${SECRETS_DIR}/.gitignore"
-    
-    if [ "$DEPLOY_GITEA" == "true" ]; then
-        if [ -d "${DATA_DIR}/Runner" ] && [ ! -d "${DATA_DIR}/RunnerGeneric" ]; then
-            log_info "Migrating legacy Runner directory to RunnerGeneric..."
-            mv "${DATA_DIR}/Runner" "${DATA_DIR}/RunnerGeneric"
-        fi
-        
-        mkdir -p "${DATA_DIR}/Postgres"
-        mkdir -p "${DATA_DIR}/Redis"
-        mkdir -p "${DATA_DIR}/RunnerGeneric"
-        mkdir -p "${DATA_DIR}/RunnerGemini"
-        mkdir -p "${DATA_DIR}/RunnerGCloud"
-        if [ "${USE_NFS:-false}" != "true" ]; then mkdir -p "${DATA_DIR}/Gitea"; fi
-    fi
-    
-    if [ "$DEPLOY_AI" == "true" ]; then mkdir -p "${DATA_DIR}/Ollama"; fi
-    if [ "$DEPLOY_VSCODE" == "true" ]; then 
-        mkdir -p "${DATA_DIR}/CodeServer"
-        mkdir -p "${DATA_DIR}/CodeServerInit"
-        
-        cat << EOF > "${DATA_DIR}/CodeServerInit/99-aider-install.sh"
-#!/bin/bash
-BASHRC="/config/.bashrc"
-touch "\$BASHRC"
-chown abc:abc "\$BASHRC"
+ExecuteAnnihilation
+# ==============================================================================
 
-grep -q OLLAMA_API_BASE "\$BASHRC" || echo 'export OLLAMA_API_BASE=http://Ollama-Worker:11434' >> "\$BASHRC"
-if grep -q AIDER_MODEL "\$BASHRC"; then
-    sed -i "s|export AIDER_MODEL=.*|export AIDER_MODEL=ollama/${TARGET_MODEL}|" "\$BASHRC"
+sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" \
+             "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" \
+             "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
+             "$ConfigDir/Unbound"
+
+# IAM-02: Enforce UID 1000 ownership for Authelia to write notification.txt without DAC_OVERRIDE
+sudo chown -R 1000:1000 "$ConfigDir/Authelia"
+
+sudo touch "${ConfigDir}/Traefik/acme.json"
+sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
+
+sudo mkdir -p "$SecretsDir"
+sudo chmod 700 "$SecretsDir"
+echo "*" | sudo tee "${SecretsDir}/.gitignore" > /dev/null
+
+WriteSecret() {
+    local name=$1
+    local content=$2
+    local tmp_file="${SecretsDir}/${name}.tmp"
+    printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
+    if [ ! -f "${SecretsDir}/${name}" ]; then
+        sudo touch "${SecretsDir}/${name}"
+        sudo chmod 600 "${SecretsDir}/${name}"
+    fi
+    sudo sh -c "cat '$tmp_file' > '${SecretsDir}/${name}'"
+    sudo rm -f "$tmp_file"
+}
+
+if [ "$Interactive" -eq 1 ]; then
+    [ ! -f "${SecretsDir}/cf_api_token" ] && { 
+        PrintMsg "226" "Cloudflare Scoped DNS API Token required:"
+        cf_token=""
+        if command -v gum &> /dev/null; then
+            cf_token=$(gum input --password || true)
+            [ -z "$cf_token" ] && { PrintMsg "196" "Token input cancelled. Halting."; exit 1; }
+        else
+            read -s -p "Token: " cf_token
+            echo ""
+            [ -z "$cf_token" ] && { PrintMsg "196" "Token input cancelled. Halting."; exit 1; }
+        fi
+        WriteSecret "cf_api_token" "$cf_token"
+    }
+    [ ! -f "${SecretsDir}/traefik_auth" ] && {
+        PrintMsg "226" "Provide a secure password for the Traefik BasicAuth fallback:"
+        TraefikPass=""
+        if command -v gum &> /dev/null; then
+            TraefikPass=$(gum input --password || true)
+            [ -z "$TraefikPass" ] && { PrintMsg "196" "Password input cancelled. Halting."; exit 1; }
+        else
+            read -s -p "Password: " TraefikPass
+            echo ""
+            [ -z "$TraefikPass" ] && { PrintMsg "196" "Password input cancelled. Halting."; exit 1; }
+        fi
+        WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"
+    }
 else
-    echo 'export AIDER_MODEL=ollama/${TARGET_MODEL}' >> "\$BASHRC"
-fi
-grep -q AIDER_ANALYTICS "\$BASHRC" || echo 'export AIDER_ANALYTICS=false' >> "\$BASHRC"
-grep -q AIDER_CHECK_UPDATE "\$BASHRC" || echo 'export AIDER_CHECK_UPDATE=false' >> "\$BASHRC"
-grep -q 'PATH.*local/bin' "\$BASHRC" || echo 'export PATH=\$PATH:\$HOME/.local/bin' >> "\$BASHRC"
-
-if [ -f "/config/.aider_installed" ]; then
-    echo "[INFO] Aider already installed. Bypassing bootstrap to prevent boot-loop."
-    exit 0
+    [ ! -f "${SecretsDir}/cf_api_token" ] && { echo "[FATAL] Headless run failed. Missing cf_api_token."; exit 1; }
+    [ ! -f "${SecretsDir}/traefik_auth" ] && { echo "[FATAL] Headless run failed. Missing traefik_auth."; exit 1; }
 fi
 
-echo "[INFO] Initializing Aider AI Partner Integration..."
-apt-get update -qq
-apt-get install -y -qq python3-pip python3-venv git openssh-client > /dev/null
+[ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 32)"
+[ ! -f "${SecretsDir}/authelia_jwt_secret" ] && WriteSecret "authelia_jwt_secret" "$(openssl rand -base64 32)"
+[ ! -f "${SecretsDir}/authelia_session_secret" ] && WriteSecret "authelia_session_secret" "$(openssl rand -base64 32)"
+[ ! -f "${SecretsDir}/authelia_storage_key" ] && WriteSecret "authelia_storage_key" "$(openssl rand -base64 32)"
+[ ! -f "${SecretsDir}/pihole_pass" ] && WriteSecret "pihole_pass" "$(openssl rand -hex 16)"
 
-echo "[INFO] Installing Aider (User context: abc)..."
-su -s /bin/bash abc -c "pip3 install aider-chat --break-system-packages > /dev/null 2>&1"
+if [ "$Interactive" -eq 1 ]; then
+    PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
+    PrevDomain=$(grep "^INTERNAL_DOMAIN=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
+    PrevEmail=$(grep "^ACME_EMAIL=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
+    PrevPort=$(grep "^WG_PORT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "51820")
 
-touch "/config/.aider_installed"
-chown abc:abc "/config/.aider_installed"
-EOF
-        chmod +x "${DATA_DIR}/CodeServerInit/99-aider-install.sh"
-    fi
-}
+    WgEndpoint=""
+    WgPort=""
+    InternalDomain=""
+    AcmeEmail=""
 
-get_secret() {
-    local NAME=$1
-    local HEX_LEN=$2
-    local FILE="${SECRETS_DIR}/${NAME}"
-    if [ ! -f "$FILE" ]; then
-        (umask 077; openssl rand -hex "$HEX_LEN" | tr -d '\n' > "$FILE")
-    fi
-    cat "$FILE"
-}
-
-setup_environment() {
-    log_info "Vaulting secrets and initializing environment..."
-    mkdir -p "$SECRETS_DIR"
-    
-    local PREV_TOKEN=""
-    if [ -f "$ENV_FILE" ]; then
-        PREV_TOKEN=$(grep "RUNNER_REG_KEY=" "$ENV_FILE" | cut -d= -f2 || true)
-        if [ -z "$PREV_TOKEN" ]; then PREV_TOKEN=$(grep "GITEA_RUNNER_TOKEN=" "$ENV_FILE" | cut -d= -f2 || true); fi
-    fi
-
-    rm -f "$ENV_FILE"
-
-    (umask 077; cat > "$ENV_FILE" <<EOF
-# Generated on $(date)
-HOST_IP=${HOST_IP}
-TZ=${HOST_TZ}
-AGENT_PORT=${CFG_AGENT_PORT}
-EXTERNAL_AI_URL=${CFG_EXTERNAL_AI_URL}
-EOF
-)
-
-    if [ "$DEPLOY_GITEA" == "true" ]; then
-        get_secret "gitea_db_password.txt" 16 > /dev/null
-        get_secret "gitea_admin_password.txt" 12 > /dev/null
+    if command -v gum &> /dev/null; then
+        WgEndpoint=$(gum input --prompt "WireGuard Public Endpoint (IP/DDNS): " --value "$PrevEndpoint" || true)
+        [ -z "$WgEndpoint" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
         
-        if [ ! -f "${SECRETS_DIR}/runner_registration_token.txt" ]; then
-            touch "${SECRETS_DIR}/runner_registration_token.txt"
-            chmod 600 "${SECRETS_DIR}/runner_registration_token.txt"
-        fi
+        WgPort=$(gum input --prompt "WireGuard UDP Listen Port: " --value "$PrevPort" || true)
+        [ -z "$WgPort" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
         
-        local ADMIN_USER_FILE="${SECRETS_DIR}/gitea_admin_username.txt"
-        if [ ! -f "$ADMIN_USER_FILE" ]; then (umask 077; echo -n "gitea_admin" > "$ADMIN_USER_FILE"); fi
+        InternalDomain=$(gum input --prompt "Root Internal Domain: " --value "$PrevDomain" || true)
+        [ -z "$InternalDomain" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
         
-        cat >> "$ENV_FILE" <<EOF
-RUNNER_REG_KEY=${PREV_TOKEN}
-GITEA_WEB_PORT=${CFG_GITEA_WEB}
-GITEA_SSH_PORT=${CFG_GITEA_SSH}
-DB_USER=gitea
-DB_NAME=gitea
-EOF
+        AcmeEmail=$(gum input --prompt "Let's Encrypt Email: " --value "$PrevEmail" || true)
+        [ -z "$AcmeEmail" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
+    else
+        read -p "WireGuard Public Endpoint (IP/DDNS) [$PrevEndpoint]: " input_endpoint
+        WgEndpoint="${input_endpoint:-$PrevEndpoint}"
+        [ -z "$WgEndpoint" ] && exit 1
         
-        if [ "$USE_GITEA_NFS" == "true" ]; then
-             echo "GITEA_NFS_SERVER=${GITEA_NFS_SERVER}" >> "$ENV_FILE"
-             echo "GITEA_NFS_PATH=${GITEA_NFS_PATH}" >> "$ENV_FILE"
-        fi
+        read -p "WireGuard UDP Listen Port [$PrevPort]: " input_port
+        WgPort="${input_port:-$PrevPort}"
+        [ -z "$WgPort" ] && exit 1
+        
+        read -p "Root Internal Domain [$PrevDomain]: " input_domain
+        InternalDomain="${input_domain:-$PrevDomain}"
+        [ -z "$InternalDomain" ] && exit 1
+        
+        read -p "Let's Encrypt Email [$PrevEmail]: " input_email
+        AcmeEmail="${input_email:-$PrevEmail}"
+        [ -z "$AcmeEmail" ] && exit 1
     fi
 
-    if [ "$DEPLOY_VSCODE" == "true" ]; then
-        get_secret "vscode_password.txt" 12 > /dev/null
-        cat >> "$ENV_FILE" <<EOF
-VSCODE_PORT=${CFG_VSCODE_PORT}
-VSCODE_PUID=${REAL_UID}
-VSCODE_PGID=${REAL_GID}
+    sudo tee "$EnvFile" > /dev/null << EOF
+WG_ENDPOINT=${WgEndpoint}
+INTERNAL_DOMAIN=${InternalDomain}
+ACME_EMAIL=${AcmeEmail}
+WG_PORT=${WgPort}
+WG_PEERS=3
+TZ=UTC
 EOF
-    fi
+    sudo chmod 600 "$EnvFile"
+fi
 
-    if [ "$DEPLOY_AI" == "true" ]; then
-        local GPU_L=0
-        if [ "$HAS_GPU" == "true" ]; then GPU_L=20; fi
-        if [ -n "$PREV_GPU_LAYERS" ]; then GPU_L=$PREV_GPU_LAYERS; log_info "Hydrating tuning profile: GPU Layers ($GPU_L)"; fi
-        
-        local OLLAMA_ATTN="1"
-        if [ "$IS_MAXWELL" == "true" ]; then OLLAMA_ATTN="0"; fi
-        if [ -n "$PREV_FLASH_ATTN" ]; then OLLAMA_ATTN=$PREV_FLASH_ATTN; log_info "Hydrating tuning profile: Flash Attention ($OLLAMA_ATTN)"; fi
-        
-        local VULKAN_VAL="0"
-        if [ "$AMD_USE_VULKAN" == "true" ]; then VULKAN_VAL="1"; fi
-        if [ -n "$PREV_VULKAN" ]; then VULKAN_VAL=$PREV_VULKAN; log_info "Hydrating tuning profile: Vulkan Provider ($VULKAN_VAL)"; fi
+set +u
+source "$EnvFile"
+set -u
 
-        cat >> "$ENV_FILE" <<EOF
-OLLAMA_HOST=0.0.0.0
-OLLAMA_FLASH_ATTENTION=${OLLAMA_ATTN}
-AI_PORT=${CFG_AI_PORT}
-OLLAMA_GPU_LAYERS=${GPU_L}
-OLLAMA_VULKAN=${VULKAN_VAL}
-OLLAMA_NUM_GPU=1
-AIDER_MODEL=${TARGET_MODEL}
-EOF
-        if [ "$HAS_GPU" == "true" ] && [ "$GPU_TYPE" == "AMD" ]; then
-             echo "HIP_VISIBLE_DEVICES=${HIP_DEVICE_ID}" >> "$ENV_FILE"
-             echo "ROCR_VISIBLE_DEVICES=${HIP_DEVICE_ID}" >> "$ENV_FILE"
-             echo "${HSA_STR}" >> "$ENV_FILE"
-             echo "${SDMA_STR}" >> "$ENV_FILE"
-        fi
+sudo timedatectl set-timezone UTC
+if systemctl is-active --quiet systemd-timesyncd; then sudo systemctl restart systemd-timesyncd; fi
 
-        if [ "$USE_AI_NFS" == "true" ]; then
-             echo "OLLAMA_NFS_SERVER=${OLLAMA_NFS_SERVER}" >> "$ENV_FILE"
-             echo "OLLAMA_NFS_PATH=${OLLAMA_NFS_PATH}" >> "$ENV_FILE"
+PurgeAlienContainers() {
+    if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
+        local AlienContainers=$(sudo docker ps -a --format '{{.ID}}|{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($3) != stack {print $1 " (" $2 ")"}')
+        if [ -n "$AlienContainers" ]; then
+            PrintMsg "196" "Rogue containers detected outside the Unified perimeter:"
+            echo "$AlienContainers"
+            
+            confirm="no"
+            if command -v gum &> /dev/null; then
+                if gum confirm "DESTROY all listed alien containers permanently?"; then confirm="yes"; fi
+            else
+                read -p "DESTROY all listed alien containers permanently? (y/N): " input_conf
+                [[ "${input_conf:-}" =~ ^[Yy]$ ]] && confirm="yes"
+            fi
+
+            if [ "$confirm" == "yes" ]; then
+                echo "$AlienContainers" | awk '{print $1}' | xargs -I {} sudo docker rm -f {}
+            else
+                PrintMsg "226" "Aliens retained."
+            fi
         fi
     fi
 }
 
-# ------------------------------------------------------------------------------
-# 11. Docker Compose Generation
-# ------------------------------------------------------------------------------
-generate_docker_compose() {
-    log_info "Generating ${COMPOSE_FILE}..."
-    rm -f "$COMPOSE_FILE"
-    
-    USE_PROXY=false
-    if [ "$DEPLOY_PORTAINER_AGENT" == "true" ]; then USE_PROXY=true; fi
-    if [ "$DEPLOY_VSCODE" == "true" ]; then USE_PROXY=true; fi
-    if [ "$DEPLOY_GITEA" == "true" ]; then USE_PROXY=true; fi
+PurgeAlienContainers
 
-    cat > "$COMPOSE_FILE" <<EOF
-name: gitea-${NODE_ROLE}
+PrintMsg "240" "Fetching InterNIC Root Hints for Unbound DNS..."
+sudo curl -sS --connect-timeout 10 https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
+
+if grep -q "A.ROOT-SERVERS.NET" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
+    sudo mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
+else
+    PrintMsg "196" "[WARNING] InterNIC fetch corrupted. Injecting hardcoded fallback."
+    sudo tee "${ConfigDir}/Unbound/RootHints.txt" > /dev/null << 'EOF'
+.                        3600000      NS    A.ROOT-SERVERS.NET.
+A.ROOT-SERVERS.NET.      3600000      A     198.41.0.4
+EOF
+    sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
+fi
+
+sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
+server:
+  num-threads: 1
+  interface: 0.0.0.0
+  port: 53
+  do-ip4: yes
+  do-udp: yes
+  do-tcp: yes
+  root-hints: "/opt/unbound/etc/unbound/root.hints"
+  auto-trust-anchor-file: "/opt/unbound/etc/unbound/keys/root.key"
+  harden-glue: yes
+  harden-dnssec-stripped: yes
+  use-caps-for-id: no
+  edns-buffer-size: 1232
+  prefetch: yes
+  num-queries-per-thread: 4096
+  rrset-roundrobin: yes
+  minimal-responses: yes
+  hide-identity: yes
+  hide-version: yes
+  access-control: 127.0.0.0/8 allow
+  access-control: 10.99.0.0/24 allow
+  local-zone: "${INTERNAL_DOMAIN}." redirect
+  local-data: "${INTERNAL_DOMAIN}. A 10.99.0.13"
+EOF
+
+sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
+server:
+  host: 0.0.0.0
+  port: 9091
+storage:
+  postgres:
+    host: auth_db
+    port: 5432
+    database: authelia
+    username: authelia
+authentication_backend:
+  password_reset: { disable: true }
+  file: { path: /config/users_database.yml }
+access_control:
+  default_policy: deny
+  rules:
+    - domain: "*.${INTERNAL_DOMAIN}"
+      policy: two_factor
+session:
+  name: authelia_session
+  domain: "${INTERNAL_DOMAIN}"
+  expiration: 3600
+  inactivity: 300
+  secret_file: /run/secrets/authelia_session_secret
+regulation:
+  max_retries: 3
+  find_time: 120
+  ban_time: 300
+notifier:
+  filesystem: { filename: /config/notification.txt }
+EOF
+
+if [ ! -f "${ConfigDir}/Authelia/users_database.yml" ]; then
+    sudo tee "${ConfigDir}/Authelia/users_database.yml" > /dev/null << EOF
+users:
+  admin:
+    displayname: "Sovereign Administrator"
+    password: "\$6\$rounds=500000\$j7688zY6fP/fN7.S\$7nO9O5S7Wf8Wp9yP9N8/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/"
+    email: admin@${INTERNAL_DOMAIN}
+    groups: [admins]
+EOF
+fi
+
+sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
+http:
+  middlewares:
+    secure-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        contentTypeNosniff: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-Frame-Options: "SAMEORIGIN"
+          X-XSS-Protection: "1; mode=block"
+    vpn-whitelist:
+      ipAllowList:
+        sourceRange: ["10.13.13.0/24", "10.99.0.10/32"]
+    traefik-auth:
+      basicAuth:
+        usersFile: "/run/secrets/traefik_auth"
+    authelia:
+      forwardAuth:
+        address: "http://authelia:9091/api/verify?rd=https://auth.${INTERNAL_DOMAIN}/"
+        trustForwardHeader: true
+        authResponseHeaders: ["Remote-User", "Remote-Groups", "Remote-Name", "Remote-Email"]
+  routers:
+    auth-router:
+      rule: "Host(\`auth.${INTERNAL_DOMAIN}\`)"
+      entryPoints: ["websecure"]
+      # SEC-08: Protected the Identity gateway with HSTS and clickjacking denial
+      middlewares: ["secure-headers"]
+      service: "authelia-service"
+      tls: { certResolver: "cloudflare" }
+  services:
+    authelia-service:
+      loadBalancer:
+        servers: [{ url: "http://authelia:9091" }]
+EOF
+
+ResolveImage() {
+    local digest=$(sudo docker inspect --format='{{index .RepoDigests 0}}' "$1" 2>/dev/null || echo "")
+    [[ -z "$digest" ]] && { sudo docker pull "$1" >/dev/null; sudo docker inspect --format='{{index .RepoDigests 0}}' "$1"; } || echo "$digest"
+}
+
+IMG_PROXY=$(ResolveImage "lscr.io/linuxserver/socket-proxy:latest")
+IMG_TRAEFIK=$(ResolveImage "traefik:v2.11")
+IMG_WG=$(ResolveImage "lscr.io/linuxserver/wireguard:latest")
+IMG_PIHOLE=$(ResolveImage "pihole/pihole:latest")
+IMG_UNBOUND=$(ResolveImage "mvance/unbound:latest")
+IMG_POSTGRES=$(ResolveImage "postgres:15-alpine")
+IMG_AUTHELIA=$(ResolveImage "authelia/authelia:latest")
+
+sudo tee "$ComposeFile" > /dev/null << EOF
 networks:
-  gitea-net:
-    driver: bridge
-EOF
-
-    if [ "$DEPLOY_GITEA" == "true" ] || [ "$DEPLOY_VSCODE" == "true" ]; then
-        echo "secrets:" >> "$COMPOSE_FILE"
-    fi
-
-    if [ "$DEPLOY_GITEA" == "true" ]; then
-        cat >> "$COMPOSE_FILE" <<EOF
-  gitea_db_password:
-    file: ${SECRETS_DIR}/gitea_db_password.txt
-  runner_registration_token:
-    file: ${SECRETS_DIR}/runner_registration_token.txt
-EOF
-    fi
-
-    if [ "$DEPLOY_VSCODE" == "true" ]; then
-        cat >> "$COMPOSE_FILE" <<EOF
-  vscode_password:
-    file: ${SECRETS_DIR}/vscode_password.txt
-EOF
-    fi
-
-    cat >> "$COMPOSE_FILE" <<EOF
-
-services:
-EOF
-
-    if [ "$USE_PROXY" == "true" ]; then
-        cat >> "$COMPOSE_FILE" <<EOF
-  gitea-socket-proxy:
-    image: tecnativa/docker-socket-proxy:latest
-    container_name: Gitea-Socket-Proxy
-    restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    environment:
-      - CONTAINERS=1
-      - IMAGES=1
-      - NETWORKS=1
-      - VOLUMES=1
-      - INFO=1
-      - POST=1
-      - EXEC=1
-      - BUILD=1
-    networks:
-      - gitea-net
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2375/version"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-EOF
-    fi
-
-    if [ "$DEPLOY_PORTAINER_AGENT" == "true" ]; then
-        cat >> "$COMPOSE_FILE" <<EOF
-  portainer-agent:
-    image: portainer/agent:latest
-    container_name: Portainer-Agent
-    restart: unless-stopped
-    environment:
-      - LOG_LEVEL=DEBUG
-    ports:
-      - "\${AGENT_PORT}:9001"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /var/lib/docker/volumes:/var/lib/docker/volumes
-    networks:
-      - gitea-net
-    depends_on:
-      gitea-socket-proxy:
-        condition: service_healthy
-
-EOF
-    fi
-
-    if [ "$DEPLOY_VSCODE" == "true" ]; then
-        cat >> "$COMPOSE_FILE" <<EOF
-  code-server:
-    image: linuxserver/code-server:latest
-    container_name: Code-Server
-    restart: unless-stopped
-    environment:
-      - PUID=\${VSCODE_PUID}
-      - PGID=\${VSCODE_PGID}
-      - TZ=\${TZ}
-      - FILE__PASSWORD=/run/secrets/vscode_password
-      - DOCKER_HOST=tcp://gitea-socket-proxy:2375
-      - AIDER_STATE_TRIGGER=\${AIDER_MODEL}
-    secrets:
-      - vscode_password
-    volumes:
-      - ${DATA_DIR}/CodeServer:/config
-      - ${DATA_DIR}/CodeServerInit:/custom-cont-init.d:ro
-    ports:
-      - "\${VSCODE_PORT}:8443"
-    networks:
-      - gitea-net
-    depends_on:
-      gitea-socket-proxy:
-        condition: service_healthy
-
-EOF
-    fi
-
-    if [ "$DEPLOY_GITEA" == "true" ]; then
-        local GITEA_VOL="${DATA_DIR}/Gitea:/data"
-        if [ "$USE_GITEA_NFS" == "true" ]; then GITEA_VOL="gitea-nfs-data:/data"; fi
-
-        # [FIX 3] Cache security theater removed. Internal network isolation is superior.
-        cat >> "$COMPOSE_FILE" <<EOF
-  gitea-db:
-    image: postgres:15-alpine
-    container_name: Gitea-DB
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      - POSTGRES_USER=\${DB_USER}
-      - POSTGRES_PASSWORD_FILE=/run/secrets/gitea_db_password
-      - POSTGRES_DB=\${DB_NAME}
-    secrets:
-      - gitea_db_password
-    networks:
-      - gitea-net
-    volumes:
-      - ${DATA_DIR}/Postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \${DB_USER}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  gitea-cache:
-    image: redis:7-alpine
-    container_name: Gitea-Cache
-    restart: unless-stopped
-    networks:
-      - gitea-net
-    volumes:
-      - ${DATA_DIR}/Redis:/data
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  gitea:
-    image: gitea/gitea:latest
-    container_name: Gitea
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      - USER_UID=${REAL_UID}
-      - USER_GID=${REAL_GID}
-      - GITEA__database__DB_TYPE=postgres
-      - GITEA__database__HOST=gitea-db:5432
-      - GITEA__database__NAME=\${DB_NAME}
-      - GITEA__database__USER=\${DB_USER}
-      - GITEA__database__PASSWD_FILE=/run/secrets/gitea_db_password
-      - GITEA__cache__ADAPTER=redis
-      - GITEA__cache__HOST=redis://gitea-cache:6379/0?pool_size=100&idle_timeout=180s
-      - GITEA__queue__TYPE=redis
-      - GITEA__queue__CONN_STR=redis://gitea-cache:6379/0
-      - GITEA__server__ROOT_URL=http://\${HOST_IP}:\${GITEA_WEB_PORT}/
-      - GITEA__server__START_SSH_SERVER=true
-      - GITEA__server__SSH_LISTEN_PORT=2222
-      - GITEA__server__SSH_PORT=\${GITEA_SSH_PORT}
-      - GITEA__security__INSTALL_LOCK=true
-      - GITEA__server__LFS_START_SERVER=true
-      - GITEA__actions__ENABLED=true
-      - GITEA__repository__ENABLE_PUSH_CREATE_USER=true
-      - GITEA__repository__ENABLE_PUSH_CREATE_ORG=true
-      - GITEA__mirror__ENABLED=true
-    secrets:
-      - gitea_db_password
-    networks:
-      - gitea-net
-    ports:
-      - "\${GITEA_WEB_PORT}:3000"
-      - "\${GITEA_SSH_PORT}:2222"
-    volumes:
-      - ${GITEA_VOL}
-      - /etc/timezone:/etc/timezone:ro
-      - /etc/localtime:/etc/localtime:ro
-    depends_on:
-      gitea-db:
-        condition: service_healthy
-      gitea-cache:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/healthz"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-
-  runner-generic:
-    image: gitea/act_runner:latest
-    container_name: Runner-Generic
-    restart: unless-stopped
-    profiles: ["runners"]
-    working_dir: ${DATA_DIR}/RunnerGeneric
-    environment:
-      - GITEA_INSTANCE_URL=http://Gitea:3000
-      - GITEA_RUNNER_REGISTRATION_TOKEN_FILE=/run/secrets/runner_registration_token
-      - GITEA_RUNNER_NAME=Worker-Generic-Alpha
-      - DOCKER_HOST=tcp://Gitea-Socket-Proxy:2375
-      - GITEA_RUNNER_LABELS=ubuntu-latest:docker://node:18-bullseye,ubuntu-22.04:docker://ubuntu:22.04
-    secrets:
-      - runner_registration_token
-    volumes:
-      - ${DATA_DIR}/RunnerGeneric:${DATA_DIR}/RunnerGeneric
-    networks:
-      - gitea-net
-    depends_on:
-      gitea:
-        condition: service_healthy
-      gitea-socket-proxy:
-        condition: service_healthy
-
-  runner-gemini:
-    image: gitea/act_runner:latest
-    container_name: Runner-Gemini
-    restart: unless-stopped
-    profiles: ["runners"]
-    working_dir: ${DATA_DIR}/RunnerGemini
-    environment:
-      - GITEA_INSTANCE_URL=http://Gitea:3000
-      - GITEA_RUNNER_REGISTRATION_TOKEN_FILE=/run/secrets/runner_registration_token
-      - GITEA_RUNNER_NAME=Worker-Gemini-Integration
-      - DOCKER_HOST=tcp://Gitea-Socket-Proxy:2375
-      - GITEA_RUNNER_LABELS=gemini-python:docker://python:3.11-bookworm,gemini-node:docker://node:20-bookworm
-    secrets:
-      - runner_registration_token
-    volumes:
-      - ${DATA_DIR}/RunnerGemini:${DATA_DIR}/RunnerGemini
-    networks:
-      - gitea-net
-    depends_on:
-      gitea:
-        condition: service_healthy
-      gitea-socket-proxy:
-        condition: service_healthy
-
-  runner-gcloud:
-    image: gitea/act_runner:latest
-    container_name: Runner-GCloud
-    restart: unless-stopped
-    profiles: ["runners"]
-    working_dir: ${DATA_DIR}/RunnerGCloud
-    environment:
-      - GITEA_INSTANCE_URL=http://Gitea:3000
-      - GITEA_RUNNER_REGISTRATION_TOKEN_FILE=/run/secrets/runner_registration_token
-      - GITEA_RUNNER_NAME=Worker-GCloud-Deploy
-      - DOCKER_HOST=tcp://Gitea-Socket-Proxy:2375
-      - GITEA_RUNNER_LABELS=google-sdk:docker://google/cloud-sdk:slim
-    secrets:
-      - runner_registration_token
-    volumes:
-      - ${DATA_DIR}/RunnerGCloud:${DATA_DIR}/RunnerGCloud
-    networks:
-      - gitea-net
-    depends_on:
-      gitea:
-        condition: service_healthy
-      gitea-socket-proxy:
-        condition: service_healthy
-EOF
-    fi
-
-    if [ "$DEPLOY_AI" == "true" ]; then
-        local OLLAMA_VOL="${DATA_DIR}/Ollama:/root/.ollama:rw,z"
-        if [ "$USE_AI_NFS" == "true" ]; then OLLAMA_VOL="ollama-nfs-data:/root/.ollama:rw"; fi
-        
-        cat >> "$COMPOSE_FILE" <<EOF
-  ollama-worker:
-    image: ollama/ollama:latest
-    container_name: Ollama-Worker
-    restart: unless-stopped
-    security_opt:
-      - apparmor:unconfined
-    env_file: .env
-    environment:
-      - TZ=\${TZ}
-      - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_FLASH_ATTENTION=\${OLLAMA_FLASH_ATTENTION}
-      - OLLAMA_DEBUG=1
-      - OLLAMA_NUM_GPU=\${OLLAMA_NUM_GPU}
-      - OLLAMA_GPU_LAYERS=\${OLLAMA_GPU_LAYERS}
-      - OLLAMA_KEEP_ALIVE=24h
-      - OLLAMA_VULKAN=\${OLLAMA_VULKAN}
-EOF
-
-        if [ "$GPU_TYPE" == "AMD" ]; then
-            cat >> "$COMPOSE_FILE" <<EOF
-      - HSA_OVERRIDE_GFX_VERSION=\${HSA_OVERRIDE_GFX_VERSION}
-      - HSA_ENABLE_SDMA=\${HSA_ENABLE_SDMA}
-      - HIP_VISIBLE_DEVICES=\${HIP_VISIBLE_DEVICES}
-      - ROCR_VISIBLE_DEVICES=\${ROCR_VISIBLE_DEVICES}
-EOF
-        fi
-
-        cat >> "$COMPOSE_FILE" <<EOF
-    networks:
-      - gitea-net
-    ports:
-      - "\${AI_PORT}:11434"
-    volumes:
-      - ${OLLAMA_VOL}
-EOF
-        if [ "$GPU_TYPE" == "NVIDIA" ]; then
-            cat >> "$COMPOSE_FILE" <<EOF
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-EOF
-        elif [ "$GPU_TYPE" == "AMD" ]; then
-             cat >> "$COMPOSE_FILE" <<EOF
-    privileged: true
-    devices:
-      - /dev/kfd:/dev/kfd
-      - /dev/dri:/dev/dri
-EOF
-             if [ -n "$GPU_GROUPS_DETECTED" ]; then
-                 echo "    group_add:" >> "$COMPOSE_FILE"
-                 for grp in $GPU_GROUPS_DETECTED; do
-                     echo "      - \"$grp\"" >> "$COMPOSE_FILE"
-                 done
-             fi
-        else
-             cat >> "$COMPOSE_FILE" <<EOF
-    deploy:
-      resources:
-        limits:
-          cpus: '${LIMIT_CPU}'
-          memory: ${LIMIT_MEM}
-EOF
-        fi
-    fi
-
-    if [ "$USE_GITEA_NFS" == "true" ] || [ "$USE_AI_NFS" == "true" ]; then
-         cat >> "$COMPOSE_FILE" <<EOF
+  vpn_network:
+    name: sovereign_node_vpn_network
+    ipam: { config: [{ subnet: 10.99.0.0/24 }] }
+  proxy_network:
+    name: sovereign_node_proxy_network
+    ipam: { config: [{ subnet: 10.98.0.0/24 }] }
+  auth_network:
+    internal: true
+  socket_network:
+    internal: true
 
 volumes:
-EOF
-    fi
+  unbound_keys: {}
 
-    if [ "$USE_GITEA_NFS" == "true" ]; then
-        cat >> "$COMPOSE_FILE" <<EOF
-  gitea-nfs-data:
-    driver: local
-    driver_opts:
-      type: nfs
-      o: addr=\${GITEA_NFS_SERVER},rw,nolock,hard,nointr,nfsvers=4
-      device: ":\${GITEA_NFS_PATH}"
-EOF
-    fi
+secrets:
+  cf_api_token: { file: ${SecretsDir}/cf_api_token }
+  postgres_password: { file: ${SecretsDir}/postgres_password }
+  authelia_jwt_secret: { file: ${SecretsDir}/authelia_jwt_secret }
+  authelia_session_secret: { file: ${SecretsDir}/authelia_session_secret }
+  authelia_storage_key: { file: ${SecretsDir}/authelia_storage_key }
+  traefik_auth: { file: ${SecretsDir}/traefik_auth }
+  pihole_pass: { file: ${SecretsDir}/pihole_pass }
 
-    if [ "$USE_AI_NFS" == "true" ]; then
-        cat >> "$COMPOSE_FILE" <<EOF
-  ollama-nfs-data:
-    driver: local
-    driver_opts:
-      type: nfs
-      o: addr=\${OLLAMA_NFS_SERVER},rw,nolock,hard,nointr,nfsvers=4
-      device: ":\${OLLAMA_NFS_PATH}"
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  docker_socket_proxy:
+    image: ${IMG_PROXY}
+    container_name: docker_socket_proxy
+    networks: [socket_network]
+    environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, PING=1, INFO=1, POST=0]
+    volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID]
+    security_opt: [no-new-privileges:true]
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2375/version || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  auth_db:
+    image: ${IMG_POSTGRES}
+    container_name: auth_db
+    networks: [auth_network]
+    environment:
+      POSTGRES_USER: authelia
+      POSTGRES_DB: authelia
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [${ConfigDir}/Postgres:/var/lib/postgresql/data]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d authelia -U authelia"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  authelia:
+    image: ${IMG_AUTHELIA}
+    container_name: authelia
+    networks: [proxy_network, auth_network]
+    volumes: [${ConfigDir}/Authelia:/config]
+    secrets: [postgres_password, authelia_jwt_secret, authelia_session_secret, authelia_storage_key]
+    environment:
+      AUTHELIA_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret
+      AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret
+      AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_key
+      AUTHELIA_STORAGE_POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    depends_on:
+      auth_db: { condition: service_healthy }
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --spider http://127.0.0.1:9091/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  unbound_dns:
+    image: ${IMG_UNBOUND}
+    container_name: unbound_dns
+    networks:
+      vpn_network: { ipv4_address: 10.99.0.11 }
+    volumes:
+      - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
+      - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
+      - unbound_keys:/opt/unbound/etc/unbound/keys:rw
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, SETGID, SETUID, CHOWN, DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "drill @127.0.0.1 localhost || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  pihole_sinkhole:
+    image: ${IMG_PIHOLE}
+    container_name: pihole_sinkhole
+    networks:
+      vpn_network: { ipv4_address: 10.99.0.12 }
+      proxy_network:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)"
+      - "traefik.http.routers.pihole.entrypoints=websecure"
+      - "traefik.http.routers.pihole.tls.certresolver=cloudflare"
+      - "traefik.http.services.pihole.loadbalancer.server.port=80"
+      - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file"
+      - "traefik.docker.network=sovereign_node_proxy_network"
+    environment:
+      - WEBPASSWORD_FILE=/run/secrets/pihole_pass
+      - PIHOLE_DNS_=10.99.0.11#53
+      - DNSMASQ_LISTENING=all
+    secrets: [pihole_pass]
+    volumes:
+      - ${ConfigDir}/PiHole/etc-pihole:/etc/pihole
+      - ${ConfigDir}/PiHole/etc-dnsmasq.d:/etc/dnsmasq.d
+    depends_on:
+      unbound_dns: { condition: service_healthy }
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_BIND_SERVICE, NET_RAW, CHOWN, SETUID, SETGID, DAC_OVERRIDE, SYS_CHROOT, SYS_NICE]
+    logging: *default-logging
+    restart: unless-stopped
+
+  wireguard_vpn:
+    image: ${IMG_WG}
+    container_name: wireguard_vpn
+    networks:
+      vpn_network: { ipv4_address: 10.99.0.10 }
+    environment:
+      - SERVERURL=\${WG_ENDPOINT}
+      - SERVERPORT=\${WG_PORT}
+      - PEERS=3
+      - PEERDNS=10.99.0.12
+      - INTERNAL_SUBNET=10.13.13.0/24
+    volumes:
+      - /lib/modules:/lib/modules:ro
+      - ${ConfigDir}/WireGuard:/config
+    ports: ["0.0.0.0:\${WG_PORT}:\${WG_PORT}/udp"]
+    sysctls:
+      net.ipv4.ip_forward: 1
+      net.ipv4.conf.all.src_valid_mark: 1
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, SYS_MODULE, NET_RAW]
+    logging: *default-logging
+    restart: unless-stopped
+
+  traefik_proxy:
+    image: ${IMG_TRAEFIK}
+    container_name: traefik_proxy
+    networks:
+      socket_network:
+      proxy_network:
+      vpn_network: { ipv4_address: 10.99.0.13 }
+    ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
+    volumes:
+      - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
+      - ${ConfigDir}/Traefik/acme.json:/acme.json:rw
+    secrets: [cf_api_token, traefik_auth]
+    environment:
+      - CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token
+    depends_on:
+      docker_socket_proxy: { condition: service_healthy }
+      authelia: { condition: service_healthy }
+    command: 
+      - "--api.dashboard=true"
+      - "--api.insecure=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.98.0.0/24,10.99.0.0/24"
+      - "--providers.docker=true"
+      - "--providers.docker.endpoint=tcp://docker_socket_proxy:2375"
+      - "--providers.docker.version=1.44"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--providers.file.watch=true"
+      - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
+      - "--certificatesresolvers.cloudflare.acme.storage=/acme.json"
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge=true"
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    logging: *default-logging
+    restart: unless-stopped
 EOF
+
+sudo chown -R 0:0 "$StackDir"
+sudo chmod 600 "$ComposeFile" "$EnvFile"
+
+# ==============================================================================
+# CRON-10 & ROUTE-17: AUTOMATED LIFECYCLE & SELF-HEALING BRIDGE
+# ==============================================================================
+UpdaterScript="${ScriptsDir}/UpdateSovereignNode.sh"
+sudo tee "${UpdaterScript}.tmp" > /dev/null << EOF
+#!/bin/bash
+# Sovereign Node Autonomous Lifecycle Updater
+# Managed by DeploySovereignNode.sh
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+exec > >(logger -t SovereignNodeUpdater) 2>&1
+
+echo "[Sovereign Node] Initiating weekly lifecycle update..."
+cd "${StackDir}" || exit 1
+
+curl -sS --connect-timeout 10 https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
+if grep -q "A.ROOT-SERVERS.NET" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
+    mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
+    docker compose --env-file "${EnvFile}" restart unbound_dns
+else
+    logger -t SovereignNodeUpdater "ERROR: Root hints fetch corrupted. Retaining existing cache."
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
+fi
+
+docker compose --env-file "${EnvFile}" pull --quiet
+docker compose --env-file "${EnvFile}" up -d --remove-orphans
+docker image prune -af --filter "until=168h"
+
+for manifest in "${ConfigDir}/Traefik/Dynamic/"*_assimilation.yml; do
+    [ -e "\$manifest" ] || continue
+    alien=\$(grep "^# ALIEN_CONTAINER: " "\$manifest" | cut -d' ' -f3 || true)
+    [ -z "\$alien" ] && continue
+    if docker ps --format '{{.Names}}' | grep -q "^\${alien}\$"; then
+        if ! docker inspect "\$alien" --format '{{json .NetworkSettings.Networks}}' | grep -q "sovereign_node_proxy_network"; then
+            logger -t SovereignNodeUpdater "Healing broken Zero-Trust bridge for alien: \$alien"
+            docker network connect sovereign_node_proxy_network "\$alien" || true
+        fi
     fi
-    
-    chmod 600 "$COMPOSE_FILE"
+done
+
+echo "[Sovereign Node] Update cycle complete."
+EOF
+
+sudo chmod 700 "${UpdaterScript}.tmp"
+sudo mv "${UpdaterScript}.tmp" "$UpdaterScript"
+sudo ln -sf "$UpdaterScript" /etc/cron.weekly/sovereign-node-update
+
+# Ignition
+if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified Sovereign Node..."; fi
+cd "$StackDir" && sudo docker compose --env-file "$EnvFile" up -d --remove-orphans
+
+# ==============================================================================
+# ROUTE-14: LIVE ASSIMILATION ENGINE (POST-IGNITION)
+# ==============================================================================
+AssimilateAlienContainers() {
+    if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
+        local foreign_containers=$(sudo docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($2) != stack && $1 != "" {print $1}')
+        if [ -n "$foreign_containers" ]; then
+            local found_new=0
+            for container in $foreign_containers; do
+                local clean_name=$(echo "$container" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
+                local manifest_file="${ConfigDir}/Traefik/Dynamic/${clean_name}_assimilation.yml"
+
+                if [ -f "$manifest_file" ]; then
+                    sudo docker network connect sovereign_node_proxy_network "$container" >/dev/null 2>&1 || true
+                    continue
+                fi
+
+                if [ $found_new -eq 0 ]; then
+                    PrintMsg "214" "LOCAL ASSIMILATION PROTOCOL INITIATED"
+                    found_new=1
+                fi
+
+                echo ""
+                PrintMsg "214" "Select posture for unassimilated container [$container]:"
+                
+                local posture_choice=""
+                if command -v gum &> /dev/null; then
+                    local choice=$(gum choose "1) MFA Protected (Authelia) [SUGGESTED]" "2) VPN-Only (Air-Gapped)" "3) BasicAuth (Legacy Form)" "4) Fully Public" "5) Internal (Skip)" || true)
+                    [ -z "$choice" ] && continue
+                    posture_choice=${choice:0:1}
+                else
+                    echo "1) MFA Protected (Authelia) [SUGGESTED]"
+                    echo "2) VPN-Only (Air-Gapped)"
+                    echo "3) BasicAuth (Legacy Form)"
+                    echo "4) Fully Public"
+                    echo "5) Internal (Skip)"
+                    read -p "Select posture (1-5) [1]: " posture_choice
+                    posture_choice=${posture_choice:-1}
+                fi
+
+                if [ "$posture_choice" -eq 5 ]; then continue; fi
+
+                local TargetPort=""
+                if command -v gum &> /dev/null; then
+                    TargetPort=$(gum input --prompt "Internal listening port for $container (e.g. 80, 8080): " || true)
+                else
+                    read -p "Internal listening port for $container (e.g. 80, 8080): " TargetPort
+                fi
+
+                if [ -z "$TargetPort" ]; then
+                    PrintMsg "196" "Target port cannot be empty. Skipping assimilation for $container."
+                    continue
+                fi
+
+                local mw_string=""
+                case "$posture_choice" in
+                    1) mw_string="\"secure-headers\", \"authelia\"" ;;
+                    2) mw_string="\"secure-headers\", \"vpn-whitelist\"" ;;
+                    3) mw_string="\"secure-headers\", \"traefik-auth\"" ;;
+                    4) mw_string="\"secure-headers\"" ;;
+                esac
+
+                PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
+                sudo docker network connect sovereign_node_proxy_network "$container" >/dev/null 2>&1 || true
+
+                sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
+# ALIEN_CONTAINER: $container
+http:
+  routers:
+    ${clean_name}-router:
+      rule: "Host(\`${clean_name}.${INTERNAL_DOMAIN}\`)"
+      entryPoints: ["websecure"]
+      middlewares: [${mw_string}]
+      service: "${clean_name}-service"
+      tls:
+        certResolver: "cloudflare"
+  services:
+    ${clean_name}-service:
+      loadBalancer:
+        servers:
+          - url: "http://${container}:${TargetPort}"
+MANIFEST_EOF
+                PrintMsg "82" "✔ Assimilated: https://${clean_name}.${INTERNAL_DOMAIN}"
+                
+                echo ""
+                PrintMsg "196" " ⚠️  DECLARATIVE STATE WARNING (CRITICAL)"
+                PrintMsg "226" " The Zero-Trust bridge to $container is currently EPHEMERAL."
+                PrintMsg "226" " If you recreate the alien stack, Docker will sever the bridge."
+                PrintMsg "226" " To make it mathematically permanent, inject this into the alien's compose file:"
+                PrintMsg "82"  " --------------------------------------------------"
+                PrintMsg "82"  " networks:"
+                PrintMsg "82"  "   sovereign_node_proxy_network:"
+                PrintMsg "82"  "     external: true"
+                PrintMsg "82"  " "
+                PrintMsg "82"  " services:"
+                PrintMsg "82"  "   $container:"
+                PrintMsg "82"  "     networks:"
+                PrintMsg "82"  "       - sovereign_node_proxy_network"
+                PrintMsg "82"  " --------------------------------------------------"
+                sleep 2
+            done
+        fi
+    fi
 }
 
-# ------------------------------------------------------------------------------
-# 12. Audit Tool Generation
-# ------------------------------------------------------------------------------
-generate_audit_tool() {
-    [ "$DEPLOY_AI" != "true" ] && return
-    
-    log_info "Generating Forensic Audit Tool..."
-    cat << EOF > "$AUDIT_SCRIPT"
-#!/usr/bin/env python3
-import urllib.request
-import json
-import subprocess
-import time
+AssimilateAlienContainers
 
-API_URL = "http://127.0.0.1:${CFG_AI_PORT##*:}/api/generate"
-PULL_URL = "http://127.0.0.1:${CFG_AI_PORT##*:}/api/pull"
-MODEL = "${TARGET_MODEL}"
-
-def log(msg): print(f"[AUDIT] {msg}")
-
-def check_logs():
-    cmd = ["docker", "logs", "Ollama-Worker"]
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    if "offloading" in res.stderr:
-        log("SUCCESS: GPU Offload detected in logs.")
-    else:
-        log("WARNING: No GPU offload detected (Check drivers).")
-
-def run_test():
-    log(f"Testing inference with {MODEL}...")
-    check_model = subprocess.run(["docker", "exec", "Ollama-Worker", "ollama", "list"], capture_output=True, text=True)
-    if MODEL not in check_model.stdout:
-        log("Model not found. Pulling...")
-        pull_data = json.dumps({"name": MODEL}).encode("utf-8")
-        try:
-             req = urllib.request.Request(PULL_URL, data=pull_data, headers={'Content-Type': 'application/json'})
-             with urllib.request.urlopen(req) as r: pass
-        except Exception as e:
-             log(f"Pull Failed: {e}")
-             return
-
-    data = json.dumps({"model": MODEL, "prompt": "Status?", "stream": False}).encode("utf-8")
-    try:
-        req = urllib.request.Request(API_URL, data=data, headers={'Content-Type': 'application/json'})
-        with urllib.request.urlopen(req) as r:
-            log("SUCCESS: API Responded.")
-    except Exception as e:
-        log(f"FAILURE: {e}")
-
-if __name__ == "__main__":
-    run_test()
-    time.sleep(2)
-    check_logs()
-EOF
-    chmod +x "$AUDIT_SCRIPT"
-}
-
-# ------------------------------------------------------------------------------
-# 13. Forensic Audit Function
-# ------------------------------------------------------------------------------
-perform_forensic_audit() {
+if [ "$Interactive" -eq 1 ]; then
     echo ""
-    echo "Starting Forensic Integration Audit..."
-    echo "----------------------------------------"
-
-    if [ -f "$ENV_FILE" ]; then
-        if grep -qE "^(PASS|TOKEN)=" "$ENV_FILE"; then
-            log_err "Secrets detected in .env file (Ghost Secret Regression)."
-        else
-            log_succ ".env file appears clean of literal credentials."
-        fi
-    else
-        log_err ".env file missing."
-    fi
-
-    PERM=$(stat -c "%a" "$SECRETS_DIR" 2>/dev/null)
-    if [ "$PERM" == "700" ]; then
-        log_succ "Secrets directory permissions locked (700)."
-    else
-        log_err "Secrets directory insecure (Current: $PERM, Expected: 700)."
-    fi
+    PiholePass=$(sudo cat "${SecretsDir}/pihole_pass")
+    PrintMsg "214" "========================================================================"
+    PrintMsg "226" " 🔐 SECURE CREDENTIAL RECOVERY"
+    PrintMsg "214" "========================================================================"
+    PrintMsg "82"  " Pi-Hole Admin Password: $PiholePass"
+    PrintMsg "196" " SAVE THIS NOW. IT WILL NOT BE DISPLAYED AGAIN."
+    PrintMsg "214" "========================================================================"
     
-    if [ "$DEPLOY_GITEA" == "true" ]; then
-        if docker exec Gitea curl -s -f http://127.0.0.1:3000/api/healthz > /dev/null; then
-            log_succ "Gitea Internal API: Responsive."
-        else
-            log_err "Gitea Internal API: Unreachable."
-        fi
-        
-        RUNNER_LIST=$(docker exec -u 1000 Gitea gitea actions runner list 2>&1 || true)
-        if echo "$RUNNER_LIST" | grep -q -i "Worker"; then
-            log_succ "Runner Farm: Verified active via Server CLI."
-        else
-            log_err "Runner Farm: Not found in Server CLI."
-        fi
-    fi
+    echo ""
+    PrintMsg "196" " ⚠️  AUTHELIA MFA REGISTRATION (CRITICAL)"
+    PrintMsg "226" " Your first login attempt at https://pihole.${INTERNAL_DOMAIN}"
+    PrintMsg "226" " will trigger an email to register your biometric/2FA device."
+    PrintMsg "226" " Because no SMTP server is configured, the link is intercepted locally."
+    PrintMsg "82"  " Retrieve your registration link by running:"
+    PrintMsg "196" " sudo cat ${ConfigDir}/Authelia/notification.txt"
+    PrintMsg "214" "========================================================================"
+    echo ""
+    PrintMsg "82" "✔ Unified Matrix Online. Turn the key."
+fi
 
-    if [ "$DEPLOY_AI" == "true" ]; then
-        if docker exec Ollama-Worker ollama list > /dev/null 2>&1; then
-            log_succ "Ollama API: Active (Internal CLI check)."
-        else
-            log_err "Ollama API: Dead."
-        fi
-        
-        EXPECTED_LAYERS=$(grep "OLLAMA_GPU_LAYERS" "$ENV_FILE" | cut -d= -f2 | tr -d '"')
-        EXPECTED_LAYERS=${EXPECTED_LAYERS:-0}
-        
-        LOGS=$(docker logs Ollama-Worker 2>&1 | tail -n 200)
-        if echo "$LOGS" | grep -iq "offload"; then
-            log_succ "Ollama Compute: GPU Offload detected."
-        elif echo "$LOGS" | grep -iq "cpu"; then
-            if [ "$EXPECTED_LAYERS" -gt "0" ]; then
-                 log_err "Ollama Compute: CPU Mode active despite GPU config."
-            else
-                 log_succ "Ollama Compute: CPU Mode (As Configured)."
-            fi
-        fi
-    fi
-    
-    echo "----------------------------------------"
-}
-
-# ------------------------------------------------------------------------------
-# 14. Finalization & Auto-Provisioning
-# ------------------------------------------------------------------------------
-finalize_permissions() {
-    log_info "Securing permissions..."
-    chown -R "$REAL_USER:$REAL_GID" "$STACK_DIR" "$SECRETS_DIR"
-    chmod 700 "$SECRETS_DIR"
-    chmod 600 "$ENV_FILE"
-    
-    if [ "$DEPLOY_GITEA" == "true" ]; then
-        if [ -d "${DATA_DIR}/Postgres" ]; then chown -R 999:999 "${DATA_DIR}/Postgres"; fi
-        if [ -d "${DATA_DIR}/Redis" ]; then chown -R 999:999 "${DATA_DIR}/Redis"; fi
-        # [FIX 2] Align Gitea mount with REAL_UID to prevent permission crash loop
-        if [ -d "${DATA_DIR}/Gitea" ] && [ "$USE_NFS" != "true" ]; then chown -R "$REAL_UID:$REAL_GID" "${DATA_DIR}/Gitea"; fi
-        
-        if [ -d "${DATA_DIR}/RunnerGeneric" ]; then chown -R 1000:1000 "${DATA_DIR}/RunnerGeneric"; fi
-        if [ -d "${DATA_DIR}/RunnerGemini" ]; then chown -R 1000:1000 "${DATA_DIR}/RunnerGemini"; fi
-        if [ -d "${DATA_DIR}/RunnerGCloud" ]; then chown -R 1000:1000 "${DATA_DIR}/RunnerGCloud"; fi
-    fi
-    
-    if [ "$DEPLOY_AI" == "true" ] && [ -d "${DATA_DIR}/Ollama" ]; then 
-         chmod 777 "${DATA_DIR}/Ollama"
-    fi
-    
-    if [ "$DEPLOY_VSCODE" == "true" ] && [ -d "${DATA_DIR}/CodeServer" ]; then 
-        chown -R "$REAL_UID:$REAL_GID" "${DATA_DIR}/CodeServer"
-    fi
-    
-    log_succ "Permissions secured."
-}
-
-finalize_stack() {
-    finalize_permissions
-    
-    log_info "Launching Core Stack (Excluding Runners)..."
-    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d --build || exit 1
-
-    if [ "$DEPLOY_GITEA" == "true" ]; then
-        log_info "Waiting for Gitea (Healthcheck)..."
-        for i in {1..40}; do
-            STATUS=$(docker inspect --format='{{.State.Health.Status}}' Gitea 2>/dev/null || echo "starting")
-            if [ "$STATUS" == "healthy" ]; then
-                log_succ "Gitea Online."
-                local ADM_U=$(cat "${SECRETS_DIR}/gitea_admin_username.txt" 2>/dev/null || echo "gitea_admin")
-                local ADM_P=$(cat "${SECRETS_DIR}/gitea_admin_password.txt" 2>/dev/null)
-                
-                docker exec -u 1000 Gitea gitea admin user create --username "$ADM_U" --password "$ADM_P" --email "admin@${HOST_IP}" --admin --must-change-password=false 2>/dev/null || {
-                    log_info "User exists. Synchronizing vault credentials to database..."
-                    docker exec -u 1000 Gitea gitea admin user change-password --username "$ADM_U" --password "$ADM_P" 2>/dev/null || true
-                    
-                    log_info "Scrubbing Zombie Password Flag via direct SQL injection (Secured Subshell)..."
-                    docker exec Gitea-DB sh -c "PGPASSWORD=\$(cat /run/secrets/gitea_db_password) psql -U gitea -d gitea -c \"UPDATE \\\"user\\\" SET must_change_password=false WHERE lower(name)=lower('${ADM_U}');\"" > /dev/null 2>&1 || log_warn "SQL override failed. API calls may return 401."
-                    
-                    log_info "Restarting Gitea to flush user cache..."
-                    docker restart Gitea >/dev/null
-                    for j in {1..20}; do
-                        if docker exec Gitea curl -s -f http://127.0.0.1:3000/api/healthz >/dev/null 2>&1; then 
-                            log_info "Health check passed. Waiting for CLI backend stabilization..."
-                            sleep 3
-                            if docker exec -u 1000 Gitea gitea --version >/dev/null 2>&1; then
-                                break
-                            fi
-                        fi
-                        sleep 2
-                    done
-                }
-                
-                local RUNNER_EXISTS=$(docker exec -u 1000 Gitea gitea actions runner list 2>/dev/null | grep -c -i "Worker" || echo "0")
-                if [ "$RUNNER_EXISTS" -eq 0 ]; then
-                    for k in {1..10}; do
-                        TOKEN=$(docker exec -u 1000 Gitea gitea actions generate-runner-token 2>/dev/null | tr -d '\r\n')
-                        if [ -n "$TOKEN" ] && [[ "$TOKEN" != *"error"* ]]; then
-                            echo -n "$TOKEN" > "${SECRETS_DIR}/runner_registration_token.txt"
-                            log_info "Booting Runner Farm with new cryptographic token..."
-                            $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" --profile runners up -d
-                            log_succ "Runner Farm Registered & Online."
-                            break
-                        fi
-                        log_warn "CLI not ready for token generation. Retrying in 3s..."
-                        sleep 3
-                    done
-                else
-                    log_info "Runner Farm already registered. Bypassing token generation."
-                    $DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" --profile runners up -d
-                fi
-                
-                log_info "Initializing Native AI Workflows..."
-                local REPO_NAME="ai-playground"
-                local REPO_CHECK=$(curl -s -u "${ADM_U}:${ADM_P}" "http://127.0.0.1:${CFG_GITEA_WEB}/api/v1/repos/${ADM_U}/${REPO_NAME}")
-                
-                if ! echo "$REPO_CHECK" | grep -q "\"id\":"; then
-                    curl -s -X POST "http://127.0.0.1:${CFG_GITEA_WEB}/api/v1/user/repos" \
-                        -H "Content-Type: application/json" \
-                        -u "${ADM_U}:${ADM_P}" \
-                        -d "{\"name\": \"$REPO_NAME\", \"auto_init\": true, \"private\": false, \"default_branch\": \"main\"}" > /dev/null
-                    
-                    log_info "Buffering Git backend for 3 seconds to prevent inode collision..."
-                    sleep 3
-                    log_succ "Repository created."
-                fi
-                
-                log_info "Synchronizing AI-Gated Pipeline..."
-                local NET_NAME=$(docker inspect Ollama-Worker --format '{{range $k, $v := .NetworkSettings.Networks}}{{printf "%s\n" $k}}{{end}}' 2>/dev/null | head -n 1 || echo "gitea-${NODE_ROLE}_gitea-net")
-                
-                local WORKFLOW_AI_URL="http://Ollama-Worker:11434"
-                if [ "$DEPLOY_AI" == "false" ]; then WORKFLOW_AI_URL="${CFG_EXTERNAL_AI_URL}"; fi
-                
-                # [FIX 1] Context Injector explicitly targets node:18-bullseye to leverage Node serialization and actions/checkout
-                local WORKFLOW_CONTENT=$(cat <<EOF
-name: AI-Gated GitHub Mirror
-on: [push]
-jobs:
-  ai-security-review:
-    runs-on: ubuntu-latest
-    container:
-      image: node:18-bullseye
-      options: --network ${NET_NAME}
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-      - name: AI Context Extraction & Inspection
-        id: ai_check
-        run: |
-          echo "Extracting Git Diff..."
-          export DIFF_DATA=\$\(git diff HEAD~1 HEAD 2>/dev/null || git show HEAD\)
-          echo "Submitting payload to Compute Node (${WORKFLOW_AI_URL})..."
-          node -e "
-          const http = require('http');
-          const diff = process.env.DIFF_DATA;
-          const data = JSON.stringify({
-            model: '${TARGET_MODEL}',
-            prompt: 'Analyze the following git diff for security vulnerabilities or hardcoded secrets. Respond ONLY with PASSED or FAILED.\\n\\n' + diff,
-            stream: false
-          });
-          const url = new URL('${WORKFLOW_AI_URL}/api/generate');
-          const req = require(url.protocol === 'https:' ? 'https' : 'http').request(url, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data)}
-          }, (res) => {
-            let body = '';
-            res.on('data', d => body += d);
-            res.on('end', () => {
-              try {
-                const result = JSON.parse(body).response || '';
-                if(result.includes('PASSED')) {
-                  console.log('AI Verdict: PASSED');
-                  process.exit(0);
-                } else {
-                  console.log('AI Verdict: FAILED. Output:', result);
-                  process.exit(1);
-                }
-              } catch(e) {
-                console.error('Failed to parse AI response:', body);
-                process.exit(1);
-              }
-            });
-          });
-          req.on('error', (e) => { console.error('API Error:', e); process.exit(1); });
-          req.write(data);
-          req.end();
-          "
-EOF
-)
-                local B64_CONTENT=$(echo "$WORKFLOW_CONTENT" | base64 -w 0)
-                
-                local SHA=$(curl -s -u "${ADM_U}:${ADM_P}" "http://127.0.0.1:${CFG_GITEA_WEB}/api/v1/repos/${ADM_U}/${REPO_NAME}/contents/.gitea/workflows/ai-review.yaml" | grep -o '"sha":"[^"]*"' | cut -d'"' -f4 || true)
-                
-                if [ -n "$SHA" ]; then
-                    curl -s -X PUT "http://127.0.0.1:${CFG_GITEA_WEB}/api/v1/repos/${ADM_U}/${REPO_NAME}/contents/.gitea/workflows/ai-review.yaml" \
-                        -H "Content-Type: application/json" \
-                        -u "${ADM_U}:${ADM_P}" \
-                        -d "{\"content\": \"$B64_CONTENT\", \"sha\": \"$SHA\", \"message\": \"Update AI Security Gate ($TARGET_MODEL)\", \"branch\": \"main\"}" > /dev/null
-                    log_succ "Repository seeded with AI-Gated Pipeline (Updated)."
-                else
-                    curl -s -X POST "http://127.0.0.1:${CFG_GITEA_WEB}/api/v1/repos/${ADM_U}/${REPO_NAME}/contents/.gitea/workflows/ai-review.yaml" \
-                        -H "Content-Type: application/json" \
-                        -u "${ADM_U}:${ADM_P}" \
-                        -d "{\"content\": \"$B64_CONTENT\", \"message\": \"Initialize AI Security Gate ($TARGET_MODEL)\", \"branch\": \"main\"}" > /dev/null
-                    log_succ "Repository seeded with AI-Gated Pipeline (Created)."
-                fi
-                
-                if [ "$DEPLOY_VSCODE" == "true" ]; then
-                    log_info "Waiting for Code-Server asynchronous package installations (git/python)..."
-                    for j in {1..30}; do
-                        if docker exec -u abc Code-Server command -v git >/dev/null 2>&1; then
-                            log_succ "Code-Server environment ready."
-                            break
-                        fi
-                        sleep 3
-                    done
-                    
-                    log_info "Provisioning Zero-Touch SSH Identity for Code-Server..."
-                    docker exec -u abc Code-Server mkdir -p /config/.ssh
-                    if ! docker exec -u abc Code-Server test -f /config/.ssh/id_ed25519; then
-                        docker exec -u abc Code-Server ssh-keygen -t ed25519 -N "" -f /config/.ssh/id_ed25519 > /dev/null 2>&1
-                    fi
-                    
-                    local PUB_KEY=$(docker exec -u abc Code-Server cat /config/.ssh/id_ed25519.pub | tr -d '\n\r')
-                    
-                    curl -s -X POST "http://127.0.0.1:${CFG_GITEA_WEB}/api/v1/user/keys" \
-                         -u "${ADM_U}:${ADM_P}" \
-                         -H "Content-Type: application/json" \
-                         -d "{\"title\": \"VSCode-Automated-Key\", \"key\": \"$PUB_KEY\", \"read_only\": false}" > /dev/null 2>&1 || true
-
-                    docker exec -u abc Code-Server sh -c "printf 'Host Gitea\n  HostName Gitea\n  Port 2222\n  User git\n  StrictHostKeyChecking no\n  IdentityFile ~/.ssh/id_ed25519\n' > /config/.ssh/config"
-                    docker exec -u abc Code-Server chmod 600 /config/.ssh/config
-                    
-                    if ! docker exec -u abc Code-Server test -d "/config/workspace/${REPO_NAME}"; then
-                        log_info "Seeding VS Code Workspace (Process-Secure Clone)..."
-                        local SAFE_URL="ssh://git@Gitea:2222/${ADM_U}/${REPO_NAME}.git"
-                        
-                        echo -n "http://${ADM_U}:${ADM_P}@Gitea:3000" | docker exec -i -u abc Code-Server sh -c "cat > /tmp/.git-creds && git config --global credential.helper 'store --file /tmp/.git-creds' && git clone http://Gitea:3000/${ADM_U}/${REPO_NAME}.git /config/workspace/${REPO_NAME}; rm -f /tmp/.git-creds; git config --global --unset credential.helper" > /dev/null 2>&1 || true
-                        
-                        local GIT_SEED_OUT
-                        GIT_SEED_OUT=$(docker exec -u abc Code-Server sh -c "\
-                            if cd /config/workspace/${REPO_NAME}; then \
-                                git remote set-url origin \"$SAFE_URL\" && \
-                                git config user.name 'Omega-Sentry' && \
-                                git config user.email 'sentry@omega.local' && \
-                                echo '.aider*' >> .gitignore && \
-                                git add .gitignore && \
-                                git commit -m 'Silence Aider' && \
-                                git push --set-upstream origin main; \
-                            else \
-                                exit 1; \
-                            fi" 2>&1)
-                        
-                        if [ $? -eq 0 ]; then
-                            log_succ "Workspace successfully seeded and secured via SSH."
-                        else
-                            log_warn "Failed to inject workspace identity or scrub origin. Telemetry:"
-                            echo -e "${YELLOW}$GIT_SEED_OUT${NC}"
-                        fi
-                    fi
-                fi
-                break
-            fi
-            sleep 5
-        done
-    fi
-
-    if [ "$DEPLOY_AI" == "true" ]; then
-        log_info "Waiting for AI API..."
-        for i in {1..20}; do
-             STATUS=$(docker inspect --format='{{.State.Health.Status}}' Ollama-Worker 2>/dev/null || echo "starting")
-             if [ "$STATUS" == "healthy" ]; then
-                 log_info "Priming Background Model Pull ($TARGET_MODEL)..."
-                 docker exec -d Ollama-Worker sh -c "ollama pull ${TARGET_MODEL} > /tmp/pull.log 2>&1"
-                 break
-             fi
-             sleep 3
-        done
-    else
-        if [ -n "$CFG_EXTERNAL_AI_URL" ]; then
-             log_info "Priming External Compute Node via API ($TARGET_MODEL)..."
-             curl -s -X POST "${CFG_EXTERNAL_AI_URL}/api/pull" -H "Content-Type: application/json" -d "{\"name\": \"$TARGET_MODEL\"}" > /dev/null &
-        fi
-    fi
-}
-
-post_install_instructions() {
-    echo -e "\n"
-    log_succ "DEPLOYMENT SUCCESSFUL - OMEGA DASHBOARD"
-    echo "=============================================================================="
-    
-    if docker ps --format '{{.Names}}' | grep -q "Gitea-Socket-Proxy"; then
-        local PROXY_STATUS=$(docker inspect --format='{{.State.Health.Status}}' Gitea-Socket-Proxy 2>/dev/null || echo "running")
-        local COLOR=$GREEN; [[ "$PROXY_STATUS" == "starting" ]] && COLOR=$YELLOW
-        draw_service_box "GITEA-SOCKET-PROXY" "Location|Bridge (gitea-net:2375)" "Status|${COLOR}[$PROXY_STATUS]${NC}"
-    fi
-
-    if [ "$DEPLOY_GITEA" == "true" ]; then
-        local G_STAT=$(docker inspect --format='{{.State.Health.Status}}' Gitea 2>/dev/null || echo "running")
-        local COLOR=$GREEN; [[ "$G_STAT" == "starting" ]] && COLOR=$YELLOW
-        local G_USER=$(cat "${SECRETS_DIR}/gitea_admin_username.txt" 2>/dev/null || echo "N/A")
-        local G_PASS=$(cat "${SECRETS_DIR}/gitea_admin_password.txt" 2>/dev/null || echo "N/A")
-        draw_service_box "GITEA-CORE" "Location|http://${HOST_IP}:${CFG_GITEA_WEB}" "Status|${COLOR}[$G_STAT]${NC}" "User|$G_USER" "Pass|$G_PASS"
-    fi
-
-    if [ "$DEPLOY_AI" == "true" ]; then
-        local A_STAT=$(docker inspect --format='{{.State.Status}}' Ollama-Worker 2>/dev/null || echo "offline")
-        local COLOR=$GREEN; [[ "$A_STAT" != "running" ]] && COLOR=$RED
-        draw_service_box "OLLAMA-WORKER" "Location|http://${HOST_IP##*:}:${CFG_AI_PORT##*:}" "Status|${COLOR}[$A_STAT]${NC}"
-    fi
-
-    if [ "$DEPLOY_PORTAINER_AGENT" == "true" ]; then
-        local AGENT_STATUS=$(docker inspect --format='{{.State.Status}}' Portainer-Agent 2>/dev/null || echo "offline")
-        local COLOR=$GREEN; [[ "$AGENT_STATUS" != "running" ]] && COLOR=$RED
-        draw_service_box "PORTAINER-AGENT" "Location|http://${HOST_IP}:${CFG_AGENT_PORT}" "Status|${COLOR}[$AGENT_STATUS]${NC}"
-    fi
-
-    if [ "$DEPLOY_VSCODE" == "true" ]; then
-        local VS_PASS=$(cat "${SECRETS_DIR}/vscode_password.txt" 2>/dev/null || echo "N/A")
-        draw_service_box "CODE-SERVER" "Location|http://${HOST_IP}:${CFG_VSCODE_PORT}" "Status|${GREEN}[running]${NC}" "Pass|$VS_PASS"
-    fi
-
-    echo -e "Vault Path:  ${YELLOW}${SECRETS_DIR}${NC}"
-    echo "=============================================================================="
-}
-
-# ------------------------------------------------------------------------------
-# 15. Execution
-# ------------------------------------------------------------------------------
-main() {
-    check_identity
-    check_core_requirements
-    load_existing_state
-    detect_host_context
-    configure_role_wizard
-    configure_vscode_wizard
-    resolve_conflicts
-    configure_storage_wizard
-    pre_migration_teardown
-    setup_directories
-    configure_hardware_acceleration
-    setup_environment
-    generate_docker_compose
-    generate_audit_tool
-    finalize_stack
-    
-    perform_forensic_audit
-    
-    sync
-    post_install_instructions
-}
-
-main
+exit 0
