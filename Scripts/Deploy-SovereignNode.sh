@@ -1,15 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.25-THE-SINGULARITY
+#  Version: v10.26-UNBOUND-IGNITION
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Unbound Ignition Fixes:
+#  - BOOT-04: Injected entrypoint wrapper to Unbound to prevent 0-byte root.key 
+#             truncation deadlocks during initial network stabilization.
+#  - HEALTH-13: Swapped generic localhost DNS healthcheck for an explicitly
+#               routed internal domain query to eliminate false-negative fails.
 #  The Singularity Fixes:
 #  - BASH-03: Insulated all native 'read' fallbacks with '|| true' booleans to 
 #             prevent strict 'set -e' guillotine executions upon SIGINT (Ctrl+C).
 #  - IAM-04: Relocated Authelia directory chown execution to strictly occur 
-#            AFTER root-executed 'tee' file generation, ensuring zero root 
-#            artifacts exist within the unprivileged UID 1000 vault.
+#            AFTER root-executed 'tee' file generation.
 # ==============================================================================
 
 set -euo pipefail
@@ -162,7 +166,6 @@ ExecuteAnnihilation() {
         if command -v gum &> /dev/null; then
             if gum confirm "OBLITERATE EVERYTHING and restart fresh?"; then confirm="yes"; fi
         else
-            # BASH-03: Insulated native read confirmation
             read -p "OBLITERATE EVERYTHING and restart fresh? (y/N): " input_conf || true
             [[ "${input_conf:-}" =~ ^[Yy]$ ]] && confirm="yes"
         fi
@@ -227,7 +230,6 @@ if [ "$Interactive" -eq 1 ]; then
             cf_token=$(gum input --password || true)
             [ -z "$cf_token" ] && { PrintMsg "196" "Token input cancelled. Halting."; exit 1; }
         else
-            # BASH-03: Insulated against SIGINT
             read -s -p "Token: " cf_token || true
             echo ""
             [ -z "$cf_token" ] && { PrintMsg "196" "Token input cancelled. Halting."; exit 1; }
@@ -241,7 +243,6 @@ if [ "$Interactive" -eq 1 ]; then
             TraefikPass=$(gum input --password || true)
             [ -z "$TraefikPass" ] && { PrintMsg "196" "Password input cancelled. Halting."; exit 1; }
         else
-            # BASH-03: Insulated against SIGINT
             read -s -p "Password: " TraefikPass || true
             echo ""
             [ -z "$TraefikPass" ] && { PrintMsg "196" "Password input cancelled. Halting."; exit 1; }
@@ -283,7 +284,6 @@ if [ "$Interactive" -eq 1 ]; then
         AcmeEmail=$(gum input --prompt "Let's Encrypt Email: " --value "$PrevEmail" || true)
         [ -z "$AcmeEmail" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
     else
-        # BASH-03: Insulated native read fallbacks to prevent locked file states
         read -p "WireGuard Public Endpoint (IP/DDNS) [$PrevEndpoint]: " input_endpoint || true
         WgEndpoint="${input_endpoint:-$PrevEndpoint}"
         [ -z "$WgEndpoint" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
@@ -330,7 +330,6 @@ PurgeAlienContainers() {
             if command -v gum &> /dev/null; then
                 if gum confirm "DESTROY all listed alien containers permanently?"; then confirm="yes"; fi
             else
-                # BASH-03: Insulated native read
                 read -p "DESTROY all listed alien containers permanently? (y/N): " input_conf || true
                 [[ "${input_conf:-}" =~ ^[Yy]$ ]] && confirm="yes"
             fi
@@ -430,7 +429,6 @@ EOF
 fi
 
 # IAM-04: Execute strict UID 1000 permissions AFTER root 'tee' file generation.
-# This prevents root-owned artifacts from silently lingering in an unprivileged volume.
 sudo chown -R 1000:1000 "$ConfigDir/Authelia"
 
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
@@ -585,15 +583,19 @@ services:
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - unbound_keys:/opt/unbound/etc/unbound/keys:rw
+    # BOOT-04: Enforce IANA DS string fallback if unbound-anchor fails to prevent fatal syntax panic.
+    entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE, SETGID, SETUID, CHOWN, DAC_OVERRIDE]
     security_opt: [no-new-privileges:true]
     logging: *default-logging
     healthcheck:
-      test: ["CMD-SHELL", "drill @127.0.0.1 localhost || exit 1"]
+      # HEALTH-13: Replaced raw localhost ping with explicit domain request to eliminate false-negative exits.
+      test: ["CMD-SHELL", "drill -p 53 \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   pihole_sinkhole:
@@ -780,7 +782,6 @@ AssimilateAlienContainers() {
                     echo "3) BasicAuth (Legacy Form)"
                     echo "4) Fully Public"
                     echo "5) Internal (Skip)"
-                    # BASH-03: Insulate posture read prompt against SIGINT panic
                     read -p "Select posture (1-5) [1]: " posture_choice || true
                     posture_choice=${posture_choice:-1}
                 fi
@@ -791,7 +792,6 @@ AssimilateAlienContainers() {
                 if command -v gum &> /dev/null; then
                     TargetPort=$(gum input --prompt "Internal listening port for $container (e.g. 80, 8080): " || true)
                 else
-                    # BASH-03: Insulate port read prompt against SIGINT panic
                     read -p "Internal listening port for $container (e.g. 80, 8080): " TargetPort || true
                 fi
 
