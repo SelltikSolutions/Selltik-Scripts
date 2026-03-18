@@ -1,1 +1,73 @@
-Personalized
+---
+# UncleFuneralVerses.yml
+# Description: Tailored scripture mapping for Uncle's funeral service.
+# Environment: Migration to Whole/Perfect State Confirmed.
+# Security Warning: Do not copy-paste raw text into pastoral printouts
+# without verifying translation versions (ESV/NASB/NKJV recommended).
+# Error Handling: Strings folded with '>' to prevent linting line-length errors.
+
+Themes:
+  ReconAndVerification:
+    - Reference: "Proverbs 25:2"
+      Text: >
+        It is the glory of God to conceal a matter; to search out a
+        matter is the glory of kings.
+      Notes: >
+        Aligns with his counter-intel background and his protocol of
+        gathering first-hand intel on new locations. He did not rely
+        on second-hand data or unverified reports.
+      ConnectingVerses:
+        - "1 Thessalonians 5:21"
+
+  QuietProfessional:
+    - Reference: "1 Thessalonians 4:11"
+      Text: >
+        ...and to make it your ambition to lead a quiet life: You
+        should mind your own business and work with your hands, just
+        as we told you...
+      Notes: >
+        Perfect for a veteran who kept his operational history
+        classified and lived humbly without demanding the spotlight.
+
+  TacticalReadiness:
+    - Reference: "Psalm 144:1"
+      Text: >
+        Praise be to the LORD my Rock, who trains my hands for war,
+        my fingers for battle.
+      Notes: >
+        Speaks directly to his status as a competitive shooter,
+        hunter, and a man who stayed scoped-in and ready until the
+        final logoff.
+      ConnectingVerses:
+        - "Ephesians 6:13"
+
+  SupportNode:
+    - Reference: "Proverbs 18:24"
+      Text: >
+        One who has unreliable friends soon comes to ruin, but there
+        is a friend who sticks closer than a brother.
+      Notes: >
+        Highlights his routine of deploying to help friends in his
+        spare time. He was a highly dependable asset.
+      ConnectingVerses:
+        - "John 15:13"
+
+  DirectUplink:
+    - Reference: "Philippians 4:6"
+      Text: >
+        Do not be anxious about anything, but in every situation, by
+        prayer and petition, with thanksgiving, present your requests
+        to God.
+      Notes: >
+        Maps to his protocol of initiating prayer sequences during
+        times of need or critical system stress.
+
+  WholeWithTheLord:
+    - Reference: "Revelation 21:4"
+      Text: >
+        He will wipe every tear from their eyes. There will be no more
+        death or mourning or crying or pain, for the old order of
+        things has passed away.
+      Notes: >
+        The final, secure state of the believer. A complete wipe of all
+        corrupted data, illness, and pain. He is now Whole.
