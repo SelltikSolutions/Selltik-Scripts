@@ -38,8 +38,6 @@ Themes:
         Speaks directly to his status as a competitive shooter,
         hunter, and a man who stayed scoped-in and ready until the
         final logoff.
-      ConnectingVerses:
-        - "Ephesians 6:13"
 
   SupportNode:
     - Reference: "Proverbs 18:24"
@@ -49,8 +47,6 @@ Themes:
       Notes: >
         Highlights his routine of deploying to help friends in his
         spare time. He was a highly dependable asset.
-      ConnectingVerses:
-        - "John 15:13"
 
   DirectUplink:
     - Reference: "Philippians 4:6"
@@ -72,21 +68,37 @@ Themes:
       Notes: >
         He operated as a critical component in a larger architecture.
         He executed his functions without boasting, deferring to the
-        primary controller via prayer when his purpose or routing
-        tables were unclear.
-      ConnectingVerses:
-        - "1 Corinthians 12:18-20"
+        primary controller via prayer.
+
+    - Reference: "1 Corinthians 12:22-23"
+      Text: >
+        On the contrary, those parts of the body that seem to be
+        weaker are indispensable, and the parts that we think are less
+        honorable we treat with special honor.
+      Notes: >
+        Reinforces the background-node architecture. He didn't need
+        the spotlight because the most critical infrastructure is
+        usually hidden behind the server rack.
+
+  HardwareMigration:
+    - Reference: "2 Corinthians 5:1"
+      Text: >
+        For we know that if the earthly tent we live in is destroyed,
+        we have a building from God, an eternal house in heaven, not
+        built by human hands.
+      Notes: >
+        The ultimate hardware replacement. The temporary, failing
+        physical chassis is traded for a permanent, flawless build.
 
   WholeWithTheLord:
-    - Reference: "Ephesians 4:16"
+    - Reference: "1 Corinthians 13:12"
       Text: >
-        From him the whole body, joined and held together by every
-        supporting ligament, grows and builds itself up in love, as
-        each part does its work.
+        For now we see only a reflection as in a mirror; then we shall
+        see face to face. Now I know in part; then I shall know fully,
+        even as I am fully known.
       Notes: >
-        Connects his role as a functional node directly to his final
-        state. His local instance is shut down, but he is fully
-        integrated and Whole within the master framework.
+        Highlights the transition from our fragmented, broken reality
+        to being entirely 'Whole' and fully known by the Creator.
 
     - Reference: "Revelation 21:4"
       Text: >
