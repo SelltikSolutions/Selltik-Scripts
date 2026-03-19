@@ -1,19 +1,16 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.26-UNBOUND-IGNITION
+#  Version: v10.27-OMEGA-DIRECTIVE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Unbound Ignition Fixes:
-#  - BOOT-04: Injected entrypoint wrapper to Unbound to prevent 0-byte root.key 
-#             truncation deadlocks during initial network stabilization.
-#  - HEALTH-13: Swapped generic localhost DNS healthcheck for an explicitly
-#               routed internal domain query to eliminate false-negative fails.
-#  The Singularity Fixes:
-#  - BASH-03: Insulated all native 'read' fallbacks with '|| true' booleans to 
-#             prevent strict 'set -e' guillotine executions upon SIGINT (Ctrl+C).
-#  - IAM-04: Relocated Authelia directory chown execution to strictly occur 
-#            AFTER root-executed 'tee' file generation.
+#  Omega Directive Fixes:
+#  - BOOT-06: Explicitly disabled implicit chroot in Unbound to prevent 
+#             recursive pathing panics when loading root.key trust anchors.
+#  - SYS-01: Injected 'init: true' to Alpine-native containers (Unbound, Postgres)
+#            to deploy the 'tini' process manager and aggressively reap zombies.
+#  - UX-02: Engineered Traefik RedirectRegex middleware to seamlessly bounce 
+#           authenticated Pi-Hole operators from the root path to /admin/.
 # ==============================================================================
 
 set -euo pipefail
@@ -199,7 +196,6 @@ sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$Confi
              "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" \
              "$ConfigDir/Unbound"
 
-# DB-01: Enforce UID 70 ownership for Postgres-Alpine to drop DAC_OVERRIDE STIG violation
 sudo chown -R 70:70 "$ConfigDir/Postgres"
 
 sudo touch "${ConfigDir}/Traefik/acme.json"
@@ -359,6 +355,7 @@ EOF
     sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
 fi
 
+# BOOT-06: chroot: "" explicitly disables the implicit Alpine path jail to prevent key panics.
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
   num-threads: 1
@@ -369,6 +366,7 @@ server:
   do-tcp: yes
   root-hints: "/opt/unbound/etc/unbound/root.hints"
   auto-trust-anchor-file: "/opt/unbound/etc/unbound/keys/root.key"
+  chroot: ""
   harden-glue: yes
   harden-dnssec-stripped: yes
   use-caps-for-id: no
@@ -428,7 +426,6 @@ users:
 EOF
 fi
 
-# IAM-04: Execute strict UID 1000 permissions AFTER root 'tee' file generation.
 sudo chown -R 1000:1000 "$ConfigDir/Authelia"
 
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
@@ -533,6 +530,8 @@ services:
   auth_db:
     image: ${IMG_POSTGRES}
     container_name: auth_db
+    # SYS-01: Tini reaper injected for Alpine PID 1 to prevent zombie PID exhaustion
+    init: true
     networks: [auth_network]
     environment:
       POSTGRES_USER: authelia
@@ -577,20 +576,20 @@ services:
   unbound_dns:
     image: ${IMG_UNBOUND}
     container_name: unbound_dns
+    # SYS-01: Tini reaper injected for Alpine PID 1 to prevent zombie PID exhaustion
+    init: true
     networks:
       vpn_network: { ipv4_address: 10.99.0.11 }
     volumes:
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - unbound_keys:/opt/unbound/etc/unbound/keys:rw
-    # BOOT-04: Enforce IANA DS string fallback if unbound-anchor fails to prevent fatal syntax panic.
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE, SETGID, SETUID, CHOWN, DAC_OVERRIDE]
     security_opt: [no-new-privileges:true]
     logging: *default-logging
     healthcheck:
-      # HEALTH-13: Replaced raw localhost ping with explicit domain request to eliminate false-negative exits.
       test: ["CMD-SHELL", "drill -p 53 \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
       interval: 10s
       timeout: 5s
@@ -610,7 +609,10 @@ services:
       - "traefik.http.routers.pihole.entrypoints=websecure"
       - "traefik.http.routers.pihole.tls.certresolver=cloudflare"
       - "traefik.http.services.pihole.loadbalancer.server.port=80"
-      - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file"
+      # UX-02: Intercept root requests and natively redirect to the /admin operational path
+      - "traefik.http.middlewares.pihole-redirect.redirectregex.regex=^https://pihole\\.\${INTERNAL_DOMAIN}/\$"
+      - "traefik.http.middlewares.pihole-redirect.redirectregex.replacement=https://pihole.\${INTERNAL_DOMAIN}/admin/"
+      - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file,pihole-redirect"
       - "traefik.docker.network=sovereign_node_proxy_network"
     environment:
       - WEBPASSWORD_FILE=/run/secrets/pihole_pass
