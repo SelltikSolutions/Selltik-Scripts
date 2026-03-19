@@ -116,8 +116,6 @@ Themes:
         Documents his sense of humor. He kept the local network's
         morale high. Even when running a serious payload, he knew
         how to inject a little levity into the deployment.
-      ConnectingVerses:
-        - "Ecclesiastes 3:4"
 
   CoreProtocolLove:
     - Reference: "1 Corinthians 13:4-7"
@@ -143,6 +141,35 @@ Themes:
         are deprecated at the end of life, this is the only service
         that remains running in perpetuity.
 
+  SurvivingNodesComfort:
+    - Reference: "Psalm 9:9 and Psalm 46:1"
+      Text: >
+        The Lord is a refuge for the oppressed, a stronghold in times
+        of trouble. God is our refuge and strength, an ever-present
+        help in trouble.
+      Notes: >
+        Tactical terminology. Your uncle understood what a 'stronghold'
+        was. This reminds the family that God provides the ultimate
+        defensive perimeter during this heavy system downtime.
+
+    - Reference: "Philippians 4:7"
+      Text: >
+        And the peace of God, which transcends all understanding,
+        will guard your hearts and your minds in Christ Jesus.
+      Notes: >
+        The ultimate firewall. 'Guarding' hearts and minds is an
+        active, protective protocol against the crushing weight of
+        grief and system panic.
+
+    - Reference: "Psalm 73:26"
+      Text: >
+        My flesh and my heart may fail, but God is the strength of
+        my heart and my portion forever.
+      Notes: >
+        Acknowledges the stark reality of physical hardware failure,
+        while confirming the eternal persistence and stability of the
+        backend architecture.
+
   HardwareMigration:
     - Reference: "2 Corinthians 5:1"
       Text: >
@@ -154,15 +181,6 @@ Themes:
         physical chassis is traded for a permanent, flawless build.
 
   WholeWithTheLord:
-    - Reference: "1 Corinthians 13:12"
-      Text: >
-        For now we see only a reflection as in a mirror; then we shall
-        see face to face. Now I know in part; then I shall know fully,
-        even as I am fully known.
-      Notes: >
-        Highlights the transition from our fragmented, broken reality
-        to being entirely 'Whole' and fully known by the Creator.
-
     - Reference: "Revelation 21:4"
       Text: >
         He will wipe every tear from their eyes. There will be no more
@@ -171,3 +189,5 @@ Themes:
       Notes: >
         The final, secure state of the believer. A complete wipe of all
         corrupted data, illness, and pain. He is completely Whole.
+        (Note: 1 Corinthians 13:12 was merged into CoreProtocolLove
+        conceptually to reduce redundancy).
