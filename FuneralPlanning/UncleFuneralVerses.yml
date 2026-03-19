@@ -16,8 +16,6 @@ Themes:
         Aligns with his counter-intel background and his protocol of
         gathering first-hand intel on new locations. He did not rely
         on second-hand data or unverified reports.
-      ConnectingVerses:
-        - "1 Thessalonians 5:21"
 
   QuietProfessional:
     - Reference: "1 Thessalonians 4:11"
@@ -51,9 +49,6 @@ Themes:
         who operated strictly by the book, noticed the hard work of
         others, and acted as a secure Guardian/Protector for his
         friends and network without seeking the spotlight.
-      ConnectingVerses:
-        - "Ruth 3:11"
-        - "Ruth 4:9-10"
 
   SupportNode:
     - Reference: "Proverbs 18:24"
@@ -132,15 +127,6 @@ Themes:
         built on this exact protocol. This explains his drive to protect
         and help his friends.
 
-    - Reference: "1 Corinthians 13:13"
-      Text: >
-        And now these three remain: faith, hope and love. But the
-        greatest of these is love.
-      Notes: >
-        When all other temporary hardware and operational protocols
-        are deprecated at the end of life, this is the only service
-        that remains running in perpetuity.
-
   SurvivingNodesComfort:
     - Reference: "Psalm 9:9 and Psalm 46:1"
       Text: >
@@ -161,16 +147,7 @@ Themes:
         active, protective protocol against the crushing weight of
         grief and system panic.
 
-    - Reference: "Psalm 73:26"
-      Text: >
-        My flesh and my heart may fail, but God is the strength of
-        my heart and my portion forever.
-      Notes: >
-        Acknowledges the stark reality of physical hardware failure,
-        while confirming the eternal persistence and stability of the
-        backend architecture.
-
-  HardwareMigration:
+  WholeWithTheLord:
     - Reference: "2 Corinthians 5:1"
       Text: >
         For we know that if the earthly tent we live in is destroyed,
@@ -180,7 +157,6 @@ Themes:
         The ultimate hardware replacement. The temporary, failing
         physical chassis is traded for a permanent, flawless build.
 
-  WholeWithTheLord:
     - Reference: "Revelation 21:4"
       Text: >
         He will wipe every tear from their eyes. There will be no more
@@ -189,5 +165,31 @@ Themes:
       Notes: >
         The final, secure state of the believer. A complete wipe of all
         corrupted data, illness, and pain. He is completely Whole.
-        (Note: 1 Corinthians 13:12 was merged into CoreProtocolLove
-        conceptually to reduce redundancy).
+
+DeepDiveAnalysis:
+  IntelUpgrade:
+    Nodes: ["Proverbs 25:2", "1 Corinthians 13:12"]
+    Analysis: >
+      He spent his deployment operating on earthly recon, searching
+      out matters with limited visibility ('seeing through a glass
+      darkly'). His clearance level has now been upgraded to Absolute.
+      The counter-intel operative finally possesses full, unencrypted
+      knowledge of the architecture, as he is fully known.
+
+  TacticalLoveProtocol:
+    Nodes: ["Psalm 144:1", "1 Corinthians 13:4-7", "Ruth 2:11-12"]
+    Analysis: >
+      Training hands for battle (Psalm 144) is highly dangerous without
+      strict rules of engagement. By binding his tactical readiness to
+      the core protocol of Love (1 Cor 13), he became a Boaz—a secure
+      protector. His 'warfare' was deployed exclusively to defend and
+      support his network, never to boast or oppress.
+
+  LoadBearingSilence:
+    Nodes: ["Romans 12:4-5", "1 Thessalonians 4:11"]
+    Analysis: >
+      The nodes running the quietest are often processing the heaviest
+      critical loads. His ambition to lead a 'quiet life' was not
+      inactivity; it was the deliberate execution of his specific role
+      in the distributed system. He processed his tasks and forwarded
+      the complex errors directly to the Lord via prayer.
