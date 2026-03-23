@@ -1,9 +1,16 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.27-OMEGA-DIRECTIVE
+#  Version: v10.28-TERMINUS-ABSOLUTE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Terminus Absolute Fixes:
+#  - SEC-09: Purged curl-pipe-bash Docker installer. Implemented strict 
+#            GPG-verified repository injection for supply-chain integrity.
+#  - UX-03: Enforced immediate 'exit 0' upon Scorched Earth cancellation to 
+#           prevent unintended deployment continuation and state corruption.
+#  - ARCH-02: Restored multi-OS package manager logic (dnf/pacman) to support 
+#             RHEL, Fedora, and Arch deployments without artificial fatal exits.
 #  Omega Directive Fixes:
 #  - BOOT-06: Explicitly disabled implicit chroot in Unbound to prevent 
 #             recursive pathing panics when loading root.key trust anchors.
@@ -53,14 +60,24 @@ DetectOsFamily() {
         OS_ID=${ID:-unknown}
         OS_FAMILY=${ID_LIKE:-$OS_ID}
         OS_FAMILY=${OS_FAMILY,,}
+        OS_ID=${OS_ID,,}
     else
         echo "[FATAL] /etc/os-release missing."; exit 1
     fi
 
+    # ARCH-02: Universal package manager mapping restored
     if [[ "$OS_FAMILY" == *"debian"* ]] || [[ "$OS_ID" == "parrot" ]] || [[ "$OS_ID" == "ubuntu" ]]; then
         PkgManager="apt-get"
         UpdateCmd="apt-get update -y -q"
         InstallCmd="DEBIAN_FRONTEND=noninteractive apt-get install -y -q"
+    elif [[ "$OS_FAMILY" == *"rhel"* ]] || [[ "$OS_FAMILY" == *"fedora"* ]]; then
+        PkgManager="dnf"
+        UpdateCmd="dnf check-update -q || true"
+        InstallCmd="dnf install -y -q"
+    elif [[ "$OS_FAMILY" == *"arch"* ]]; then
+        PkgManager="pacman"
+        UpdateCmd="pacman -Sy --noconfirm --quiet"
+        InstallCmd="pacman -S --noconfirm --quiet"
     else
         echo "[FATAL] Unsupported OS Family: $OS_FAMILY."; exit 1
     fi
@@ -86,7 +103,16 @@ CheckDependencies() {
 
     eval "$UpdateCmd" > /dev/null 2>&1 || true
     
-    local deps="curl jq openssl cron tzdata dnsutils wget"
+    # OS-agnostic dependency mapping
+    local deps="curl jq openssl tzdata wget"
+    if [[ "$PkgManager" == "apt-get" ]]; then
+        deps="$deps cron dnsutils"
+    elif [[ "$PkgManager" == "dnf" ]]; then
+        deps="$deps cronie bind-utils"
+    elif [[ "$PkgManager" == "pacman" ]]; then
+        deps="$deps cronie bind"
+    fi
+
     for dep in $deps; do
         if ! command -v "$dep" &> /dev/null; then
             PrintMsg "226" "Installing missing dependency: $dep"
@@ -98,21 +124,44 @@ CheckDependencies() {
         fi
     done
 
+    # SEC-09: Strict GPG-verified repository injection replacing insecure curl-pipe-bash
     if ! command -v docker &> /dev/null || ! docker compose version &> /dev/null; then
-        PrintMsg "214" "Docker Engine missing. Initiating bare-metal hypervisor provision..."
-        if ! curl -fsSL --connect-timeout 10 https://get.docker.com | sudo sh > /dev/null 2>&1; then
-            PrintMsg "196" "[FATAL] Failed to natively provision Docker Engine. Halting."
-            exit 1
+        PrintMsg "214" "Docker Engine missing. Initiating secure GPG-verified hypervisor provision..."
+        if [[ "$PkgManager" == "apt-get" ]]; then
+            sudo install -m 0755 -d /etc/apt/keyrings
+            local os_repo="${OS_ID}"
+            [ "$OS_ID" == "parrot" ] && os_repo="debian"
+            sudo curl -fsSL "https://download.docker.com/linux/${os_repo}/gpg" -o /etc/apt/keyrings/docker.asc
+            sudo chmod a+r /etc/apt/keyrings/docker.asc
+            
+            local codename=$(. /etc/os-release && echo "${VERSION_CODENAME:-}")
+            [ -z "$codename" ] || [ "$codename" == "rolling" ] && codename="bullseye"
+            
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/${os_repo} $codename stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            eval "$UpdateCmd" > /dev/null 2>&1
+            eval "$InstallCmd docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin" > /dev/null 2>&1 || { PrintMsg "196" "[FATAL] Failed to provision Docker via APT."; exit 1; }
+        
+        elif [[ "$PkgManager" == "dnf" ]]; then
+            sudo dnf config-manager --add-repo=https://download.docker.com/linux/centos/docker-ce.repo > /dev/null 2>&1
+            eval "$InstallCmd docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin" > /dev/null 2>&1 || { PrintMsg "196" "[FATAL] Failed to provision Docker via DNF."; exit 1; }
+        
+        elif [[ "$PkgManager" == "pacman" ]]; then
+            eval "$InstallCmd docker docker-compose" > /dev/null 2>&1 || { PrintMsg "196" "[FATAL] Failed to provision Docker via Pacman."; exit 1; }
         fi
+        
         sudo systemctl enable --now docker > /dev/null 2>&1 || true
+        sudo systemctl start docker > /dev/null 2>&1 || true
     fi
 
+    # Optional UI layer
     if ! command -v gum &> /dev/null; then
-        sudo mkdir -p /etc/apt/keyrings
-        curl --connect-timeout 5 -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/charm.gpg || true
-        echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list > /dev/null
-        eval "$UpdateCmd" > /dev/null 2>&1 || true
-        eval "$InstallCmd gum" > /dev/null 2>&1 || true
+        if [[ "$PkgManager" == "apt-get" ]]; then
+            sudo mkdir -p /etc/apt/keyrings
+            curl --connect-timeout 5 -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/charm.gpg || true
+            echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list > /dev/null
+            eval "$UpdateCmd" > /dev/null 2>&1 || true
+            eval "$InstallCmd gum" > /dev/null 2>&1 || true
+        fi
     fi
 }
 
@@ -182,8 +231,10 @@ ExecuteAnnihilation() {
             PrintMsg "82" "✔ Earth scorched. Nothing survives."
             sleep 2
         else
-            PrintMsg "82" "✔ Scorched Earth aborted. Retaining persistent state."
+            PrintMsg "82" "✔ Scorched Earth aborted. Retaining persistent state and exiting safely."
             PurgeLegacyState
+            # UX-03: Execute immediate halt to prevent unintended state overwrites
+            exit 0
         fi
     fi
 }
@@ -355,7 +406,6 @@ EOF
     sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
 fi
 
-# BOOT-06: chroot: "" explicitly disables the implicit Alpine path jail to prevent key panics.
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
   num-threads: 1
@@ -530,7 +580,6 @@ services:
   auth_db:
     image: ${IMG_POSTGRES}
     container_name: auth_db
-    # SYS-01: Tini reaper injected for Alpine PID 1 to prevent zombie PID exhaustion
     init: true
     networks: [auth_network]
     environment:
@@ -576,7 +625,6 @@ services:
   unbound_dns:
     image: ${IMG_UNBOUND}
     container_name: unbound_dns
-    # SYS-01: Tini reaper injected for Alpine PID 1 to prevent zombie PID exhaustion
     init: true
     networks:
       vpn_network: { ipv4_address: 10.99.0.11 }
@@ -609,7 +657,6 @@ services:
       - "traefik.http.routers.pihole.entrypoints=websecure"
       - "traefik.http.routers.pihole.tls.certresolver=cloudflare"
       - "traefik.http.services.pihole.loadbalancer.server.port=80"
-      # UX-02: Intercept root requests and natively redirect to the /admin operational path
       - "traefik.http.middlewares.pihole-redirect.redirectregex.regex=^https://pihole\\.\${INTERNAL_DOMAIN}/\$"
       - "traefik.http.middlewares.pihole-redirect.redirectregex.replacement=https://pihole.\${INTERNAL_DOMAIN}/admin/"
       - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file,pihole-redirect"
