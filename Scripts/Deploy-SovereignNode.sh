@@ -1,24 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.31-ORPHAN-CLEANSE
+#  Version: v10.32-SYNTAX-ABSOLUTE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Syntax Absolute Fixes:
+#  - YAML-01: Converted Traefik regex labels from double to single quotes to 
+#             prevent YAML parser crashes (unknown escape character '\.').
 #  Orphan Cleanse Fixes:
-#  - DOCKER-04: Defensively obliterates premature Docker daemon directory orphans
-#               for file-based bind mounts to prevent 'Is a directory' tee crashes.
+#  - DOCKER-04: Defensively obliterates premature Docker daemon directory orphans.
 #  - CYCLE-06: Upgraded legacy purge commands to handle directory escalations.
 #  Aeon Absolute Fixes:
-#  - HEALTH-14: Hardened Unbound healthcheck to query 'internic.net' to prove
-#               true cryptographic recursion and upstream WAN egress.
-#  - ACME-01: Injected Let's Encrypt Staging API toggle and rate-limit warnings
-#             to prevent 168-hour domain lockouts during Scorched Earth testing.
-#  - CRON-12: Decoupled the Assimilation Watchdog from the weekly lifecycle
-#             update and injected it into an hourly cron loop for rapid healing.
-#  Eclipse Protocol Fixes:
-#  - CI-01: Injected strict file-existence validation for Node.env.
-#  - KERNEL-04: Restored host-level sysctl STIG armor via 99-SovereignNode.conf.
-#  - TIME-03: Bridged temporal synchronization to restart 'chronyd' on RHEL.
+#  - HEALTH-14: Hardened Unbound healthcheck to query 'internic.net'.
+#  - ACME-01: Injected Let's Encrypt Staging API toggle.
+#  - CRON-12: Decoupled Assimilation Watchdog into an hourly cron loop.
 # ==============================================================================
 
 set -euo pipefail
@@ -204,7 +199,6 @@ ExecuteAnnihilation() {
         PrintMsg "226" "This will VAPORIZE your PostgreSQL MFA Database, Let's Encrypt"
         PrintMsg "226" "Certificates, Pi-Hole telemetry, and ALL cryptographic secrets."
         PrintMsg "196" "There is no undo. You will be punished for your mistakes."
-        # ACME-01: Injection of Rate Limit warnings
         PrintMsg "196" "ACME WARNING: Let's Encrypt allows exactly 5 duplicate certs per week."
         PrintMsg "196" "If you repeatedly scorch this protocol, your domain will be locked out."
         echo ""
@@ -681,7 +675,6 @@ services:
     security_opt: [no-new-privileges:true]
     logging: *default-logging
     healthcheck:
-      # HEALTH-14: Explicit egress requirement. Resolving internic.net proves WAN connectivity and DNSSEC integrity.
       test: ["CMD-SHELL", "drill -p 53 internic.net @127.0.0.1 || exit 1"]
       interval: 10s
       timeout: 5s
@@ -696,15 +689,16 @@ services:
       vpn_network: { ipv4_address: 10.99.0.12 }
       proxy_network:
     labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)"
-      - "traefik.http.routers.pihole.entrypoints=websecure"
-      - "traefik.http.routers.pihole.tls.certresolver=cloudflare"
-      - "traefik.http.services.pihole.loadbalancer.server.port=80"
-      - "traefik.http.middlewares.pihole-redirect.redirectregex.regex=^https://pihole\\.\${INTERNAL_DOMAIN}/\$"
-      - "traefik.http.middlewares.pihole-redirect.redirectregex.replacement=https://pihole.\${INTERNAL_DOMAIN}/admin/"
-      - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file,pihole-redirect"
-      - "traefik.docker.network=sovereign_node_proxy_network"
+      # YAML-01: Migrated Traefik labels to single-quotes to prevent strict YAML parser escapes (\.) from breaking ignition
+      - 'traefik.enable=true'
+      - 'traefik.http.routers.pihole.rule=Host(`pihole.\${INTERNAL_DOMAIN}`)'
+      - 'traefik.http.routers.pihole.entrypoints=websecure'
+      - 'traefik.http.routers.pihole.tls.certresolver=cloudflare'
+      - 'traefik.http.services.pihole.loadbalancer.server.port=80'
+      - 'traefik.http.middlewares.pihole-redirect.redirectregex.regex=^https://pihole\.\${INTERNAL_DOMAIN}/\$\$'
+      - 'traefik.http.middlewares.pihole-redirect.redirectregex.replacement=https://pihole.\${INTERNAL_DOMAIN}/admin/'
+      - 'traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file,pihole-redirect'
+      - 'traefik.docker.network=sovereign_node_proxy_network'
     environment:
       - WEBPASSWORD_FILE=/run/secrets/pihole_pass
       - PIHOLE_DNS_=10.99.0.11#53
@@ -778,7 +772,6 @@ services:
       - "--certificatesresolvers.cloudflare.acme.storage=/acme.json"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge=true"
-      # ACME-01: Uncomment the line below during heavy architectural testing to avoid 168-hour Let's Encrypt rate limits.
       # - "--certificatesresolvers.cloudflare.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
