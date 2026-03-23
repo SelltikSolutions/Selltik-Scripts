@@ -1,19 +1,21 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.32-SYNTAX-ABSOLUTE
+#  Version: v10.33-HEALTH-ABSOLUTE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Health Absolute Fixes:
+#  - HEALTH-15: Replaced fragile 'wget' shell healthcheck with Authelia's native 
+#               compiled 'authelia healthcheck' binary to prevent false-negative 
+#               health failures in stripped alpine base images.
+#  - DB-02: Explicitly declared the postgres password file in the Authelia YAML 
+#           to prevent parser race conditions before env var ingestion.
 #  Syntax Absolute Fixes:
 #  - YAML-01: Converted Traefik regex labels from double to single quotes to 
 #             prevent YAML parser crashes (unknown escape character '\.').
 #  Orphan Cleanse Fixes:
 #  - DOCKER-04: Defensively obliterates premature Docker daemon directory orphans.
 #  - CYCLE-06: Upgraded legacy purge commands to handle directory escalations.
-#  Aeon Absolute Fixes:
-#  - HEALTH-14: Hardened Unbound healthcheck to query 'internic.net'.
-#  - ACME-01: Injected Let's Encrypt Staging API toggle.
-#  - CRON-12: Decoupled Assimilation Watchdog into an hourly cron loop.
 # ==============================================================================
 
 set -euo pipefail
@@ -470,6 +472,7 @@ server:
   local-data: "${INTERNAL_DOMAIN}. A 10.99.0.13"
 EOF
 
+# DB-02: Explicitly map password_file in Authelia configuration to prevent race conditions
 sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -480,6 +483,7 @@ storage:
     port: 5432
     database: authelia
     username: authelia
+    password_file: /run/secrets/postgres_password
 authentication_backend:
   password_reset: { disable: true }
   file: { path: /config/users_database.yml }
@@ -653,7 +657,8 @@ services:
     security_opt: [no-new-privileges:true]
     logging: *default-logging
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --spider http://127.0.0.1:9091/api/health || exit 1"]
+      # HEALTH-15: Replaced fragile alpine shell wget with native healthcheck binary.
+      test: ["CMD", "authelia", "healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -689,7 +694,6 @@ services:
       vpn_network: { ipv4_address: 10.99.0.12 }
       proxy_network:
     labels:
-      # YAML-01: Migrated Traefik labels to single-quotes to prevent strict YAML parser escapes (\.) from breaking ignition
       - 'traefik.enable=true'
       - 'traefik.http.routers.pihole.rule=Host(`pihole.\${INTERNAL_DOMAIN}`)'
       - 'traefik.http.routers.pihole.entrypoints=websecure'
