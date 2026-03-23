@@ -1,21 +1,24 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.29-ECLIPSE-PROTOCOL
+#  Version: v10.31-ORPHAN-CLEANSE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Orphan Cleanse Fixes:
+#  - DOCKER-04: Defensively obliterates premature Docker daemon directory orphans
+#               for file-based bind mounts to prevent 'Is a directory' tee crashes.
+#  - CYCLE-06: Upgraded legacy purge commands to handle directory escalations.
+#  Aeon Absolute Fixes:
+#  - HEALTH-14: Hardened Unbound healthcheck to query 'internic.net' to prove
+#               true cryptographic recursion and upstream WAN egress.
+#  - ACME-01: Injected Let's Encrypt Staging API toggle and rate-limit warnings
+#             to prevent 168-hour domain lockouts during Scorched Earth testing.
+#  - CRON-12: Decoupled the Assimilation Watchdog from the weekly lifecycle
+#             update and injected it into an hourly cron loop for rapid healing.
 #  Eclipse Protocol Fixes:
-#  - CI-01: Injected strict file-existence validation for Node.env prior to 
-#           sourcing, preventing unhandled Bash panics in headless CI/CD states.
-#  - KERNEL-04: Restored host-level sysctl STIG armor (SYN cookies, redirect 
-#               denial) via /etc/sysctl.d/99-sovereign-node.conf.
-#  - TIME-03: Bridged temporal synchronization to explicitly restart 'chronyd' 
-#             on enterprise distributions (RHEL/Fedora) after UTC alignment.
-#  Terminus Absolute Fixes:
-#  - SEC-09: Purged curl-pipe-bash Docker installer. Implemented strict 
-#            GPG-verified repository injection for supply-chain integrity.
-#  - UX-03: Enforced immediate 'exit 0' upon Scorched Earth cancellation.
-#  - ARCH-02: Restored multi-OS package manager logic (dnf/pacman).
+#  - CI-01: Injected strict file-existence validation for Node.env.
+#  - KERNEL-04: Restored host-level sysctl STIG armor via 99-SovereignNode.conf.
+#  - TIME-03: Bridged temporal synchronization to restart 'chronyd' on RHEL.
 # ==============================================================================
 
 set -euo pipefail
@@ -31,7 +34,7 @@ StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 EnvFile="${StackDir}/Node.env"
 LogsDir="/opt/Docker/Logs/${StackName}"
-ComposeFile="${StackDir}/docker-compose.yml"
+ComposeFile="${StackDir}/DockerCompose.yml"
 LockFile="/var/lock/sovereign_node.lock"
 
 # Atomic execution lock
@@ -173,18 +176,19 @@ PurgeLegacyState() {
         [ -f "$EnvFile" ] && EnvFlag="--env-file $EnvFile"
 
         if [ -f "$ComposeFile" ]; then
-            sudo docker compose $EnvFlag down --remove-orphans > /dev/null 2>&1 || true
-        fi
-        if [ -f "${StackDir}/DockerCompose.yml" ]; then
             sudo docker compose $EnvFlag -f DockerCompose.yml down --remove-orphans > /dev/null 2>&1 || true
-            sudo rm -f "${StackDir}/DockerCompose.yml"
+        fi
+        if [ -f "${StackDir}/docker-compose.yml" ]; then
+            sudo docker compose $EnvFlag -f docker-compose.yml down --remove-orphans > /dev/null 2>&1 || true
+            sudo rm -f "${StackDir}/docker-compose.yml"
         fi
 
-        sudo rm -f "${ConfigDir}/Traefik/Dynamic"/DynamicRules*.yml 2>/dev/null || true
-        sudo rm -f "${ConfigDir}/Unbound/UnboundConfig.conf" 2>/dev/null || true
-        sudo rm -f "${ConfigDir}/Unbound/RootHints.txt" 2>/dev/null || true
-        sudo rm -f "${ConfigDir}/Authelia/configuration.yml" 2>/dev/null || true
-        sudo rm -f "${StackDir}/docker-compose.yml" 2>/dev/null || true
+        # CYCLE-06: Forcing recursive removal to annihilate Docker-spawned directories
+        sudo rm -rf "${ConfigDir}/Traefik/Dynamic"/DynamicRules*.yml 2>/dev/null || true
+        sudo rm -rf "${ConfigDir}/Unbound/UnboundConfig.conf" 2>/dev/null || true
+        sudo rm -rf "${ConfigDir}/Unbound/RootHints.txt" 2>/dev/null || true
+        sudo rm -rf "${ConfigDir}/Authelia/configuration.yml" 2>/dev/null || true
+        sudo rm -rf "${StackDir}/DockerCompose.yml" 2>/dev/null || true
     fi
 }
 
@@ -200,6 +204,9 @@ ExecuteAnnihilation() {
         PrintMsg "226" "This will VAPORIZE your PostgreSQL MFA Database, Let's Encrypt"
         PrintMsg "226" "Certificates, Pi-Hole telemetry, and ALL cryptographic secrets."
         PrintMsg "196" "There is no undo. You will be punished for your mistakes."
+        # ACME-01: Injection of Rate Limit warnings
+        PrintMsg "196" "ACME WARNING: Let's Encrypt allows exactly 5 duplicate certs per week."
+        PrintMsg "196" "If you repeatedly scorch this protocol, your domain will be locked out."
         echo ""
         
         confirm="no"
@@ -216,7 +223,7 @@ ExecuteAnnihilation() {
             local EnvFlag=""
             [ -f "$EnvFile" ] && EnvFlag="--env-file $EnvFile"
             if [ -f "$ComposeFile" ]; then
-                sudo docker compose $EnvFlag down -v --remove-orphans > /dev/null 2>&1 || true
+                sudo docker compose $EnvFlag -f DockerCompose.yml down -v --remove-orphans > /dev/null 2>&1 || true
             fi
             cd /tmp
             sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" \
@@ -238,7 +245,7 @@ ExecuteAnnihilation
 # KERNEL-04: STIG-COMPLIANT HOST ARMOR
 # ==============================================================================
 PrintMsg "240" "Forging STIG-compliant host kernel armor..."
-sudo tee /etc/sysctl.d/99-sovereign-node.conf > /dev/null << 'EOF'
+sudo tee /etc/sysctl.d/99-SovereignNode.conf > /dev/null << 'EOF'
 # STIG: Protect against SYN flood attacks
 net.ipv4.tcp_syncookies = 1
 # STIG: Ignore ICMP redirects to prevent routing table manipulation
@@ -262,6 +269,19 @@ sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$Confi
              "$ConfigDir/Unbound"
 
 sudo chown -R 70:70 "$ConfigDir/Postgres"
+
+# DOCKER-04: Defensively eradicate Docker-created directory orphans for file bind-mounts
+for OrphanFile in "${ConfigDir}/Traefik/acme.json" \
+                  "${ConfigDir}/Unbound/UnboundConfig.conf" \
+                  "${ConfigDir}/Unbound/RootHints.txt" \
+                  "${ConfigDir}/Authelia/configuration.yml" \
+                  "${ConfigDir}/Authelia/users_database.yml" \
+                  "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml"; do
+    if [ -d "$OrphanFile" ]; then
+        PrintMsg "214" "⚠️  Docker daemon orphaned directory detected at $OrphanFile. Obliterating..."
+        sudo rm -rf "$OrphanFile"
+    fi
+done
 
 sudo touch "${ConfigDir}/Traefik/acme.json"
 sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
@@ -373,7 +393,6 @@ EOF
     sudo chmod 600 "$EnvFile"
 fi
 
-# CI-01: Strict existence validation to prevent headless Bash panic on missing .env file.
 if [ ! -f "$EnvFile" ]; then
     PrintMsg "196" "[FATAL] Execution state demands a sourced environment, but $EnvFile is missing. Halting."
     exit 1
@@ -383,7 +402,6 @@ set +u
 source "$EnvFile"
 set -u
 
-# TIME-03: Bridged temporal daemon sweeps for enterprise compatibility (RHEL/Fedora/ParrotOS)
 sudo timedatectl set-timezone UTC
 if systemctl is-active --quiet systemd-timesyncd; then 
     sudo systemctl restart systemd-timesyncd
@@ -663,7 +681,8 @@ services:
     security_opt: [no-new-privileges:true]
     logging: *default-logging
     healthcheck:
-      test: ["CMD-SHELL", "drill -p 53 \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
+      # HEALTH-14: Explicit egress requirement. Resolving internic.net proves WAN connectivity and DNSSEC integrity.
+      test: ["CMD-SHELL", "drill -p 53 internic.net @127.0.0.1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -759,6 +778,8 @@ services:
       - "--certificatesresolvers.cloudflare.acme.storage=/acme.json"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge=true"
+      # ACME-01: Uncomment the line below during heavy architectural testing to avoid 168-hour Let's Encrypt rate limits.
+      # - "--certificatesresolvers.cloudflare.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     security_opt: [no-new-privileges:true]
@@ -770,7 +791,7 @@ sudo chown -R 0:0 "$StackDir"
 sudo chmod 600 "$ComposeFile" "$EnvFile"
 
 # ==============================================================================
-# CRON-10 & ROUTE-17: AUTOMATED LIFECYCLE & SELF-HEALING BRIDGE
+# CRON-10: WEEKLY LIFECYCLE APPLIANCE UPDATER
 # ==============================================================================
 UpdaterScript="${ScriptsDir}/UpdateSovereignNode.sh"
 sudo tee "${UpdaterScript}.tmp" > /dev/null << EOF
@@ -787,28 +808,15 @@ cd "${StackDir}" || exit 1
 curl -sS --connect-timeout 10 https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
 if grep -q "A.ROOT-SERVERS.NET" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
     mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
-    docker compose --env-file "${EnvFile}" restart unbound_dns
+    docker compose --env-file "${EnvFile}" -f DockerCompose.yml restart unbound_dns
 else
     logger -t SovereignNodeUpdater "ERROR: Root hints fetch corrupted. Retaining existing cache."
     rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
 fi
 
-docker compose --env-file "${EnvFile}" pull --quiet
-docker compose --env-file "${EnvFile}" up -d --remove-orphans
+docker compose --env-file "${EnvFile}" -f DockerCompose.yml pull --quiet
+docker compose --env-file "${EnvFile}" -f DockerCompose.yml up -d --remove-orphans
 docker image prune -af --filter "until=168h"
-
-for manifest in "${ConfigDir}/Traefik/Dynamic/"*_assimilation.yml; do
-    [ -e "\$manifest" ] || continue
-    alien=\$(grep "^# ALIEN_CONTAINER: " "\$manifest" | cut -d' ' -f3 || true)
-    [ -z "\$alien" ] && continue
-    if docker ps --format '{{.Names}}' | grep -q "^\${alien}\$"; then
-        if ! docker inspect "\$alien" --format '{{json .NetworkSettings.Networks}}' | grep -q "sovereign_node_proxy_network"; then
-            logger -t SovereignNodeUpdater "Healing broken Zero-Trust bridge for alien: \$alien"
-            docker network connect sovereign_node_proxy_network "\$alien" || true
-        fi
-    fi
-done
-
 echo "[Sovereign Node] Update cycle complete."
 EOF
 
@@ -816,9 +824,36 @@ sudo chmod 700 "${UpdaterScript}.tmp"
 sudo mv "${UpdaterScript}.tmp" "$UpdaterScript"
 sudo ln -sf "$UpdaterScript" /etc/cron.weekly/sovereign-node-update
 
+# ==============================================================================
+# CRON-12: HOURLY ASSIMILATION WATCHDOG (HIGH-FREQUENCY HEALING)
+# ==============================================================================
+WatchdogScript="${ScriptsDir}/WatchdogSovereignNode.sh"
+sudo tee "${WatchdogScript}.tmp" > /dev/null << EOF
+#!/bin/bash
+# Sovereign Node Autonomous Assimilation Watchdog
+# Managed by DeploySovereignNode.sh
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+for manifest in "${ConfigDir}/Traefik/Dynamic/"*_assimilation.yml; do
+    [ -e "\$manifest" ] || continue
+    alien=\$(grep "^# ALIEN_CONTAINER: " "\$manifest" | cut -d' ' -f3 || true)
+    [ -z "\$alien" ] && continue
+    if docker ps --format '{{.Names}}' | grep -q "^\${alien}\$"; then
+        if ! docker inspect "\$alien" --format '{{json .NetworkSettings.Networks}}' | grep -q "sovereign_node_proxy_network"; then
+            logger -t SovereignNodeWatchdog "Healing broken Zero-Trust bridge for alien: \$alien"
+            docker network connect sovereign_node_proxy_network "\$alien" || true
+        fi
+    fi
+done
+EOF
+
+sudo chmod 700 "${WatchdogScript}.tmp"
+sudo mv "${WatchdogScript}.tmp" "$WatchdogScript"
+sudo ln -sf "$WatchdogScript" /etc/cron.hourly/sovereign-node-watchdog
+
 # Ignition
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified Sovereign Node..."; fi
-cd "$StackDir" && sudo docker compose --env-file "$EnvFile" up -d --remove-orphans
+cd "$StackDir" && sudo docker compose --env-file "$EnvFile" -f DockerCompose.yml up -d --remove-orphans
 
 # ==============================================================================
 # ROUTE-14: LIVE ASSIMILATION ENGINE (POST-IGNITION)
