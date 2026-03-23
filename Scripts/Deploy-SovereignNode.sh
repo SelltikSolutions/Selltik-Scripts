@@ -1,9 +1,12 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.34-VOID-ABSOLUTE
+#  Version: v10.35-PARSER-ABSOLUTE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Parser Absolute Fixes:
+#  - BASH-04: Escaped literal backticks in Pi-Hole Traefik labels to prevent
+#             fatal command-substitution panics during Bash heredoc evaluation.
 #  Void Absolute Fixes:
 #  - IAM-06: Injected strict 'user: "1000:1000"' directive into Authelia to 
 #            prevent root-level capability panics on unprivileged volumes.
@@ -649,7 +652,6 @@ services:
   authelia:
     image: ${IMG_AUTHELIA}
     container_name: authelia
-    # IAM-06: Explicit user definition to align with host UID/GID unprivileged architecture
     user: "1000:1000"
     networks: [proxy_network, auth_network]
     volumes: [${ConfigDir}/Authelia:/config]
@@ -701,8 +703,9 @@ services:
       vpn_network: { ipv4_address: 10.99.0.12 }
       proxy_network:
     labels:
+      # BASH-04: Escaped backticks inside single quotes to prevent shell execution
       - 'traefik.enable=true'
-      - 'traefik.http.routers.pihole.rule=Host(`pihole.\${INTERNAL_DOMAIN}`)'
+      - 'traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)'
       - 'traefik.http.routers.pihole.entrypoints=websecure'
       - 'traefik.http.routers.pihole.tls.certresolver=cloudflare'
       - 'traefik.http.services.pihole.loadbalancer.server.port=80'
@@ -763,7 +766,6 @@ services:
     environment:
       - CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token
     depends_on:
-      # ROUTE-15: Authelia dependency severed. Proxy routes survive IAM failure.
       docker_socket_proxy: { condition: service_healthy }
     command: 
       - "--api.dashboard=true"
@@ -783,7 +785,6 @@ services:
       - "--certificatesresolvers.cloudflare.acme.storage=/acme.json"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge=true"
-      # - "--certificatesresolvers.cloudflare.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     security_opt: [no-new-privileges:true]
