@@ -1,21 +1,23 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.33-HEALTH-ABSOLUTE
+#  Version: v10.34-VOID-ABSOLUTE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Void Absolute Fixes:
+#  - IAM-06: Injected strict 'user: "1000:1000"' directive into Authelia to 
+#            prevent root-level capability panics on unprivileged volumes.
+#  - ROUTE-15: Severed Traefik's hard dependency on Authelia to ensure the 
+#              edge routing plane survives IAM container failures.
+#  - DOCKER-05: Reverted Compose nomenclature to 'docker-compose.yml' to 
+#               restore native CLI muscle memory and operational fluidity.
 #  Health Absolute Fixes:
-#  - HEALTH-15: Replaced fragile 'wget' shell healthcheck with Authelia's native 
-#               compiled 'authelia healthcheck' binary to prevent false-negative 
-#               health failures in stripped alpine base images.
-#  - DB-02: Explicitly declared the postgres password file in the Authelia YAML 
-#           to prevent parser race conditions before env var ingestion.
+#  - HEALTH-15: Replaced fragile 'wget' shell healthcheck with native binary.
+#  - DB-02: Explicitly declared postgres password_file to prevent parser races.
 #  Syntax Absolute Fixes:
-#  - YAML-01: Converted Traefik regex labels from double to single quotes to 
-#             prevent YAML parser crashes (unknown escape character '\.').
+#  - YAML-01: Converted Traefik regex labels to single-quotes.
 #  Orphan Cleanse Fixes:
 #  - DOCKER-04: Defensively obliterates premature Docker daemon directory orphans.
-#  - CYCLE-06: Upgraded legacy purge commands to handle directory escalations.
 # ==============================================================================
 
 set -euo pipefail
@@ -31,7 +33,7 @@ StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 EnvFile="${StackDir}/Node.env"
 LogsDir="/opt/Docker/Logs/${StackName}"
-ComposeFile="${StackDir}/DockerCompose.yml"
+ComposeFile="${StackDir}/docker-compose.yml"
 LockFile="/var/lock/sovereign_node.lock"
 
 # Atomic execution lock
@@ -173,19 +175,20 @@ PurgeLegacyState() {
         [ -f "$EnvFile" ] && EnvFlag="--env-file $EnvFile"
 
         if [ -f "$ComposeFile" ]; then
-            sudo docker compose $EnvFlag -f DockerCompose.yml down --remove-orphans > /dev/null 2>&1 || true
+            sudo docker compose $EnvFlag down --remove-orphans > /dev/null 2>&1 || true
         fi
-        if [ -f "${StackDir}/docker-compose.yml" ]; then
-            sudo docker compose $EnvFlag -f docker-compose.yml down --remove-orphans > /dev/null 2>&1 || true
-            sudo rm -f "${StackDir}/docker-compose.yml"
+        
+        # Sweep for legacy PascalCase naming
+        if [ -f "${StackDir}/DockerCompose.yml" ]; then
+            sudo docker compose $EnvFlag -f DockerCompose.yml down --remove-orphans > /dev/null 2>&1 || true
+            sudo rm -f "${StackDir}/DockerCompose.yml"
         fi
 
-        # CYCLE-06: Forcing recursive removal to annihilate Docker-spawned directories
         sudo rm -rf "${ConfigDir}/Traefik/Dynamic"/DynamicRules*.yml 2>/dev/null || true
         sudo rm -rf "${ConfigDir}/Unbound/UnboundConfig.conf" 2>/dev/null || true
         sudo rm -rf "${ConfigDir}/Unbound/RootHints.txt" 2>/dev/null || true
         sudo rm -rf "${ConfigDir}/Authelia/configuration.yml" 2>/dev/null || true
-        sudo rm -rf "${StackDir}/DockerCompose.yml" 2>/dev/null || true
+        sudo rm -rf "$ComposeFile" 2>/dev/null || true
     fi
 }
 
@@ -219,6 +222,10 @@ ExecuteAnnihilation() {
             local EnvFlag=""
             [ -f "$EnvFile" ] && EnvFlag="--env-file $EnvFile"
             if [ -f "$ComposeFile" ]; then
+                sudo docker compose $EnvFlag down -v --remove-orphans > /dev/null 2>&1 || true
+            fi
+            # Purge legacy PascalCase if present
+            if [ -f "${StackDir}/DockerCompose.yml" ]; then
                 sudo docker compose $EnvFlag -f DockerCompose.yml down -v --remove-orphans > /dev/null 2>&1 || true
             fi
             cd /tmp
@@ -472,7 +479,6 @@ server:
   local-data: "${INTERNAL_DOMAIN}. A 10.99.0.13"
 EOF
 
-# DB-02: Explicitly map password_file in Authelia configuration to prevent race conditions
 sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -643,6 +649,8 @@ services:
   authelia:
     image: ${IMG_AUTHELIA}
     container_name: authelia
+    # IAM-06: Explicit user definition to align with host UID/GID unprivileged architecture
+    user: "1000:1000"
     networks: [proxy_network, auth_network]
     volumes: [${ConfigDir}/Authelia:/config]
     secrets: [postgres_password, authelia_jwt_secret, authelia_session_secret, authelia_storage_key]
@@ -657,7 +665,6 @@ services:
     security_opt: [no-new-privileges:true]
     logging: *default-logging
     healthcheck:
-      # HEALTH-15: Replaced fragile alpine shell wget with native healthcheck binary.
       test: ["CMD", "authelia", "healthcheck"]
       interval: 10s
       timeout: 5s
@@ -756,8 +763,8 @@ services:
     environment:
       - CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token
     depends_on:
+      # ROUTE-15: Authelia dependency severed. Proxy routes survive IAM failure.
       docker_socket_proxy: { condition: service_healthy }
-      authelia: { condition: service_healthy }
     command: 
       - "--api.dashboard=true"
       - "--api.insecure=false"
@@ -805,14 +812,14 @@ cd "${StackDir}" || exit 1
 curl -sS --connect-timeout 10 https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
 if grep -q "A.ROOT-SERVERS.NET" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
     mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
-    docker compose --env-file "${EnvFile}" -f DockerCompose.yml restart unbound_dns
+    docker compose --env-file "${EnvFile}" restart unbound_dns
 else
     logger -t SovereignNodeUpdater "ERROR: Root hints fetch corrupted. Retaining existing cache."
     rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
 fi
 
-docker compose --env-file "${EnvFile}" -f DockerCompose.yml pull --quiet
-docker compose --env-file "${EnvFile}" -f DockerCompose.yml up -d --remove-orphans
+docker compose --env-file "${EnvFile}" pull --quiet
+docker compose --env-file "${EnvFile}" up -d --remove-orphans
 docker image prune -af --filter "until=168h"
 echo "[Sovereign Node] Update cycle complete."
 EOF
@@ -850,7 +857,7 @@ sudo ln -sf "$WatchdogScript" /etc/cron.hourly/sovereign-node-watchdog
 
 # Ignition
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified Sovereign Node..."; fi
-cd "$StackDir" && sudo docker compose --env-file "$EnvFile" -f DockerCompose.yml up -d --remove-orphans
+cd "$StackDir" && sudo docker compose --env-file "$EnvFile" up -d --remove-orphans
 
 # ==============================================================================
 # ROUTE-14: LIVE ASSIMILATION ENGINE (POST-IGNITION)
