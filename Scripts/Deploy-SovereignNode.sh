@@ -1,23 +1,21 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.28-TERMINUS-ABSOLUTE
+#  Version: v10.29-ECLIPSE-PROTOCOL
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Eclipse Protocol Fixes:
+#  - CI-01: Injected strict file-existence validation for Node.env prior to 
+#           sourcing, preventing unhandled Bash panics in headless CI/CD states.
+#  - KERNEL-04: Restored host-level sysctl STIG armor (SYN cookies, redirect 
+#               denial) via /etc/sysctl.d/99-sovereign-node.conf.
+#  - TIME-03: Bridged temporal synchronization to explicitly restart 'chronyd' 
+#             on enterprise distributions (RHEL/Fedora) after UTC alignment.
 #  Terminus Absolute Fixes:
 #  - SEC-09: Purged curl-pipe-bash Docker installer. Implemented strict 
 #            GPG-verified repository injection for supply-chain integrity.
-#  - UX-03: Enforced immediate 'exit 0' upon Scorched Earth cancellation to 
-#           prevent unintended deployment continuation and state corruption.
-#  - ARCH-02: Restored multi-OS package manager logic (dnf/pacman) to support 
-#             RHEL, Fedora, and Arch deployments without artificial fatal exits.
-#  Omega Directive Fixes:
-#  - BOOT-06: Explicitly disabled implicit chroot in Unbound to prevent 
-#             recursive pathing panics when loading root.key trust anchors.
-#  - SYS-01: Injected 'init: true' to Alpine-native containers (Unbound, Postgres)
-#            to deploy the 'tini' process manager and aggressively reap zombies.
-#  - UX-02: Engineered Traefik RedirectRegex middleware to seamlessly bounce 
-#           authenticated Pi-Hole operators from the root path to /admin/.
+#  - UX-03: Enforced immediate 'exit 0' upon Scorched Earth cancellation.
+#  - ARCH-02: Restored multi-OS package manager logic (dnf/pacman).
 # ==============================================================================
 
 set -euo pipefail
@@ -65,7 +63,6 @@ DetectOsFamily() {
         echo "[FATAL] /etc/os-release missing."; exit 1
     fi
 
-    # ARCH-02: Universal package manager mapping restored
     if [[ "$OS_FAMILY" == *"debian"* ]] || [[ "$OS_ID" == "parrot" ]] || [[ "$OS_ID" == "ubuntu" ]]; then
         PkgManager="apt-get"
         UpdateCmd="apt-get update -y -q"
@@ -103,7 +100,6 @@ CheckDependencies() {
 
     eval "$UpdateCmd" > /dev/null 2>&1 || true
     
-    # OS-agnostic dependency mapping
     local deps="curl jq openssl tzdata wget"
     if [[ "$PkgManager" == "apt-get" ]]; then
         deps="$deps cron dnsutils"
@@ -124,7 +120,6 @@ CheckDependencies() {
         fi
     done
 
-    # SEC-09: Strict GPG-verified repository injection replacing insecure curl-pipe-bash
     if ! command -v docker &> /dev/null || ! docker compose version &> /dev/null; then
         PrintMsg "214" "Docker Engine missing. Initiating secure GPG-verified hypervisor provision..."
         if [[ "$PkgManager" == "apt-get" ]]; then
@@ -153,7 +148,6 @@ CheckDependencies() {
         sudo systemctl start docker > /dev/null 2>&1 || true
     fi
 
-    # Optional UI layer
     if ! command -v gum &> /dev/null; then
         if [[ "$PkgManager" == "apt-get" ]]; then
             sudo mkdir -p /etc/apt/keyrings
@@ -233,13 +227,33 @@ ExecuteAnnihilation() {
         else
             PrintMsg "82" "✔ Scorched Earth aborted. Retaining persistent state and exiting safely."
             PurgeLegacyState
-            # UX-03: Execute immediate halt to prevent unintended state overwrites
             exit 0
         fi
     fi
 }
 
 ExecuteAnnihilation
+
+# ==============================================================================
+# KERNEL-04: STIG-COMPLIANT HOST ARMOR
+# ==============================================================================
+PrintMsg "240" "Forging STIG-compliant host kernel armor..."
+sudo tee /etc/sysctl.d/99-sovereign-node.conf > /dev/null << 'EOF'
+# STIG: Protect against SYN flood attacks
+net.ipv4.tcp_syncookies = 1
+# STIG: Ignore ICMP redirects to prevent routing table manipulation
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.secure_redirects = 0
+net.ipv4.conf.default.secure_redirects = 0
+# STIG: Disable sending redirects
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+# STIG: Enable IP forwarding for WireGuard/Docker bridging
+net.ipv4.ip_forward = 1
+EOF
+sudo sysctl --system > /dev/null 2>&1 || true
+
 # ==============================================================================
 
 sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" \
@@ -359,12 +373,23 @@ EOF
     sudo chmod 600 "$EnvFile"
 fi
 
+# CI-01: Strict existence validation to prevent headless Bash panic on missing .env file.
+if [ ! -f "$EnvFile" ]; then
+    PrintMsg "196" "[FATAL] Execution state demands a sourced environment, but $EnvFile is missing. Halting."
+    exit 1
+fi
+
 set +u
 source "$EnvFile"
 set -u
 
+# TIME-03: Bridged temporal daemon sweeps for enterprise compatibility (RHEL/Fedora/ParrotOS)
 sudo timedatectl set-timezone UTC
-if systemctl is-active --quiet systemd-timesyncd; then sudo systemctl restart systemd-timesyncd; fi
+if systemctl is-active --quiet systemd-timesyncd; then 
+    sudo systemctl restart systemd-timesyncd
+elif systemctl is-active --quiet chronyd; then
+    sudo systemctl restart chronyd
+fi
 
 PurgeAlienContainers() {
     if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
