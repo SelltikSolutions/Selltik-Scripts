@@ -1,26 +1,22 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.35-PARSER-ABSOLUTE
+#  Version: v10.37-NATIVE-ORCHESTRATION
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Native Orchestration Fixes:
+#  - ENGINE-01: User explicitly overrode the PascalCase environment mandate for
+#               the Compose file. Reverted to POSIX-standard 'docker-compose.yml'.
+#  - CRON-14: Stripped all explicit '-f' flags from the autonomous updater.
+#             The lifecycle cron job will now utilize native Docker discovery.
+#  Chronos Absolute Fixes:
+#  - UI-01: Gated the 'gum' UI repository injection behind an interactivity 
+#           check to prevent wasted compute and attack surface expansion in CI/CD.
 #  Parser Absolute Fixes:
-#  - BASH-04: Escaped literal backticks in Pi-Hole Traefik labels to prevent
-#             fatal command-substitution panics during Bash heredoc evaluation.
+#  - BASH-04: Escaped literal backticks in Pi-Hole Traefik labels.
 #  Void Absolute Fixes:
-#  - IAM-06: Injected strict 'user: "1000:1000"' directive into Authelia to 
-#            prevent root-level capability panics on unprivileged volumes.
-#  - ROUTE-15: Severed Traefik's hard dependency on Authelia to ensure the 
-#              edge routing plane survives IAM container failures.
-#  - DOCKER-05: Reverted Compose nomenclature to 'docker-compose.yml' to 
-#               restore native CLI muscle memory and operational fluidity.
-#  Health Absolute Fixes:
-#  - HEALTH-15: Replaced fragile 'wget' shell healthcheck with native binary.
-#  - DB-02: Explicitly declared postgres password_file to prevent parser races.
-#  Syntax Absolute Fixes:
-#  - YAML-01: Converted Traefik regex labels to single-quotes.
-#  Orphan Cleanse Fixes:
-#  - DOCKER-04: Defensively obliterates premature Docker daemon directory orphans.
+#  - IAM-06: Injected strict 'user: "1000:1000"' directive into Authelia.
+#  - ROUTE-15: Severed Traefik's hard dependency on Authelia.
 # ==============================================================================
 
 set -euo pipefail
@@ -36,6 +32,7 @@ StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 EnvFile="${StackDir}/Node.env"
 LogsDir="/opt/Docker/Logs/${StackName}"
+# ENGINE-01: Reverted to native snake_case to satisfy the Docker engine.
 ComposeFile="${StackDir}/docker-compose.yml"
 LockFile="/var/lock/sovereign_node.lock"
 
@@ -153,13 +150,15 @@ CheckDependencies() {
         sudo systemctl start docker > /dev/null 2>&1 || true
     fi
 
-    if ! command -v gum &> /dev/null; then
-        if [[ "$PkgManager" == "apt-get" ]]; then
-            sudo mkdir -p /etc/apt/keyrings
-            curl --connect-timeout 5 -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/charm.gpg || true
-            echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list > /dev/null
-            eval "$UpdateCmd" > /dev/null 2>&1 || true
-            eval "$InstallCmd gum" > /dev/null 2>&1 || true
+    if [ "$Interactive" -eq 1 ]; then
+        if ! command -v gum &> /dev/null; then
+            if [[ "$PkgManager" == "apt-get" ]]; then
+                sudo mkdir -p /etc/apt/keyrings
+                curl --connect-timeout 5 -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/charm.gpg || true
+                echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list > /dev/null
+                eval "$UpdateCmd" > /dev/null 2>&1 || true
+                eval "$InstallCmd gum" > /dev/null 2>&1 || true
+            fi
         fi
     fi
 }
@@ -183,7 +182,7 @@ PurgeLegacyState() {
         
         # Sweep for legacy PascalCase naming
         if [ -f "${StackDir}/DockerCompose.yml" ]; then
-            sudo docker compose $EnvFlag -f DockerCompose.yml down --remove-orphans > /dev/null 2>&1 || true
+            sudo docker compose $EnvFlag -f "${StackDir}/DockerCompose.yml" down --remove-orphans > /dev/null 2>&1 || true
             sudo rm -f "${StackDir}/DockerCompose.yml"
         fi
 
@@ -229,7 +228,7 @@ ExecuteAnnihilation() {
             fi
             # Purge legacy PascalCase if present
             if [ -f "${StackDir}/DockerCompose.yml" ]; then
-                sudo docker compose $EnvFlag -f DockerCompose.yml down -v --remove-orphans > /dev/null 2>&1 || true
+                sudo docker compose $EnvFlag -f "${StackDir}/DockerCompose.yml" down -v --remove-orphans > /dev/null 2>&1 || true
             fi
             cd /tmp
             sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" \
@@ -282,7 +281,8 @@ for OrphanFile in "${ConfigDir}/Traefik/acme.json" \
                   "${ConfigDir}/Unbound/RootHints.txt" \
                   "${ConfigDir}/Authelia/configuration.yml" \
                   "${ConfigDir}/Authelia/users_database.yml" \
-                  "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml"; do
+                  "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" \
+                  "$ComposeFile"; do
     if [ -d "$OrphanFile" ]; then
         PrintMsg "214" "⚠️  Docker daemon orphaned directory detected at $OrphanFile. Obliterating..."
         sudo rm -rf "$OrphanFile"
@@ -703,7 +703,6 @@ services:
       vpn_network: { ipv4_address: 10.99.0.12 }
       proxy_network:
     labels:
-      # BASH-04: Escaped backticks inside single quotes to prevent shell execution
       - 'traefik.enable=true'
       - 'traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)'
       - 'traefik.http.routers.pihole.entrypoints=websecure'
