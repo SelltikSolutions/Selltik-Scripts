@@ -1,17 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.37-NATIVE-ORCHESTRATION
+#  Version: v10.38-CWD-ABSOLUTE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  CWD Absolute Fixes:
+#  - CWD-01: Injected 'cd /tmp' root escape to prevent 'getcwd' bash panics 
+#            when administrators execute from orphaned/annihilated directories.
+#  - DEP-03: Rewrote dependency evaluator to check binary paths (e.g., 'dig') 
+#            instead of package names ('dnsutils'), preventing infinite install loops.
 #  Native Orchestration Fixes:
-#  - ENGINE-01: User explicitly overrode the PascalCase environment mandate for
-#               the Compose file. Reverted to POSIX-standard 'docker-compose.yml'.
-#  - CRON-14: Stripped all explicit '-f' flags from the autonomous updater.
-#             The lifecycle cron job will now utilize native Docker discovery.
+#  - ENGINE-01: Reverted to POSIX-standard 'docker-compose.yml'.
+#  - CRON-14: Stripped explicit '-f' flags from the autonomous updater.
 #  Chronos Absolute Fixes:
-#  - UI-01: Gated the 'gum' UI repository injection behind an interactivity 
-#           check to prevent wasted compute and attack surface expansion in CI/CD.
+#  - UI-01: Gated the 'gum' UI repository injection behind an interactivity check.
 #  Parser Absolute Fixes:
 #  - BASH-04: Escaped literal backticks in Pi-Hole Traefik labels.
 #  Void Absolute Fixes:
@@ -20,6 +22,11 @@
 # ==============================================================================
 
 set -euo pipefail
+
+# CWD-01: Ghost Directory Escape. If the script is executed from an orphaned 
+# directory (e.g., a stack dir wiped by Scorched Earth), Bash will violently 
+# crash on subshell spawns. Force absolute safe ground.
+cd /tmp || true
 
 # Force absolute path resolution
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -102,20 +109,39 @@ CheckDependencies() {
 
     eval "$UpdateCmd" > /dev/null 2>&1 || true
     
-    local deps="curl jq openssl tzdata wget"
-    if [[ "$PkgManager" == "apt-get" ]]; then
-        deps="$deps cron dnsutils"
-    elif [[ "$PkgManager" == "dnf" ]]; then
-        deps="$deps cronie bind-utils"
-    elif [[ "$PkgManager" == "pacman" ]]; then
-        deps="$deps cronie bind"
+    local pkgs_to_install=""
+
+    # Base binary checks
+    for bin in curl jq openssl wget; do
+        if ! command -v "$bin" &> /dev/null; then
+            pkgs_to_install="$pkgs_to_install $bin"
+        fi
+    done
+
+    # DEP-03: Map logical binaries to their respective data packages to prevent infinite install loops.
+    if [ ! -d "/usr/share/zoneinfo" ]; then
+        pkgs_to_install="$pkgs_to_install tzdata"
     fi
 
-    for dep in $deps; do
-        if ! command -v "$dep" &> /dev/null; then
-            PrintMsg "226" "Installing missing dependency: $dep"
-            if ! eval "$InstallCmd $dep" > /dev/null 2>&1; then
-                PrintMsg "196" "[FATAL] Dependency installation failed for: $dep"
+    if ! command -v crontab &> /dev/null; then
+        if [[ "$PkgManager" == "apt-get" ]]; then pkgs_to_install="$pkgs_to_install cron"; else pkgs_to_install="$pkgs_to_install cronie"; fi
+    fi
+
+    if ! command -v dig &> /dev/null; then
+        if [[ "$PkgManager" == "apt-get" ]]; then
+            pkgs_to_install="$pkgs_to_install dnsutils"
+        elif [[ "$PkgManager" == "dnf" ]]; then
+            pkgs_to_install="$pkgs_to_install bind-utils"
+        elif [[ "$PkgManager" == "pacman" ]]; then
+            pkgs_to_install="$pkgs_to_install bind"
+        fi
+    fi
+
+    for pkg in $pkgs_to_install; do
+        if [ -n "$pkg" ]; then
+            PrintMsg "226" "Installing missing dependency: $pkg"
+            if ! eval "$InstallCmd $pkg" > /dev/null 2>&1; then
+                PrintMsg "196" "[FATAL] Dependency installation failed for: $pkg"
                 PrintMsg "196" "Cannot proceed without critical infrastructure tools. Halting."
                 exit 1
             fi
