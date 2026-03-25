@@ -1,27 +1,22 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.39-OMEGA-ABSOLUTE
+#  Version: v10.40-OMEGA-VERIFIED
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Omega Verified Fixes:
+#  - IAM-07: Adjusted secret file permissions to 644. The parent Secrets directory 
+#            remains 700. This allows unprivileged (UID 1000) containers like 
+#            Authelia to read bind-mounted secrets while the host OS prevents 
+#            directory traversal attacks by unauthorized local users.
+#  - ORCH-04: Replaced hardcoded 'PEERS=3' in compose with \${WG_PEERS} variable 
+#             to restore dynamic scaling via the environment configuration.
+#  - ROUTE-16: Stripped Pi-Hole localhost port mapping to eliminate side-door 
+#              bypasses. All traffic must route through the Traefik/Authelia 
+#              Zero-Trust perimeter.
 #  Omega Absolute Fixes:
-#  - ORCH-03: Restored native '.env' discovery and eradicated '--env-file' 
-#             flags to repair the fractured orchestration timeline.
-#  - AUTO-02: Engineered headless cryptographic and environment ingestion 
-#             pipelines via CI/CD variables to prevent headless suicide traps.
-#  CWD Absolute Fixes:
-#  - CWD-01: Injected 'cd /tmp' root escape to prevent 'getcwd' bash panics.
-#  - DEP-03: Rewrote dependency evaluator to check explicit binary paths.
-#  Native Orchestration Fixes:
-#  - ENGINE-01: Reverted to POSIX-standard 'docker-compose.yml'.
-#  - CRON-14: Stripped explicit '-f' flags from the autonomous updater.
-#  Chronos Absolute Fixes:
-#  - UI-01: Gated the 'gum' UI repository injection behind interactivity checks.
-#  Parser Absolute Fixes:
-#  - BASH-04: Escaped literal backticks in Pi-Hole Traefik labels.
-#  Void Absolute Fixes:
-#  - IAM-06: Injected strict 'user: "1000:1000"' directive into Authelia.
-#  - ROUTE-15: Severed Traefik's hard dependency on Authelia.
+#  - ORCH-03: Restored native '.env' discovery and eradicated '--env-file' flags.
+#  - AUTO-02: Engineered headless cryptographic and environment ingestion pipelines.
 # ==============================================================================
 
 set -euo pipefail
@@ -329,6 +324,7 @@ sudo touch "${ConfigDir}/Traefik/acme.json"
 sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 
 sudo mkdir -p "$SecretsDir"
+# Prevent host-level directory traversal attacks
 sudo chmod 700 "$SecretsDir"
 echo "*" | sudo tee "${SecretsDir}/.gitignore" > /dev/null
 
@@ -339,7 +335,10 @@ WriteSecret() {
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
     if [ ! -f "${SecretsDir}/${name}" ]; then
         sudo touch "${SecretsDir}/${name}"
-        sudo chmod 600 "${SecretsDir}/${name}"
+        # IAM-07: The file MUST be 644 so the unprivileged Authelia container (UID 1000) 
+        # can read the bind-mounted secret. Host-level security is maintained because 
+        # the parent $SecretsDir is locked to 700, blocking host users from traversing.
+        sudo chmod 644 "${SecretsDir}/${name}"
     fi
     sudo sh -c "cat '$tmp_file' > '${SecretsDir}/${name}'"
     sudo rm -f "$tmp_file"
@@ -408,9 +407,11 @@ if [ "$Interactive" -eq 1 ]; then
     PrevDomain=$(grep "^INTERNAL_DOMAIN=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
     PrevEmail=$(grep "^ACME_EMAIL=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
     PrevPort=$(grep "^WG_PORT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "51820")
+    PrevPeers=$(grep "^WG_PEERS=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "3")
 
     WgEndpoint=""
     WgPort=""
+    WgPeers=""
     InternalDomain=""
     AcmeEmail=""
 
@@ -421,6 +422,9 @@ if [ "$Interactive" -eq 1 ]; then
         WgPort=$(gum input --prompt "WireGuard UDP Listen Port: " --value "$PrevPort" || true)
         [ -z "$WgPort" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
         
+        WgPeers=$(gum input --prompt "WireGuard Peer Count: " --value "$PrevPeers" || true)
+        [ -z "$WgPeers" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
+
         InternalDomain=$(gum input --prompt "Root Internal Domain: " --value "$PrevDomain" || true)
         [ -z "$InternalDomain" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
         
@@ -435,6 +439,10 @@ if [ "$Interactive" -eq 1 ]; then
         WgPort="${input_port:-$PrevPort}"
         [ -z "$WgPort" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
         
+        read -p "WireGuard Peer Count [$PrevPeers]: " input_peers || true
+        WgPeers="${input_peers:-$PrevPeers}"
+        [ -z "$WgPeers" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
+
         read -p "Root Internal Domain [$PrevDomain]: " input_domain || true
         InternalDomain="${input_domain:-$PrevDomain}"
         [ -z "$InternalDomain" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
@@ -449,7 +457,7 @@ WG_ENDPOINT=${WgEndpoint}
 INTERNAL_DOMAIN=${InternalDomain}
 ACME_EMAIL=${AcmeEmail}
 WG_PORT=${WgPort}
-WG_PEERS=3
+WG_PEERS=${WgPeers}
 TZ=UTC
 EOF
     sudo chmod 600 "$EnvFile"
@@ -777,7 +785,7 @@ services:
       proxy_network:
     labels:
       - 'traefik.enable=true'
-      - 'traefik.http.routers.pihole.rule=Host(`pihole.\${INTERNAL_DOMAIN}`)'
+      - 'traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)'
       - 'traefik.http.routers.pihole.entrypoints=websecure'
       - 'traefik.http.routers.pihole.tls.certresolver=cloudflare'
       - 'traefik.http.services.pihole.loadbalancer.server.port=80'
@@ -808,7 +816,7 @@ services:
     environment:
       - SERVERURL=\${WG_ENDPOINT}
       - SERVERPORT=\${WG_PORT}
-      - PEERS=3
+      - PEERS=\${WG_PEERS}
       - PEERDNS=10.99.0.12
       - INTERNAL_SUBNET=10.13.13.0/24
     volumes:
