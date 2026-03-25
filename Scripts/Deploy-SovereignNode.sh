@@ -1,19 +1,22 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.38-CWD-ABSOLUTE
+#  Version: v10.39-OMEGA-ABSOLUTE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Omega Absolute Fixes:
+#  - ORCH-03: Restored native '.env' discovery and eradicated '--env-file' 
+#             flags to repair the fractured orchestration timeline.
+#  - AUTO-02: Engineered headless cryptographic and environment ingestion 
+#             pipelines via CI/CD variables to prevent headless suicide traps.
 #  CWD Absolute Fixes:
-#  - CWD-01: Injected 'cd /tmp' root escape to prevent 'getcwd' bash panics 
-#            when administrators execute from orphaned/annihilated directories.
-#  - DEP-03: Rewrote dependency evaluator to check binary paths (e.g., 'dig') 
-#            instead of package names ('dnsutils'), preventing infinite install loops.
+#  - CWD-01: Injected 'cd /tmp' root escape to prevent 'getcwd' bash panics.
+#  - DEP-03: Rewrote dependency evaluator to check explicit binary paths.
 #  Native Orchestration Fixes:
 #  - ENGINE-01: Reverted to POSIX-standard 'docker-compose.yml'.
 #  - CRON-14: Stripped explicit '-f' flags from the autonomous updater.
 #  Chronos Absolute Fixes:
-#  - UI-01: Gated the 'gum' UI repository injection behind an interactivity check.
+#  - UI-01: Gated the 'gum' UI repository injection behind interactivity checks.
 #  Parser Absolute Fixes:
 #  - BASH-04: Escaped literal backticks in Pi-Hole Traefik labels.
 #  Void Absolute Fixes:
@@ -37,11 +40,17 @@ ConfigDir="${BaseDir}/Config"
 ScriptsDir="${BaseDir}/Scripts"
 StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
-EnvFile="${StackDir}/Node.env"
 LogsDir="/opt/Docker/Logs/${StackName}"
-# ENGINE-01: Reverted to native snake_case to satisfy the Docker engine.
+
+# ENGINE-01 & ORCH-03: Reverted to native nomenclature to satisfy the Docker engine.
 ComposeFile="${StackDir}/docker-compose.yml"
+EnvFile="${StackDir}/.env"
 LockFile="/var/lock/sovereign_node.lock"
+
+# ORCH-03: State Migration: Seamlessly rename legacy environment file if it exists
+if [ -f "${StackDir}/Node.env" ]; then
+    sudo mv "${StackDir}/Node.env" "$EnvFile" 2>/dev/null || true
+fi
 
 # Atomic execution lock
 exec 200>"$LockFile"
@@ -199,16 +208,15 @@ PurgeLegacyState() {
     if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Initiating Graceful Cleanup..."; fi
     if [ -d "$StackDir" ]; then
         cd "$StackDir" || true
-        local EnvFlag=""
-        [ -f "$EnvFile" ] && EnvFlag="--env-file $EnvFile"
 
+        # ORCH-03: Native Docker Compose execution (No explicit flags)
         if [ -f "$ComposeFile" ]; then
-            sudo docker compose $EnvFlag down --remove-orphans > /dev/null 2>&1 || true
+            sudo docker compose down --remove-orphans > /dev/null 2>&1 || true
         fi
         
         # Sweep for legacy PascalCase naming
         if [ -f "${StackDir}/DockerCompose.yml" ]; then
-            sudo docker compose $EnvFlag -f "${StackDir}/DockerCompose.yml" down --remove-orphans > /dev/null 2>&1 || true
+            sudo docker compose -f "${StackDir}/DockerCompose.yml" down --remove-orphans > /dev/null 2>&1 || true
             sudo rm -f "${StackDir}/DockerCompose.yml"
         fi
 
@@ -247,15 +255,17 @@ ExecuteAnnihilation() {
         if [ "$confirm" == "yes" ]; then
             PrintMsg "196" "Executing tactical nuke..."
             cd "$StackDir" || true
-            local EnvFlag=""
-            [ -f "$EnvFile" ] && EnvFlag="--env-file $EnvFile"
+
+            # ORCH-03: Native Docker Compose execution
             if [ -f "$ComposeFile" ]; then
-                sudo docker compose $EnvFlag down -v --remove-orphans > /dev/null 2>&1 || true
+                sudo docker compose down -v --remove-orphans > /dev/null 2>&1 || true
             fi
+            
             # Purge legacy PascalCase if present
             if [ -f "${StackDir}/DockerCompose.yml" ]; then
-                sudo docker compose $EnvFlag -f "${StackDir}/DockerCompose.yml" down -v --remove-orphans > /dev/null 2>&1 || true
+                sudo docker compose -f "${StackDir}/DockerCompose.yml" down -v --remove-orphans > /dev/null 2>&1 || true
             fi
+            
             cd /tmp
             sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" \
                         "${ConfigDir}/Traefik" "${ConfigDir}/WireGuard" \
@@ -363,8 +373,28 @@ if [ "$Interactive" -eq 1 ]; then
         WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"
     }
 else
-    [ ! -f "${SecretsDir}/cf_api_token" ] && { echo "[FATAL] Headless run failed. Missing cf_api_token."; exit 1; }
-    [ ! -f "${SecretsDir}/traefik_auth" ] && { echo "[FATAL] Headless run failed. Missing traefik_auth."; exit 1; }
+    # AUTO-02: Headless cryptographic pipeline ingestion
+    if [ ! -f "${SecretsDir}/cf_api_token" ]; then
+        if [ -n "${CF_API_TOKEN:-}" ]; then
+            WriteSecret "cf_api_token" "$CF_API_TOKEN"
+        elif [ -n "${TF_VAR_cf_api_token:-}" ]; then
+            WriteSecret "cf_api_token" "$TF_VAR_cf_api_token"
+        else
+            PrintMsg "196" "[FATAL] Headless run failed. Missing cf_api_token secret and CF_API_TOKEN env var."
+            exit 1
+        fi
+    fi
+    
+    if [ ! -f "${SecretsDir}/traefik_auth" ]; then
+        if [ -n "${TRAEFIK_AUTH:-}" ]; then
+            WriteSecret "traefik_auth" "$TRAEFIK_AUTH"
+        elif [ -n "${TF_VAR_traefik_auth:-}" ]; then
+            WriteSecret "traefik_auth" "$TF_VAR_traefik_auth"
+        else
+            PrintMsg "196" "[FATAL] Headless run failed. Missing traefik_auth secret and TRAEFIK_AUTH env var."
+            exit 1
+        fi
+    fi
 fi
 
 [ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 32)"
@@ -420,6 +450,23 @@ INTERNAL_DOMAIN=${InternalDomain}
 ACME_EMAIL=${AcmeEmail}
 WG_PORT=${WgPort}
 WG_PEERS=3
+TZ=UTC
+EOF
+    sudo chmod 600 "$EnvFile"
+fi
+
+# AUTO-02: Headless environment pipeline ingestion
+if [ "$Interactive" -eq 0 ] && [ ! -f "$EnvFile" ]; then
+    if [ -z "${WG_ENDPOINT:-}" ] || [ -z "${INTERNAL_DOMAIN:-}" ] || [ -z "${ACME_EMAIL:-}" ]; then
+        PrintMsg "196" "[FATAL] Headless execution demands pipeline variables: WG_ENDPOINT, INTERNAL_DOMAIN, ACME_EMAIL."
+        exit 1
+    fi
+    sudo tee "$EnvFile" > /dev/null << EOF
+WG_ENDPOINT=${WG_ENDPOINT}
+INTERNAL_DOMAIN=${INTERNAL_DOMAIN}
+ACME_EMAIL=${ACME_EMAIL}
+WG_PORT=${WG_PORT:-51820}
+WG_PEERS=${WG_PEERS:-3}
 TZ=UTC
 EOF
     sudo chmod 600 "$EnvFile"
@@ -730,7 +777,7 @@ services:
       proxy_network:
     labels:
       - 'traefik.enable=true'
-      - 'traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)'
+      - 'traefik.http.routers.pihole.rule=Host(`pihole.\${INTERNAL_DOMAIN}`)'
       - 'traefik.http.routers.pihole.entrypoints=websecure'
       - 'traefik.http.routers.pihole.tls.certresolver=cloudflare'
       - 'traefik.http.services.pihole.loadbalancer.server.port=80'
@@ -838,14 +885,16 @@ cd "${StackDir}" || exit 1
 curl -sS --connect-timeout 10 https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
 if grep -q "A.ROOT-SERVERS.NET" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
     mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
-    docker compose --env-file "${EnvFile}" restart unbound_dns
+    # ORCH-03: Native Docker execution (no explicit flags required)
+    docker compose restart unbound_dns
 else
     logger -t SovereignNodeUpdater "ERROR: Root hints fetch corrupted. Retaining existing cache."
     rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
 fi
 
-docker compose --env-file "${EnvFile}" pull --quiet
-docker compose --env-file "${EnvFile}" up -d --remove-orphans
+# ORCH-03: Native Docker execution
+docker compose pull --quiet
+docker compose up -d --remove-orphans
 docker image prune -af --filter "until=168h"
 echo "[Sovereign Node] Update cycle complete."
 EOF
@@ -883,7 +932,7 @@ sudo ln -sf "$WatchdogScript" /etc/cron.hourly/sovereign-node-watchdog
 
 # Ignition
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified Sovereign Node..."; fi
-cd "$StackDir" && sudo docker compose --env-file "$EnvFile" up -d --remove-orphans
+cd "$StackDir" && sudo docker compose up -d --remove-orphans
 
 # ==============================================================================
 # ROUTE-14: LIVE ASSIMILATION ENGINE (POST-IGNITION)
