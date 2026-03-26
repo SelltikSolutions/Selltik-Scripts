@@ -1,14 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.41-DECODE-ABSOLUTE
+#  Version: v10.42-OMEGA-ACTUAL
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Omega Actual Fixes:
+#  - UPGRADE-01: Un-nested 'chmod 644' from the Day-Zero initialization block 
+#                in WriteSecret to unconditionally fix legacy permissions on 
+#                upgraded nodes, preventing Authelia IAM-07 panics.
+#  - SYNTAX-02: Extracted internal double-quotes and appended '@file' provider 
+#               suffixes to assimilation middlewares to prevent fatal YAML 
+#               parsing errors in alien Docker configurations.
 #  Decode Absolute Fixes:
-#  - TRAEFIK-01: Excised the deprecated '--providers.docker.version' flag from 
-#                Traefik's command array. Traefik natively negotiates the API; 
-#                forcing it causes a fatal configuration decode panic, crashing 
-#                the proxy and causing PR_END_OF_FILE_ERRORs at the browser.
+#  - TRAEFIK-01: Excised the deprecated '--providers.docker.version' flag.
 #  Omega Verified Fixes:
 #  - IAM-07: Adjusted secret file permissions to 644 for unprivileged read access.
 #  - ORCH-04: Replaced hardcoded 'PEERS=3' in compose with \${WG_PEERS}.
@@ -334,13 +338,16 @@ WriteSecret() {
     local content=$2
     local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
+    
     if [ ! -f "${SecretsDir}/${name}" ]; then
         sudo touch "${SecretsDir}/${name}"
-        # IAM-07: The file MUST be 644 so the unprivileged Authelia container (UID 1000) 
-        # can read the bind-mounted secret. Host-level security is maintained because 
-        # the parent $SecretsDir is locked to 700, blocking host users from traversing.
-        sudo chmod 644 "${SecretsDir}/${name}"
     fi
+    
+    # UPGRADE-01 / IAM-07: Ensure unconditionally that the secret is readable by 
+    # unprivileged UID 1000 containers (Authelia). Un-nested from the creation block 
+    # to apply uniformly to Day-2 legacy upgrades. Parent $SecretsDir remains 700.
+    sudo chmod 644 "${SecretsDir}/${name}"
+    
     sudo sh -c "cat '$tmp_file' > '${SecretsDir}/${name}'"
     sudo rm -f "$tmp_file"
 }
@@ -998,11 +1005,12 @@ AssimilateAlienContainers() {
                 fi
 
                 local mw_string=""
+                # SYNTAX-02: Strict Traefik '@file' provider formatting without internal string quotes.
                 case "$posture_choice" in
-                    1) mw_string="\"secure-headers\", \"authelia\"" ;;
-                    2) mw_string="\"secure-headers\", \"vpn-whitelist\"" ;;
-                    3) mw_string="\"secure-headers\", \"traefik-auth\"" ;;
-                    4) mw_string="\"secure-headers\"" ;;
+                    1) mw_string="secure-headers@file,authelia@file" ;;
+                    2) mw_string="secure-headers@file,vpn-whitelist@file" ;;
+                    3) mw_string="secure-headers@file,traefik-auth@file" ;;
+                    4) mw_string="secure-headers@file" ;;
                 esac
 
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
