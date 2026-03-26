@@ -1,22 +1,23 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.40-OMEGA-VERIFIED
+#  Version: v10.41-DECODE-ABSOLUTE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Decode Absolute Fixes:
+#  - TRAEFIK-01: Excised the deprecated '--providers.docker.version' flag from 
+#                Traefik's command array. Traefik natively negotiates the API; 
+#                forcing it causes a fatal configuration decode panic, crashing 
+#                the proxy and causing PR_END_OF_FILE_ERRORs at the browser.
 #  Omega Verified Fixes:
-#  - IAM-07: Adjusted secret file permissions to 644. The parent Secrets directory 
-#            remains 700. This allows unprivileged (UID 1000) containers like 
-#            Authelia to read bind-mounted secrets while the host OS prevents 
-#            directory traversal attacks by unauthorized local users.
-#  - ORCH-04: Replaced hardcoded 'PEERS=3' in compose with \${WG_PEERS} variable 
-#             to restore dynamic scaling via the environment configuration.
-#  - ROUTE-16: Stripped Pi-Hole localhost port mapping to eliminate side-door 
-#              bypasses. All traffic must route through the Traefik/Authelia 
-#              Zero-Trust perimeter.
+#  - IAM-07: Adjusted secret file permissions to 644 for unprivileged read access.
+#  - ORCH-04: Replaced hardcoded 'PEERS=3' in compose with \${WG_PEERS}.
+#  - ROUTE-16: Stripped Pi-Hole localhost port mapping to eliminate side-doors.
 #  Omega Absolute Fixes:
 #  - ORCH-03: Restored native '.env' discovery and eradicated '--env-file' flags.
-#  - AUTO-02: Engineered headless cryptographic and environment ingestion pipelines.
+#  - AUTO-02: Engineered headless cryptographic pipeline ingestions.
+#  Native Orchestration Fixes:
+#  - ENGINE-01: Reverted to POSIX-standard 'docker-compose.yml'.
 # ==============================================================================
 
 set -euo pipefail
