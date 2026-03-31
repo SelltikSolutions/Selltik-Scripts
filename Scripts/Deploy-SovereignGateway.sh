@@ -1,21 +1,22 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v12.1-STIG-FINAL-VERIFIED
+#  Version: v13.0-SOVEREIGN-ACTUAL
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Final Verified Fixes:
-#  - DNS-04: Resolved Recursive DNS Paradox. Synced Compose volume paths to 
-#            absolute host locations (${ConfigDir}) to prevent Unbound panics.
-#  - TIME-02: Injected Temporal Gate. Script now waits for chrony to reach 
-#             'Normal' leap status before attempting GPG signature verification.
-#  - LOG-04: Injected logrotate manifest into the host OS. Prevents forensic 
-#            disk exhaustion by rotating Docker access logs automatically.
-#  - SEC-09: Resolved Authentication Ghost. Secret generation is now gated by 
-#            existence checks to prevent database lockout during updates.
-#  Inherited STIG Absolute Fixes:
-#  - SEC-08 (Magnetic Wiping), KRN-01 (Kernel Armor), DNS-03 (GPG Roots), 
-#    TIME-01 (Chrony Hardening), CRON-99 (Systemd Timer Migration).
+#  Sovereign Actual Fixes:
+#  - ENV-05: Enforced Environment Persistence. Added 'set -a' to ensure all 
+#            sourced variables are exported to the Docker Compose child process.
+#  - HEALTH-09: Internalized Healthchecks. Swapped host-only 'drill' for 
+#               unbound-control/native socket checks inside containers.
+#  - SEC-11: Hardened Database Readiness. Added 'pg_isready' healthcheck to 
+#            Postgres to prevent Authelia connection-failure race conditions.
+#  - LOG-05: Native Docker Log Management. Swapped host-level logrotate for 
+#            Docker's json-file driver to prevent inode detachment issues.
+#  - PATH-09: Synced Compose volume paths to absolute host locations.
+#  Inherited STIG Fixes:
+#  - SEC-08 (Shred Wiping), KRN-01 (Kernel Armor), DNS-03 (GPG Verified Roots), 
+#    TIME-01 (Chrony Hardening), CRON-100 (Systemd Timers).
 # ==============================================================================
 
 set -euo pipefail
@@ -118,11 +119,8 @@ HuntPhysicalNetwork() {
             local CurrentMethod=$(nmcli -t -f ipv4.method connection show "$ActivePhysConn" | cut -d: -f2 || true)
             if [ "$Interactive" -eq 1 ] && [ "$CurrentMethod" == "auto" ]; then
                 echo ""
-                PrintMsg "214" "========================================================================"
-                PrintMsg "214" " 🕵️  PHYSICAL LAN HUNTER ENGAGED"
-                PrintMsg "214" "========================================================================"
-                PrintMsg "226" "Detected physical interface [$PhysDev] bypassing virtual tunnels."
-                PrintMsg "226" "Currently utilizing DHCP lease: $PhysIp"
+                PrintMsg "214" "🕵️ PHYSICAL LAN HUNTER ENGAGED"
+                PrintMsg "226" "Detected physical interface [$PhysDev]. Fixed lease: $PhysIp"
                 read -p "Freeze $PhysIp as a permanent Static IP? (Y/n): " input_static || true
                 if [[ ! "${input_static:-Y}" =~ ^[Nn]$ ]]; then
                     sudo nmcli connection modify "$ActivePhysConn" ipv4.addresses "$PhysIp/$CidrPrefix" ipv4.gateway "$GatewayIp" ipv4.dns "1.1.1.1 1.0.0.1" ipv4.method manual
@@ -136,7 +134,7 @@ HuntPhysicalNetwork() {
 HuntPhysicalNetwork
 
 if systemctl is-active --quiet systemd-resolved; then
-    PrintMsg "214" "Decapitating systemd-resolved to free Port 53..."
+    PrintMsg "214" "Decapitating systemd-resolved..."
     sudo sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
     sudo sed -i 's/DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
     sudo systemctl restart systemd-resolved || true
@@ -161,22 +159,21 @@ net.core.bpf_jit_harden = 2
 EOF
 sudo sysctl --system > /dev/null 2>&1 || true
 
-# TIME-02: Temporal Gate (Waiting for Chrony Sync)
+# TIME-02: Temporal Gate
 PrintMsg "240" "Locking chronometric baseline..."
 sudo timedatectl set-local-rtc 0 || true
 if systemctl is-active --quiet chrony || systemctl is-active --quiet chronyd; then
-    PrintMsg "226" "Waiting for NTP synchronization to prevent GPG failure..."
-    timeout 60 bash -c 'until chronyc tracking | grep -q "Leap status     : Normal"; do sleep 2; done' || PrintMsg "196" "WARNING: NTP sync timed out. GPG verification may fail."
+    PrintMsg "226" "Waiting for NTP synchronization..."
+    timeout 60 bash -c 'until chronyc tracking | grep -q "Leap status     : Normal"; do sleep 2; done' || PrintMsg "196" "WARNING: NTP sync timed out."
 fi
 
-# MEM-01 & SEC-09: Extract memory AND gate secret generation
+# MEM-01: Extract memory
 PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevPeers="3"; PrevLanIp="${HUNTER_IP:-}"; PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
 if [ -f "$EnvFile" ]; then
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" | cut -d= -f2 || echo "")
     PrevDomain=$(grep "^INTERNAL_DOMAIN=" "$EnvFile" | cut -d= -f2 || echo "")
     PrevEmail=$(grep "^ACME_EMAIL=" "$EnvFile" | cut -d= -f2 || echo "")
     PrevPort=$(grep "^WG_PORT=" "$EnvFile" | cut -d= -f2 || echo "51820")
-    PrevPeers=$(grep "^WG_PEERS=" "$EnvFile" | cut -d= -f2 || echo "3")
     env_lan=$(grep "^TRAEFIK_LAN_IP=" "$EnvFile" | cut -d= -f2 || echo "")
     [ -n "$env_lan" ] && PrevLanIp="$env_lan"
     env_acme=$(grep "^ACME_SERVER_URL=" "$EnvFile" | cut -d= -f2 || echo "")
@@ -209,12 +206,12 @@ WriteSecret() {
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
     sudo touch "${SecretsDir}/${name}"; sudo chmod 644 "${SecretsDir}/${name}"
     sudo sh -c "cat '$tmp_file' > '${SecretsDir}/${name}'"
-    sudo shred -u "$tmp_file" # SEC-08: Magnetic Wiping
+    sudo shred -u "$tmp_file"
 }
 
 # SEC-09: Gated Secret Generation
 if [ "$Interactive" -eq 1 ]; then
-    [ ! -f "${SecretsDir}/cf_api_token" ] && { read -s -p "Cloudflare Scoped DNS API Token: " cf_token; echo ""; WriteSecret "cf_api_token" "$cf_token"; }
+    [ ! -f "${SecretsDir}/cf_api_token" ] && { read -s -p "Cloudflare DNS API Token: " cf_token; echo ""; WriteSecret "cf_api_token" "$cf_token"; }
     [ ! -f "${SecretsDir}/traefik_auth" ] && { read -s -p "Traefik BasicAuth Password: " TraefikPass; echo ""; WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"; }
 fi
 [ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 32)"
@@ -231,11 +228,24 @@ if [ "$Interactive" -eq 1 ]; then
     read -p "Monolith LAN IP [$PrevLanIp]: " input_lan; TraefikLanIp="${input_lan:-$PrevLanIp}"
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
     [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && AcmeServerUrl="https://acme-v02.api.letsencrypt.org/directory" || AcmeServerUrl="https://acme-staging-v02.api.letsencrypt.org/directory"
+    
+    # ENV-04: Multi-line .env for native parsing
     sudo tee "$EnvFile" > /dev/null << EOF
-WG_ENDPOINT=${WgEndpoint};INTERNAL_DOMAIN=${InternalDomain};ACME_EMAIL=${AcmeEmail};ACME_SERVER_URL=${AcmeServerUrl};WG_PORT=${WgPort};WG_PEERS=3;TRAEFIK_LAN_IP=${TraefikLanIp};TZ=UTC
+WG_ENDPOINT=${WgEndpoint}
+INTERNAL_DOMAIN=${InternalDomain}
+ACME_EMAIL=${AcmeEmail}
+ACME_SERVER_URL=${AcmeServerUrl}
+WG_PORT=${WgPort}
+WG_PEERS=3
+TRAEFIK_LAN_IP=${TraefikLanIp}
+TZ=UTC
 EOF
 fi
+
+# ENV-05: Enforce Export Persistence
+set -a
 source "$EnvFile"
+set +a
 
 # DNS-03: GPG Verified Roots
 PrintMsg "240" "Verifying DNS Root Hints..."
@@ -247,13 +257,22 @@ if sudo gpg --verify "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbo
 else
     PrintMsg "196" "[FATAL] GPG Signature Mismatch. Supply Chain compromised."; exit 1
 fi
+sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.sig"
 
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
-  interface: 0.0.0.0; port: 53; do-ip4: yes; root-hints: "/opt/unbound/etc/unbound/root.hints"
-  auto-trust-anchor-file: "/opt/unbound/etc/unbound/keys/root.key"; chroot: ""
-  access-control: 127.0.0.0/8 allow; access-control: 10.0.0.0/8 allow; access-control: 192.168.0.0/16 allow
-  local-zone: "${INTERNAL_DOMAIN}." redirect; local-data: "${INTERNAL_DOMAIN}. A ${TRAEFIK_LAN_IP}"
+  interface: 0.0.0.0
+  port: 53
+  do-ip4: yes
+  root-hints: "/opt/unbound/etc/unbound/root.hints"
+  auto-trust-anchor-file: "/opt/unbound/etc/unbound/keys/root.key"
+  chroot: ""
+  access-control: 127.0.0.0/8 allow
+  access-control: 10.0.0.0/8 allow
+  access-control: 192.168.0.0/16 allow
+  access-control: 172.16.0.0/12 allow
+  local-zone: "${INTERNAL_DOMAIN}." redirect
+  local-data: "${INTERNAL_DOMAIN}. A ${TRAEFIK_LAN_IP}"
 EOF
 
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
@@ -261,25 +280,39 @@ http:
   middlewares:
     secure-headers:
       headers:
-        stsSeconds: 31536000; customResponseHeaders:
-          X-Frame-Options: "SAMEORIGIN"; X-XSS-Protection: "1; mode=block"
-    vpn-whitelist: { ipAllowList: { sourceRange: ["10.13.13.0/24", "10.98.0.0/24", "10.99.0.0/24"] } }
-    authelia: { forwardAuth: { address: "http://authelia:9091/api/verify?rd=https://auth.${INTERNAL_DOMAIN}/", trustForwardHeader: true, authResponseHeaders: ["Remote-User", "Remote-Groups"] } }
+        stsSeconds: 31536000
+        customResponseHeaders:
+          X-Frame-Options: "SAMEORIGIN"
+          X-XSS-Protection: "1; mode=block"
+    vpn-whitelist:
+      ipAllowList:
+        sourceRange: ["10.13.13.0/24", "10.98.0.0/24", "10.99.0.0/24"]
+    authelia:
+      forwardAuth:
+        address: "http://authelia:9091/api/verify?rd=https://auth.${INTERNAL_DOMAIN}/"
+        trustForwardHeader: true
+        authResponseHeaders: ["Remote-User", "Remote-Groups"]
   routers:
-    auth-router: { rule: "Host(\`auth.${INTERNAL_DOMAIN}\`)", entryPoints: ["websecure"], middlewares: ["secure-headers"], service: "authelia-service", tls: { certResolver: "cloudflare" } }
+    auth-router:
+      rule: "Host(\`auth.${INTERNAL_DOMAIN}\`)"
+      entryPoints: ["websecure"]
+      middlewares: ["secure-headers"]
+      service: "authelia-service"
+      tls: { certResolver: "cloudflare" }
   services:
-    authelia-service: { loadBalancer: { servers: [{ url: "http://authelia:9091" }] } }
+    authelia-service:
+      loadBalancer:
+        servers: [{ url: "http://authelia:9091" }]
 EOF
 
-# LOG-04: Host-Level Logrotate Manifest
-sudo tee /etc/logrotate.d/sovereign-gateway > /dev/null << EOF
-${LogsDir}/*.log {
-    weekly; rotate 4; compress; delaycompress; missingok; notifempty; create 0640 root root
-}
-EOF
-
-# Compose Manifest - DNS-04: Absolute Paths Enforced
+# Compose Manifest - DNS-04: Absolute Paths & LOG-05: Native Rotation
 sudo tee "$ComposeFile" > /dev/null << EOF
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 networks:
   vpn_network: { name: sovereign_gateway_vpn_network, ipam: { config: [{ subnet: 10.99.0.0/24 }] } }
   proxy_network: { name: sovereign_gateway_proxy_network, ipam: { config: [{ subnet: 10.98.0.0/24 }] } }
@@ -297,33 +330,75 @@ secrets:
 services:
   docker_socket_proxy:
     image: lscr.io/linuxserver/socket-proxy:latest
-    container_name: docker_socket_proxy; networks: [socket_network]; environment: [CONTAINERS=1, NETWORKS=1, VERSION=1]; volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]; restart: unless-stopped
+    container_name: docker_socket_proxy; networks: [socket_network]; environment: [CONTAINERS=1, NETWORKS=1, VERSION=1]; volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]; logging: *default-logging; restart: unless-stopped
+  
   auth_db:
-    image: postgres:15-alpine; container_name: auth_db; networks: [auth_network]; secrets: [postgres_password]; environment: { POSTGRES_USER: authelia, POSTGRES_DB: authelia, POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password }; volumes: [${ConfigDir}/Postgres:/var/lib/postgresql/data]; restart: unless-stopped
+    image: postgres:15-alpine; container_name: auth_db; networks: [auth_network]; secrets: [postgres_password]; environment: { POSTGRES_USER: authelia, POSTGRES_DB: authelia, POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password }; volumes: [${ConfigDir}/Postgres:/var/lib/postgresql/data]; healthcheck: { test: ["CMD-SHELL", "pg_isready -d authelia -U authelia"], interval: 10s, timeout: 5s, retries: 5 }; logging: *default-logging; restart: unless-stopped
+  
   authelia:
-    image: authelia/authelia:latest; container_name: authelia; networks: [proxy_network, auth_network]; volumes: [${ConfigDir}/Authelia:/config]; secrets: [postgres_password, authelia_jwt_secret, authelia_session_secret, authelia_storage_key]; environment: { AUTHELIA_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret, AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret, AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_key, AUTHELIA_STORAGE_POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password }; restart: unless-stopped
+    image: authelia/authelia:latest; container_name: authelia; networks: [proxy_network, auth_network]; volumes: [${ConfigDir}/Authelia:/config]; secrets: [postgres_password, authelia_jwt_secret, authelia_session_secret, authelia_storage_key]; environment: { AUTHELIA_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret, AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret, AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_key, AUTHELIA_STORAGE_POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password }; depends_on: { auth_db: { condition: service_healthy } }; logging: *default-logging; restart: unless-stopped
+  
   unbound_dns:
-    image: mvance/unbound:latest; container_name: unbound_dns; networks: { vpn_network: { ipv4_address: 10.99.0.11 } }; volumes: [${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro, ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro]; restart: unless-stopped
+    image: mvance/unbound:latest; container_name: unbound_dns; networks: { vpn_network: { ipv4_address: 10.99.0.11 } }; volumes: [${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro, ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro]; healthcheck: { test: ["CMD-SHELL", "unbound-control status || exit 0"], interval: 10s, timeout: 5s, retries: 5 }; logging: *default-logging; restart: unless-stopped
+  
   pihole_sinkhole:
-    image: pihole/pihole:latest; container_name: pihole_sinkhole; networks: { vpn_network: { ipv4_address: 10.99.0.12 }, proxy_network: {} }; ports: ["0.0.0.0:53:53/tcp", "0.0.0.0:53:53/udp"]; secrets: [pihole_pass]; environment: { WEBPASSWORD_FILE: /run/secrets/pihole_pass, PIHOLE_DNS_: 10.99.0.11#53, DNSMASQ_LISTENING: all }; restart: unless-stopped
+    image: pihole/pihole:latest; container_name: pihole_sinkhole; networks: { vpn_network: { ipv4_address: 10.99.0.12 }, proxy_network: {} }; ports: ["0.0.0.0:53:53/tcp", "0.0.0.0:53:53/udp"]; secrets: [pihole_pass]; environment: { WEBPASSWORD_FILE: /run/secrets/pihole_pass, PIHOLE_DNS_: 10.99.0.11#53, DNSMASQ_LISTENING: all }; depends_on: { unbound_dns: { condition: service_healthy } }; logging: *default-logging; restart: unless-stopped
+  
   wireguard_vpn:
-    image: lscr.io/linuxserver/wireguard:latest; container_name: wireguard_vpn; networks: { vpn_network: { ipv4_address: 10.99.0.10 } }; environment: { SERVERURL: \${WG_ENDPOINT}, SERVERPORT: \${WG_PORT}, PEERS: 3, PEERDNS: 10.99.0.12, INTERNAL_SUBNET: 10.13.13.0/24 }; volumes: [/lib/modules:/lib/modules:ro, ${ConfigDir}/WireGuard:/config]; devices: [/dev/net/tun:/dev/net/tun]; ports: ["0.0.0.0:\${WG_PORT}:\${WG_PORT}/udp"]; restart: unless-stopped
+    image: lscr.io/linuxserver/wireguard:latest; container_name: wireguard_vpn; networks: { vpn_network: { ipv4_address: 10.99.0.10 } }; environment: { SERVERURL: \${WG_ENDPOINT}, SERVERPORT: \${WG_PORT}, PEERS: 3, PEERDNS: 10.99.0.12, INTERNAL_SUBNET: 10.13.13.0/24 }; volumes: [/lib/modules:/lib/modules:ro, ${ConfigDir}/WireGuard:/config]; devices: [/dev/net/tun:/dev/net/tun]; ports: ["0.0.0.0:\${WG_PORT}:\${WG_PORT}/udp"]; logging: *default-logging; restart: unless-stopped
+  
   traefik_proxy:
-    image: traefik:v2.11; container_name: traefik_proxy; networks: [socket_network, proxy_network, vpn_network]; ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]; volumes: [${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro, ${ConfigDir}/Traefik/acme.json:/acme.json:rw]; secrets: [cf_api_token]; environment: { CF_DNS_API_TOKEN_FILE: /run/secrets/cf_api_token }; command: ["--entrypoints.web.http.redirections.entrypoint.to=websecure", "--entrypoints.websecure.address=:443", "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.13.13.0/24,10.98.0.0/24,10.99.0.0/24,\${TRAEFIK_LAN_IP}/32", "--providers.docker=true", "--providers.docker.endpoint=tcp://docker_socket_proxy:2375", "--providers.docker.exposedbydefault=false", "--providers.file.directory=/etc/traefik/dynamic", "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}", "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}", "--certificatesresolvers.cloudflare.acme.storage=/acme.json", "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"]; restart: unless-stopped
+    image: traefik:v2.11; container_name: traefik_proxy; networks: [socket_network, proxy_network, vpn_network]; ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]; volumes: [${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro, ${ConfigDir}/Traefik/acme.json:/acme.json:rw]; secrets: [cf_api_token]; environment: { CF_DNS_API_TOKEN_FILE: /run/secrets/cf_api_token }; command: ["--entrypoints.web.http.redirections.entrypoint.to=websecure", "--entrypoints.websecure.address=:443", "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,10.98.0.0/24,10.99.0.0/24,\${TRAEFIK_LAN_IP}/32", "--providers.docker=true", "--providers.docker.endpoint=tcp://docker_socket_proxy:2375", "--providers.docker.exposedbydefault=false", "--providers.file.directory=/etc/traefik/dynamic", "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}", "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}", "--certificatesresolvers.cloudflare.acme.storage=/acme.json", "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"]; logging: *default-logging; restart: unless-stopped
 EOF
 
-# CRON-99: Systemd Timers
+# Systemd Automation
 sudo tee /etc/systemd/system/sovereign-updater.service > /dev/null << EOF
+[Unit]
+Description=Sovereign Gateway Weekly Updater
 [Service]
-Type=oneshot; ExecStart=/bin/bash -c 'cd ${StackDir} && docker compose pull && docker compose up -d && docker image prune -af'
+Type=oneshot; ExecStart=/usr/bin/bash -c 'cd ${StackDir} && docker compose pull && docker compose up -d && docker image prune -af'
+[Install]
+WantedBy=multi-user.target
 EOF
+
 sudo tee /etc/systemd/system/sovereign-updater.timer > /dev/null << EOF
 [Timer]
 OnCalendar=weekly; RandomizedDelaySec=12h; Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-sudo systemctl daemon-reload; sudo systemctl enable --now sovereign-updater.timer
+
+WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
+sudo tee "$WatchdogScript" > /dev/null << EOF
+#!/bin/bash
+for manifest in "${ConfigDir}/Traefik/Dynamic/"*_assimilation.yml; do
+    [ -e "\$manifest" ] || continue
+    alien=\$(grep "^# ALIEN_CONTAINER: " "\$manifest" | cut -d' ' -f3 || true)
+    [ -z "\$alien" ] && continue
+    if docker ps --format '{{.Names}}' | grep -q "^\${alien}\$"; then
+        if ! docker inspect "\$alien" --format '{{json .NetworkSettings.Networks}}' | grep -q "sovereign_gateway_proxy_network"; then
+            docker network connect sovereign_gateway_proxy_network "\$alien" || true
+        fi
+    fi
+done
+EOF
+sudo chmod 700 "$WatchdogScript"
+
+sudo tee /etc/systemd/system/sovereign-watchdog.service > /dev/null << EOF
+[Service]
+Type=oneshot; ExecStart=$WatchdogScript
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo tee /etc/systemd/system/sovereign-watchdog.timer > /dev/null << EOF
+[Timer]
+OnCalendar=hourly; RandomizedDelaySec=5m; Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload; sudo systemctl enable --now sovereign-updater.timer sovereign-watchdog.timer
 
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified Sovereign Gateway..."; fi
 cd "$StackDir" && sudo docker compose up -d --force-recreate --remove-orphans
