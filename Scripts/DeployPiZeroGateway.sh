@@ -1,16 +1,25 @@
 #!/bin/bash
 # ==============================================================================
 #  SOVEREIGN GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (NODE A)
-#  Version: v79.2-SPLIT-HORIZON-ACTUAL
+#  Version: v79.4-OMEGA-GATEWAY
 # ==============================================================================
 #  Architecture: Dedicated Cryptographic Entry & DNS Sinkhole
+#  Omega Gateway Fixes:
+#  - MEM-01: Archived configuration state prior to ExecuteAnnihilation to 
+#            prevent irreversible amnesia of routing variables.
+#  - PKG-01: Mapped 'drill' binary to 'ldnsutils' package to prevent APT panics.
+#  - CRON-15: Injected lightweight autonomous lifecycle updater to prevent 
+#             cryptographic rot and ensure Pi-Hole gravity lists stay current.
+#  - ROUTE-17: Exposed 0.0.0.0:53 to the physical LAN. Pi-Hole will now 
+#              sinkhole telemetry for the entire physical household, not just VPN.
+#  Routing Fixes:
+#  - DNS-02: Restored split-brain DNS routing. Unbound redirects requests for 
+#            the internal domain to the Traefik Monolith's physical LAN IP.
+#  - BOOT-08: Reintroduced Unbound healthcheck gating.
 #  Split-Horizon Fixes:
-#  - ROUTE-01: Brutally amputated all Traefik labels from Pi-Hole. Traefik 
-#              resides on Node B and cannot read Node A's docker socket.
-#  - NET-02: Eradicated the phantom 'sovereign_node_proxy_network'. The Pi 
-#            Zero operates strictly within the 'vpn_network' boundary.
-#  - IAM-01: Excised Postgres, Authelia, and Traefik containers. Node A 
-#            is now a dedicated, lightweight perimeter gateway.
+#  - ROUTE-01: Brutally amputated all Traefik labels from Pi-Hole.
+#  - NET-02: Eradicated phantom proxy networks.
+#  - IAM-01: Excised Postgres, Authelia, and Traefik containers.
 # ==============================================================================
 
 set -euo pipefail
@@ -74,6 +83,10 @@ CheckDependencies() {
         fi
     done
 
+    # PKG-01: Map logical binaries to their physical packages to prevent APT panic
+    if ! command -v drill &> /dev/null; then
+        if [[ "$PkgManager" == "apt-get" ]]; then pkgs_to_install="$pkgs_to_install ldnsutils"; else pkgs_to_install="$pkgs_to_install ldns"; fi
+    fi
     if [ ! -d "/usr/share/zoneinfo" ]; then pkgs_to_install="$pkgs_to_install tzdata"; fi
     if ! command -v crontab &> /dev/null; then pkgs_to_install="$pkgs_to_install cron"; fi
     if ! command -v dig &> /dev/null; then pkgs_to_install="$pkgs_to_install dnsutils"; fi
@@ -95,6 +108,21 @@ CheckDependencies() {
 
 DetectOsFamily
 CheckDependencies
+
+# MEM-01: Extract state memory BEFORE Scorched Earth detonates the directory
+PrevEndpoint=""
+PrevPort="51820"
+PrevPeers="3"
+PrevDomain=""
+PrevTraefikIp=""
+
+if [ -f "$EnvFile" ]; then
+    PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
+    PrevPort=$(grep "^WG_PORT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "51820")
+    PrevPeers=$(grep "^WG_PEERS=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "3")
+    PrevDomain=$(grep "^INTERNAL_DOMAIN=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
+    PrevTraefikIp=$(grep "^TRAEFIK_IP=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
+fi
 
 ExecuteAnnihilation() {
     if [ "$Interactive" -eq 1 ] && [ -d "$StackDir" ]; then
@@ -158,10 +186,6 @@ WriteSecret() {
 [ ! -f "${SecretsDir}/pihole_pass" ] && WriteSecret "pihole_pass" "$(openssl rand -hex 16)"
 
 if [ "$Interactive" -eq 1 ]; then
-    PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
-    PrevPort=$(grep "^WG_PORT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "51820")
-    PrevPeers=$(grep "^WG_PEERS=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "3")
-
     read -p "WireGuard Public Endpoint (IP/DDNS) [$PrevEndpoint]: " input_endpoint || true
     WgEndpoint="${input_endpoint:-$PrevEndpoint}"
     
@@ -170,11 +194,19 @@ if [ "$Interactive" -eq 1 ]; then
     
     read -p "WireGuard Peer Count [$PrevPeers]: " input_peers || true
     WgPeers="${input_peers:-$PrevPeers}"
+    
+    read -p "Root Internal Domain (e.g. lan.domain.com) [$PrevDomain]: " input_domain || true
+    InternalDomain="${input_domain:-$PrevDomain}"
+    
+    read -p "Traefik Monolith LAN IP [$PrevTraefikIp]: " input_traefik || true
+    TraefikIp="${input_traefik:-$PrevTraefikIp}"
 
     sudo tee "$EnvFile" > /dev/null << EOF
 WG_ENDPOINT=${WgEndpoint}
 WG_PORT=${WgPort}
 WG_PEERS=${WgPeers}
+INTERNAL_DOMAIN=${InternalDomain}
+TRAEFIK_IP=${TraefikIp}
 TZ=UTC
 EOF
     sudo chmod 600 "$EnvFile"
@@ -186,6 +218,11 @@ if [ ! -f "$EnvFile" ]; then
 fi
 
 source "$EnvFile"
+
+if [ -z "${INTERNAL_DOMAIN:-}" ] || [ -z "${TRAEFIK_IP:-}" ]; then
+    PrintMsg "196" "[FATAL] Missing split-horizon routing variables in EnvFile. Please delete ${EnvFile} and rerun."
+    exit 1
+fi
 
 sudo curl -sS --connect-timeout 10 https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
 if grep -q "A.ROOT-SERVERS.NET" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
@@ -221,6 +258,8 @@ server:
   hide-version: yes
   access-control: 127.0.0.0/8 allow
   access-control: 10.99.0.0/24 allow
+  local-zone: "${INTERNAL_DOMAIN}." redirect
+  local-data: "${INTERNAL_DOMAIN}. A ${TRAEFIK_IP}"
 EOF
 
 ResolveImage() {
@@ -266,6 +305,12 @@ services:
     cap_add: [NET_BIND_SERVICE, SETGID, SETUID, CHOWN, DAC_OVERRIDE]
     security_opt: [no-new-privileges:true]
     logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "drill -p 53 internic.net @127.0.0.1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   pihole_sinkhole:
@@ -274,8 +319,10 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.12 }
     ports:
-      # ROUTE-01: Expose port 80 to the host so Node B (Traefik Monolith) can route to it over the physical LAN
+      # ROUTE-17: Exposed Port 53 so physical LAN devices can route DNS to this node
       - "0.0.0.0:80:80/tcp"
+      - "0.0.0.0:53:53/tcp"
+      - "0.0.0.0:53:53/udp"
     environment:
       - WEBPASSWORD_FILE=/run/secrets/pihole_pass
       - PIHOLE_DNS_=10.99.0.11#53
@@ -285,7 +332,8 @@ services:
       - ${ConfigDir}/PiHole/etc-pihole:/etc/pihole
       - ${ConfigDir}/PiHole/etc-dnsmasq.d:/etc/dnsmasq.d
     depends_on:
-      - unbound_dns
+      unbound_dns:
+        condition: service_healthy
     cap_drop: [ALL]
     cap_add: [NET_ADMIN, NET_BIND_SERVICE, NET_RAW, CHOWN, SETUID, SETGID, DAC_OVERRIDE, SYS_CHROOT, SYS_NICE]
     logging: *default-logging
@@ -317,6 +365,42 @@ EOF
 
 sudo chown -R 0:0 "$StackDir"
 sudo chmod 600 "$ComposeFile" "$EnvFile"
+
+# ==============================================================================
+# CRON-15: WEEKLY LIFECYCLE APPLIANCE UPDATER (GATEWAY SPECIFIC)
+# ==============================================================================
+UpdaterScript="${ScriptsDir}/UpdatePiZeroGateway.sh"
+sudo tee "${UpdaterScript}.tmp" > /dev/null << EOF
+#!/bin/bash
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+exec > >(logger -t PiZeroGatewayUpdater) 2>&1
+
+echo "[Pi Zero Gateway] Initiating weekly lifecycle update..."
+cd "${StackDir}" || exit 1
+
+curl -sS --connect-timeout 10 https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
+if grep -q "A.ROOT-SERVERS.NET" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
+    mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
+    docker compose restart unbound_dns
+else
+    logger -t PiZeroGatewayUpdater "ERROR: Root hints fetch corrupted. Retaining existing cache."
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
+fi
+
+docker compose pull --quiet
+docker compose up -d --remove-orphans
+docker image prune -af --filter "until=168h"
+
+# Trigger Pi-Hole gravity update to refresh ad-blocking lists
+docker exec pihole_sinkhole pihole -g || true
+
+echo "[Pi Zero Gateway] Update cycle complete."
+EOF
+
+sudo chmod 700 "${UpdaterScript}.tmp"
+sudo mv "${UpdaterScript}.tmp" "$UpdaterScript"
+sudo ln -sf "$UpdaterScript" /etc/cron.weekly/pizero-gateway-update
 
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Pi Zero Gateway..."; fi
 cd "$StackDir" && sudo docker compose up -d --force-recreate --remove-orphans
