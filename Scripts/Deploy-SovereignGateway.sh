@@ -1,14 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v11.2-ROUTING-ABSOLUTE
+#  Version: v11.3-ORCHESTRATION-ABSOLUTE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Orchestration Absolute Fixes:
+#  - ORCH-06: Purged ghost VPN_GATEWAY_IP variables causing Traefik fatal 
+#             CIDR panics during ignition.
+#  - ORCH-07: Synchronized trustedIPs with actual proxy_network (10.98.0.x) 
+#             and vpn_network (10.99.0.x) to restore forensic accountability 
+#             and preserve X-Forwarded-For headers.
 #  Routing Absolute Fixes:
-#  - ROUTE-18: Engineered Layer 2 LAN Hunter to bypass AnonSurf/VPN virtual 
-#              interfaces and isolate the physical silicon IP address.
-#  - ROUTE-19: Injected nmcli static IP enforcer to prevent DHCP drift from 
-#              shattering the Unbound local-data routing records.
+#  - ROUTE-18: Engineered Layer 2 LAN Hunter to bypass virtual interfaces.
+#  - ROUTE-19: Injected nmcli static IP enforcer to prevent DHCP drift.
 #  - ACME-02: Forged Let's Encrypt Production toggle into state memory.
 #  Native Orchestration Fixes:
 #  - DOCKER-01: Reverted to native 'docker-compose.yml' (snake_case).
@@ -482,7 +486,8 @@ http:
           X-XSS-Protection: "1; mode=block"
     vpn-whitelist:
       ipAllowList:
-        sourceRange: ["10.13.13.0/24", "10.99.0.10/32"]
+        # ORCH-06: Purged ghost variable and aligned subnets for internal routing
+        sourceRange: ["10.13.13.0/24", "10.98.0.0/24", "10.99.0.0/24"]
     traefik-auth:
       basicAuth:
         usersFile: "/run/secrets/traefik_auth"
@@ -719,7 +724,8 @@ services:
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
       - "--entrypoints.websecure.address=:443"
-      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.98.0.0/24,10.99.0.0/24"
+      # ORCH-07: Aligned trustedIPs with actual proxy and vpn subnets to preserve X-Forwarded-For headers
+      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.13.13.0/24,10.98.0.0/24,10.99.0.0/24,\${TRAEFIK_LAN_IP}/32"
       - "--providers.docker=true"
       - "--providers.docker.endpoint=tcp://docker_socket_proxy:2375"
       - "--providers.docker.exposedbydefault=false"
