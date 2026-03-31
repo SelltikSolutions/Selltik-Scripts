@@ -1,9 +1,13 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v11.0-GATEWAY-ABSOLUTE
+#  Version: v11.1-NATIVE-ORCHESTRATION
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Native Orchestration Fixes:
+#  - DOCKER-01: Reverted 'DockerCompose.yml' to native 'docker-compose.yml' (snake_case).
+#  - DOCKER-02: Dropped explicit '-f' flags to allow native engine discovery.
+#  - DOCKER-03: Renamed StackName to 'sovereign_gateway' to align with native project labeling.
 #  Gateway Absolute Fixes:
 #  - ROUTE-17: Exposed 0.0.0.0:53 to the physical LAN. Pi-Hole now acts as the 
 #              authoritative DNS sinkhole for the entire physical household.
@@ -26,7 +30,8 @@ set -euo pipefail
 cd /tmp || true
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-StackName="Deploy-SovereignGateway"
+# DOCKER-03: Pure snake_case for native Docker project labeling
+StackName="sovereign_gateway"
 BaseDir="/opt/Docker"
 ConfigDir="${BaseDir}/Config"
 ScriptsDir="${BaseDir}/Scripts"
@@ -34,10 +39,15 @@ StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
 
-# Tier-3 PascalCase Enforcement
-ComposeFile="${StackDir}/DockerCompose.yml"
+# DOCKER-01: Native Engine Alignment (snake_case for Compose)
+ComposeFile="${StackDir}/docker-compose.yml"
 EnvFile="${StackDir}/.env"
 LockFile="/var/lock/sovereign_gateway.lock"
+
+# Migration failsafe: transition the old PascalCase manifest to the native one
+if [ -f "${StackDir}/DockerCompose.yml" ]; then
+    sudo mv "${StackDir}/DockerCompose.yml" "$ComposeFile" 2>/dev/null || true
+fi
 
 exec 200>"$LockFile"
 flock -n 200 || { echo "[FATAL] Another deployment instance is running."; exit 1; }
@@ -168,8 +178,14 @@ fi
 PurgeLegacyState() {
     if [ -d "$StackDir" ]; then
         cd "$StackDir" || true
+        # DOCKER-02: Native discovery teardown
         if [ -f "$ComposeFile" ]; then
-            sudo docker compose -f "$ComposeFile" down --remove-orphans > /dev/null 2>&1 || true
+            sudo docker compose down --remove-orphans > /dev/null 2>&1 || true
+        fi
+        # Failsafe for legacy PascalCase artifacts
+        if [ -f "DockerCompose.yml" ]; then
+            sudo docker compose -f DockerCompose.yml down --remove-orphans > /dev/null 2>&1 || true
+            sudo rm -f DockerCompose.yml
         fi
         sudo docker rm -f docker_socket_proxy auth_db authelia unbound_dns pihole_sinkhole wireguard_vpn traefik_proxy >/dev/null 2>&1 || true
     fi
@@ -195,7 +211,11 @@ ExecuteAnnihilation() {
             PrintMsg "196" "Executing tactical nuke..."
             cd "$StackDir" || true
             if [ -f "$ComposeFile" ]; then
-                sudo docker compose -f "$ComposeFile" down -v --remove-orphans > /dev/null 2>&1 || true
+                sudo docker compose down -v --remove-orphans > /dev/null 2>&1 || true
+            fi
+            # Purge ghost legacy files
+            if [ -f "DockerCompose.yml" ]; then
+                sudo docker compose -f DockerCompose.yml down -v --remove-orphans > /dev/null 2>&1 || true
             fi
             sudo docker rm -f docker_socket_proxy auth_db authelia unbound_dns pihole_sinkhole wireguard_vpn traefik_proxy >/dev/null 2>&1 || true
             cd /tmp
@@ -693,14 +713,14 @@ cd "${StackDir}" || exit 1
 curl -sS --connect-timeout 10 https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
 if grep -q "A.ROOT-SERVERS.NET" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
     mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
-    docker compose -f "${ComposeFile}" restart unbound_dns
+    docker compose restart unbound_dns
 else
     logger -t SovereignGatewayUpdater "ERROR: Root hints fetch corrupted. Retaining existing cache."
     rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
 fi
 
-docker compose -f "${ComposeFile}" pull --quiet
-docker compose -f "${ComposeFile}" up -d --remove-orphans
+docker compose pull --quiet
+docker compose up -d --remove-orphans
 docker image prune -af --filter "until=168h"
 
 docker exec pihole_sinkhole pihole -g || true
@@ -738,7 +758,7 @@ sudo ln -sf "$WatchdogScript" /etc/cron.hourly/sovereign-gateway-watchdog
 
 # Ignition
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified Sovereign Gateway..."; fi
-cd "$StackDir" && sudo docker compose -f "$ComposeFile" up -d --force-recreate --remove-orphans
+cd "$StackDir" && sudo docker compose up -d --force-recreate --remove-orphans
 
 # ==============================================================================
 # ASSIM-01: LIVE ASSIMILATION ENGINE (POST-IGNITION)
