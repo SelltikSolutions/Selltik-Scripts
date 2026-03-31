@@ -1,25 +1,22 @@
 #!/bin/bash
 # ==============================================================================
 #  SOVEREIGN GATEWAY - WIREGUARD + PI-HOLE + UNBOUND (NODE A)
-#  Version: v79.4-OMEGA-GATEWAY
+#  Version: v79.5-OMEGA-ABSOLUTE
 # ==============================================================================
 #  Architecture: Dedicated Cryptographic Entry & DNS Sinkhole
+#  Absolute Gateway Fixes:
+#  - PORT-53: Injected systemd-resolved decapitation sequence. Frees host port 
+#             53 from the native stub resolver to allow Pi-Hole to bind to the 
+#             physical LAN without 'address already in use' kernel panics.
+#  - TUN-01: Mapped the /dev/net/tun character device into WireGuard. Ensures 
+#            userspace failover succeeds if host kernel headers mismatch.
+#  - ARCH-01: Restored strict architecture gating. Drops execution on unsupported 
+#             arm32v6 silicon to prevent cryptic Docker pull panics.
 #  Omega Gateway Fixes:
-#  - MEM-01: Archived configuration state prior to ExecuteAnnihilation to 
-#            prevent irreversible amnesia of routing variables.
-#  - PKG-01: Mapped 'drill' binary to 'ldnsutils' package to prevent APT panics.
-#  - CRON-15: Injected lightweight autonomous lifecycle updater to prevent 
-#             cryptographic rot and ensure Pi-Hole gravity lists stay current.
-#  - ROUTE-17: Exposed 0.0.0.0:53 to the physical LAN. Pi-Hole will now 
-#              sinkhole telemetry for the entire physical household, not just VPN.
-#  Routing Fixes:
-#  - DNS-02: Restored split-brain DNS routing. Unbound redirects requests for 
-#            the internal domain to the Traefik Monolith's physical LAN IP.
-#  - BOOT-08: Reintroduced Unbound healthcheck gating.
-#  Split-Horizon Fixes:
-#  - ROUTE-01: Brutally amputated all Traefik labels from Pi-Hole.
-#  - NET-02: Eradicated phantom proxy networks.
-#  - IAM-01: Excised Postgres, Authelia, and Traefik containers.
+#  - MEM-01: Archived configuration state prior to ExecuteAnnihilation.
+#  - PKG-01: Mapped 'drill' binary to 'ldnsutils' package.
+#  - CRON-15: Injected autonomous lifecycle updater for gravity and root hints.
+#  - ROUTE-17: Exposed 0.0.0.0:53 to the physical LAN.
 # ==============================================================================
 
 set -euo pipefail
@@ -52,6 +49,20 @@ PrintMsg() {
     echo -e "\033[1;33m$msg\033[0m"
 }
 
+# ARCH-01: Silicon Architecture Gate
+Arch=$(uname -m)
+if [[ "$Arch" == "armv6l" ]]; then
+    PrintMsg "196" "========================================================================"
+    PrintMsg "196" "[FATAL ARCHITECTURE MISMATCH] arm32v6 detected."
+    PrintMsg "196" "========================================================================"
+    PrintMsg "226" "The upstream WireGuard cryptographic containers no longer support the"
+    PrintMsg "226" "legacy Raspberry Pi Zero W (1st Gen) architecture. Attempting to force"
+    PrintMsg "226" "AES/ChaCha tunneling through a 1GHz single-core ARMv6 processor creates"
+    PrintMsg "226" "unacceptable cryptographic latency and throughput degradation."
+    PrintMsg "196" "ACTION REQUIRED: Upgrade your silicon to a Pi Zero 2 W (arm64) or higher."
+    exit 1
+fi
+
 DetectOsFamily() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
@@ -83,7 +94,7 @@ CheckDependencies() {
         fi
     done
 
-    # PKG-01: Map logical binaries to their physical packages to prevent APT panic
+    # PKG-01: Map logical binaries to their physical packages
     if ! command -v drill &> /dev/null; then
         if [[ "$PkgManager" == "apt-get" ]]; then pkgs_to_install="$pkgs_to_install ldnsutils"; else pkgs_to_install="$pkgs_to_install ldns"; fi
     fi
@@ -108,6 +119,19 @@ CheckDependencies() {
 
 DetectOsFamily
 CheckDependencies
+
+# PORT-53: systemd-resolved Decapitation Sequence
+if systemctl is-active --quiet systemd-resolved; then
+    PrintMsg "214" "Decapitating systemd-resolved to free Port 53 for the sinkhole..."
+    sudo sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
+    sudo sed -i 's/DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
+    sudo systemctl restart systemd-resolved || true
+    sleep 2
+    sudo chattr -i /etc/resolv.conf 2>/dev/null || true
+    sudo rm -f /etc/resolv.conf
+    echo -e "nameserver 1.1.1.1\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf > /dev/null
+    sudo chattr +i /etc/resolv.conf || true
+fi
 
 # MEM-01: Extract state memory BEFORE Scorched Earth detonates the directory
 PrevEndpoint=""
@@ -319,7 +343,7 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.12 }
     ports:
-      # ROUTE-17: Exposed Port 53 so physical LAN devices can route DNS to this node
+      # ROUTE-17: Exposed Port 53 to physical LAN. Host stub resolver must be decapitated first.
       - "0.0.0.0:80:80/tcp"
       - "0.0.0.0:53:53/tcp"
       - "0.0.0.0:53:53/udp"
@@ -353,6 +377,9 @@ services:
     volumes:
       - /lib/modules:/lib/modules:ro
       - ${ConfigDir}/WireGuard:/config
+    devices:
+      # TUN-01: Map character device for userspace routing fallback
+      - /dev/net/tun:/dev/net/tun
     ports: ["0.0.0.0:\${WG_PORT}:\${WG_PORT}/udp"]
     sysctls:
       net.ipv4.ip_forward: 1
