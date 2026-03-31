@@ -1,22 +1,23 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v15.0-SOVEREIGN-MASTER
+#  Version: v17.0-SOVEREIGN-OBLIVION
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Master Hardening Fixes:
-#  - CRON-102: Purged Semicolon Poisoning. Systemd unit files now use proper 
-#              literal newlines (\n) to ensure the daemon can parse them.
-#  - DNS-06: Restored DNSSEC Trust Anchor. Mounted the 'unbound_keys' volume 
-#            as :rw to allow RFC 5011 automated key rollovers.
-#  - HEALTH-11: Corrected Healthcheck Ghost. Replaced non-existent 'nc' with 
-#               Alpine's native 'nslookup' for reliable resolution testing.
-#  - SEC-14: Cryptographic Identity Mapped. Added PUID/PGID to WireGuard to 
-#            ensure the s6-overlay drops root and preserves host file access.
-#  Inherited STIG Fixes:
-#  - SEC-08 (Shred), KRN-01 (Kernel Armor), TIME-01/02 (Chrony & Temporal Gate), 
-#    LOG-05 (Native Rotation), PATH-09 (Absolute Paths), ENV-05 (set -a),
-#    DNS-05 (Unified Trust Chain).
+#  Oblivion Hardening Fixes (Applied ONE AT A TIME):
+#  1. DNS-08: Restored Unbound Entrypoint. Bootstraps 'root.key' via 
+#     unbound-anchor to prevent fatal DNSSEC Trust Anchor panics.
+#  2. UI-01: Restored Traefik labels to Pi-Hole. Sinkhole GUI is once again 
+#     routable via the Zero-Trust perimeter.
+#  3. SEC-15: WireGuard Permission Crash resolved. SUDO_UID is actively exported 
+#     to the .env file so the s6-overlay drops privileges securely.
+#  4. HEALTH-12: Stopped external healthcheck leak. Unbound queries the local 
+#     INTERNAL_DOMAIN instead of blasting internic.net 8,640 times a day.
+#  5. DNS-07: Inode Detachment resolved. Verify-RootHints uses 'cat' to 
+#     preserve bind-mount inodes; systemd timer forces an Unbound restart.
+#  Inherited Master Fixes:
+#  - CRON-102 (Systemd Newlines), DNS-06 (DNSSEC Anchor), HEALTH-11 (nslookup),
+#    SEC-08 (Shred Wiping), KRN-01 (Kernel Armor), TIME-02 (Temporal Gate).
 # ==============================================================================
 
 set -euo pipefail
@@ -33,7 +34,7 @@ StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
 
-# DOCKER-01: Snake_case enforced for native engine discovery
+# Native Engine Discovery (snake_case preserved by explicit override)
 ComposeFile="${StackDir}/docker-compose.yml"
 EnvFile="${StackDir}/.env"
 LockFile="/var/lock/sovereign_gateway.lock"
@@ -86,6 +87,9 @@ CheckDependencies() {
             else pkgs_to_install="$pkgs_to_install $bin"; fi
         fi
     done
+    if ! command -v drill &> /dev/null; then
+        if [[ "$PkgManager" == "apt-get" ]]; then pkgs_to_install="$pkgs_to_install ldnsutils"; else pkgs_to_install="$pkgs_to_install ldns"; fi
+    fi
     if [ ! -d "/usr/share/zoneinfo" ]; then pkgs_to_install="$pkgs_to_install tzdata"; fi
     if ! command -v dig &> /dev/null; then pkgs_to_install="$pkgs_to_install dnsutils"; fi
     for pkg in $pkgs_to_install; do
@@ -166,8 +170,12 @@ if systemctl is-active --quiet chrony || systemctl is-active --quiet chronyd; th
     timeout 60 bash -c 'until chronyc tracking | grep -q "Leap status     : Normal"; do sleep 2; done' || PrintMsg "196" "WARNING: NTP sync timed out."
 fi
 
+# Capture Host UID for Container Privilege Dropping
+HostUid="${SUDO_UID:-1000}"
+HostGid="${SUDO_GID:-1000}"
+
 # MEM-01: Extract state memory safely
-PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevPeers="3"; PrevLanIp="${HUNTER_IP:-}"; PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
+PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevLanIp="${HUNTER_IP:-}"; PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
 if [ -f "$EnvFile" ]; then
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" | cut -d= -f2 || echo "")
     PrevDomain=$(grep "^INTERNAL_DOMAIN=" "$EnvFile" | cut -d= -f2 || echo "")
@@ -197,6 +205,9 @@ ExecuteAnnihilation
 
 sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" "$ConfigDir/Unbound"
 sudo chown -R 70:70 "$ConfigDir/Postgres"
+# Host-level directory ownership ensures container drops privileges successfully
+sudo chown -R "$HostUid:$HostGid" "$ConfigDir/WireGuard" "$ConfigDir/Authelia"
+
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
 
@@ -209,7 +220,7 @@ WriteSecret() {
     sudo shred -u "$tmp_file"
 }
 
-# SEC-09: Gated Secret Generation (Prevent database lockout)
+# Gated Secret Generation
 if [ "$Interactive" -eq 1 ]; then
     [ ! -f "${SecretsDir}/cf_api_token" ] && { read -s -p "Cloudflare DNS API Token: " cf_token; echo ""; WriteSecret "cf_api_token" "$cf_token"; }
     [ ! -f "${SecretsDir}/traefik_auth" ] && { read -s -p "Traefik BasicAuth Password: " TraefikPass; echo ""; WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"; }
@@ -229,7 +240,7 @@ if [ "$Interactive" -eq 1 ]; then
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
     [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && AcmeServerUrl="https://acme-v02.api.letsencrypt.org/directory" || AcmeServerUrl="https://acme-staging-v02.api.letsencrypt.org/directory"
     
-    # Proper literal newline environment generation
+    # Proper literal newline environment generation with mapped Host UIDs
     sudo tee "$EnvFile" > /dev/null << EOF
 WG_ENDPOINT=${WgEndpoint}
 INTERNAL_DOMAIN=${InternalDomain}
@@ -238,6 +249,8 @@ ACME_SERVER_URL=${AcmeServerUrl}
 WG_PORT=${WgPort}
 WG_PEERS=3
 TRAEFIK_LAN_IP=${TraefikLanIp}
+HOST_UID=${HostUid}
+HOST_GID=${HostGid}
 TZ=UTC
 EOF
 fi
@@ -245,18 +258,18 @@ fi
 # ENV-05: Enforce Export Persistence for child processes
 set -a; source "$EnvFile"; set +a
 
-# DNS-05: Unified Lifecycle Trust Logic (Standalone PGP Helper)
+# DNS-05/07: Unified Trust Logic. Absolute path variables injected via un-quoted heredoc.
 RootHintUtility="${ScriptsDir}/Verify-RootHints.sh"
-sudo tee "$RootHintUtility" > /dev/null << 'EOF'
+sudo tee "$RootHintUtility" > /dev/null << EOF
 #!/bin/bash
 set -euo pipefail
-ConfigDir="/opt/Docker/Config"
 curl -sS "https://www.internic.net/domain/named.root" -o "${ConfigDir}/Unbound/RootHints.txt.tmp"
 curl -sS "https://www.internic.net/domain/named.root.sig" -o "${ConfigDir}/Unbound/RootHints.txt.sig"
 gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys 0x0BD07395 >/dev/null 2>&1 || true
 if gpg --verify "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
-    mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
-    rm -f "${ConfigDir}/Unbound/RootHints.txt.sig"
+    # Cat preserves bind-mount inodes so Docker volume maps don't break
+    cat "${ConfigDir}/Unbound/RootHints.txt.tmp" > "${ConfigDir}/Unbound/RootHints.txt"
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig"
     exit 0
 else
     rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig"
@@ -266,6 +279,7 @@ EOF
 sudo chmod 700 "$RootHintUtility"
 
 PrintMsg "240" "Verifying DNS Root Hints via GPG..."
+sudo touch "${ConfigDir}/Unbound/RootHints.txt"
 sudo "$RootHintUtility" || { PrintMsg "196" "[FATAL] GPG Signature Failure. Supply chain compromised."; exit 1; }
 
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
@@ -327,7 +341,7 @@ ${LogsDir}/*.log {
 }
 EOF
 
-# Compose Manifest: Corrected Healthchecks, Native JSON Logging, Absolute Paths
+# Compose Manifest: Corrected Healthchecks, Labels, Entrypoints, JSON Logging
 sudo tee "$ComposeFile" > /dev/null << EOF
 x-logging: &default-logging
   driver: "json-file"
@@ -346,7 +360,6 @@ networks:
   socket_network: { internal: true }
 
 volumes:
-  # DNS-06: Restored Volume for DNSSEC Key Persistence
   unbound_keys: {}
 
 secrets:
@@ -411,9 +424,11 @@ services:
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - unbound_keys:/opt/unbound/etc/unbound/keys:rw
+    # DNS-08: Restored entrypoint to bootstrap DNSSEC root keys preventing boot loop
+    entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     healthcheck:
-      # HEALTH-11: Alpine's native busybox nslookup avoids the nc/unbound-control binary voids
-      test: ["CMD-SHELL", "nslookup internic.net 127.0.0.1 >/dev/null || exit 1"]
+      # HEALTH-12: Stopped external leak. Queries internal domain silently
+      test: ["CMD-SHELL", "nslookup \${INTERNAL_DOMAIN} 127.0.0.1 >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -427,6 +442,17 @@ services:
       vpn_network: { ipv4_address: 10.99.0.12 }
       proxy_network: {}
     ports: ["0.0.0.0:53:53/tcp", "0.0.0.0:53:53/udp"]
+    labels:
+      # UI-01: Restored Traefik routing to ensure management console is accessible
+      - "traefik.enable=true"
+      - "traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)"
+      - "traefik.http.routers.pihole.entrypoints=websecure"
+      - "traefik.http.routers.pihole.tls.certresolver=cloudflare"
+      - "traefik.http.services.pihole.loadbalancer.server.port=80"
+      - "traefik.http.middlewares.pihole-redirect.redirectregex.regex=^https://pihole\.\${INTERNAL_DOMAIN}/\\$\\$"
+      - "traefik.http.middlewares.pihole-redirect.redirectregex.replacement=https://pihole.\${INTERNAL_DOMAIN}/admin/"
+      - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file,pihole-redirect"
+      - "traefik.docker.network=sovereign_gateway_proxy_network"
     secrets: [pihole_pass]
     environment:
       WEBPASSWORD_FILE: /run/secrets/pihole_pass
@@ -444,9 +470,9 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.10 }
     environment:
-      # SEC-14: Cryptographic Identity (PUID/PGID) ensures host can read generated keys
-      PUID: "1000"
-      PGID: "1000"
+      # SEC-15: Map execution UID/GID so s6-overlay successfully drops privileges
+      PUID: "\${HOST_UID}"
+      PGID: "\${HOST_GID}"
       SERVERURL: \${WG_ENDPOINT}
       SERVERPORT: \${WG_PORT}
       PEERS: 3
@@ -495,7 +521,7 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bash -c '${RootHintUtility} && cd ${StackDir} && docker compose pull && docker compose up -d && docker image prune -af'
+ExecStart=/usr/bin/bash -c '${RootHintUtility} && cd ${StackDir} && docker compose pull && docker compose up -d && docker image prune -af && docker compose restart unbound_dns'
 PrivateTmp=yes
 
 [Install]
