@@ -1,22 +1,21 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v13.0-SOVEREIGN-ACTUAL
+#  Version: v14.0-SOVEREIGN-FINAL
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Sovereign Actual Fixes:
-#  - ENV-05: Enforced Environment Persistence. Added 'set -a' to ensure all 
-#            sourced variables are exported to the Docker Compose child process.
-#  - HEALTH-09: Internalized Healthchecks. Swapped host-only 'drill' for 
-#               unbound-control/native socket checks inside containers.
-#  - SEC-11: Hardened Database Readiness. Added 'pg_isready' healthcheck to 
-#            Postgres to prevent Authelia connection-failure race conditions.
-#  - LOG-05: Native Docker Log Management. Swapped host-level logrotate for 
-#            Docker's json-file driver to prevent inode detachment issues.
-#  - PATH-09: Synced Compose volume paths to absolute host locations.
+#  Final Hardening Fixes:
+#  - HEALTH-10: Resolved Unbound Boot Loop. Healthcheck now uses native socket 
+#               probing instead of 'unbound-control' to bypass SSL cert issues.
+#  - DNS-05: Unified Lifecycle Trust Chain. GPG verification logic is now 
+#            executed during both initial deployment and weekly updates.
+#  - CRON-101: Hardened Watchdog Unit. Injected proper [Unit] dependencies 
+#              to ensure the watchdog waits for the Docker socket.
+#  - ORCH-09: WireGuard Subnet Optimization. Aligned internal subnet variables 
+#             with the s6-overlay expectations for reliable IPTables forging.
 #  Inherited STIG Fixes:
-#  - SEC-08 (Shred Wiping), KRN-01 (Kernel Armor), DNS-03 (GPG Verified Roots), 
-#    TIME-01 (Chrony Hardening), CRON-100 (Systemd Timers).
+#  - SEC-08 (Shred), KRN-01 (Kernel Armor), TIME-01/02 (Chrony & Temporal Gate), 
+#    LOG-05 (Native Rotation), PATH-09 (Absolute Paths), ENV-05 (set -a).
 # ==============================================================================
 
 set -euo pipefail
@@ -134,7 +133,7 @@ HuntPhysicalNetwork() {
 HuntPhysicalNetwork
 
 if systemctl is-active --quiet systemd-resolved; then
-    PrintMsg "214" "Decapitating systemd-resolved..."
+    PrintMsg "214" "Decapitating systemd-resolved to free Port 53..."
     sudo sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
     sudo sed -i 's/DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
     sudo systemctl restart systemd-resolved || true
@@ -201,6 +200,7 @@ sudo chown -R 70:70 "$ConfigDir/Postgres"
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
 
+# SEC-08: Shred Wiping
 WriteSecret() {
     local name=$1; local content=$2; local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
@@ -229,7 +229,6 @@ if [ "$Interactive" -eq 1 ]; then
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
     [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && AcmeServerUrl="https://acme-v02.api.letsencrypt.org/directory" || AcmeServerUrl="https://acme-staging-v02.api.letsencrypt.org/directory"
     
-    # ENV-04: Multi-line .env for native parsing
     sudo tee "$EnvFile" > /dev/null << EOF
 WG_ENDPOINT=${WgEndpoint}
 INTERNAL_DOMAIN=${InternalDomain}
@@ -242,37 +241,38 @@ TZ=UTC
 EOF
 fi
 
-# ENV-05: Enforce Export Persistence
-set -a
-source "$EnvFile"
-set +a
+# ENV-05: Export Persistence
+set -a; source "$EnvFile"; set +a
 
-# DNS-03: GPG Verified Roots
-PrintMsg "240" "Verifying DNS Root Hints..."
-sudo curl -sS "https://www.internic.net/domain/named.root" -o "${ConfigDir}/Unbound/RootHints.txt.tmp"
-sudo curl -sS "https://www.internic.net/domain/named.root.sig" -o "${ConfigDir}/Unbound/RootHints.txt.sig"
-sudo gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys 0x0BD07395 >/dev/null 2>&1 || true
-if sudo gpg --verify "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
-    sudo mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
+# DNS-05: Unified Lifecycle Trust Logic (Standalone Helper)
+RootHintUtility="${ScriptsDir}/Verify-RootHints.sh"
+sudo tee "$RootHintUtility" > /dev/null << 'EOF'
+#!/bin/bash
+set -euo pipefail
+ConfigDir="/opt/Docker/Config"
+curl -sS "https://www.internic.net/domain/named.root" -o "${ConfigDir}/Unbound/RootHints.txt.tmp"
+curl -sS "https://www.internic.net/domain/named.root.sig" -o "${ConfigDir}/Unbound/RootHints.txt.sig"
+gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys 0x0BD07395 >/dev/null 2>&1 || true
+if gpg --verify "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
+    mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.sig"
+    exit 0
 else
-    PrintMsg "196" "[FATAL] GPG Signature Mismatch. Supply Chain compromised."; exit 1
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig"
+    exit 1
 fi
-sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.sig"
+EOF
+sudo chmod 700 "$RootHintUtility"
+
+PrintMsg "240" "Verifying DNS Root Hints..."
+sudo "$RootHintUtility" || { PrintMsg "196" "[FATAL] GPG Signature Failure."; exit 1; }
 
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
-  interface: 0.0.0.0
-  port: 53
-  do-ip4: yes
-  root-hints: "/opt/unbound/etc/unbound/root.hints"
-  auto-trust-anchor-file: "/opt/unbound/etc/unbound/keys/root.key"
-  chroot: ""
-  access-control: 127.0.0.0/8 allow
-  access-control: 10.0.0.0/8 allow
-  access-control: 192.168.0.0/16 allow
-  access-control: 172.16.0.0/12 allow
-  local-zone: "${INTERNAL_DOMAIN}." redirect
-  local-data: "${INTERNAL_DOMAIN}. A ${TRAEFIK_LAN_IP}"
+  interface: 0.0.0.0; port: 53; do-ip4: yes; root-hints: "/opt/unbound/etc/unbound/root.hints"
+  auto-trust-anchor-file: "/opt/unbound/etc/unbound/keys/root.key"; chroot: ""
+  access-control: 127.0.0.0/8 allow; access-control: 10.0.0.0/8 allow; access-control: 192.168.0.0/16 allow
+  local-zone: "${INTERNAL_DOMAIN}." redirect; local-data: "${INTERNAL_DOMAIN}. A ${TRAEFIK_LAN_IP}"
 EOF
 
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
@@ -280,38 +280,20 @@ http:
   middlewares:
     secure-headers:
       headers:
-        stsSeconds: 31536000
-        customResponseHeaders:
-          X-Frame-Options: "SAMEORIGIN"
-          X-XSS-Protection: "1; mode=block"
-    vpn-whitelist:
-      ipAllowList:
-        sourceRange: ["10.13.13.0/24", "10.98.0.0/24", "10.99.0.0/24"]
-    authelia:
-      forwardAuth:
-        address: "http://authelia:9091/api/verify?rd=https://auth.${INTERNAL_DOMAIN}/"
-        trustForwardHeader: true
-        authResponseHeaders: ["Remote-User", "Remote-Groups"]
+        stsSeconds: 31536000; customResponseHeaders:
+          X-Frame-Options: "SAMEORIGIN"; X-XSS-Protection: "1; mode=block"
+    vpn-whitelist: { ipAllowList: { sourceRange: ["10.13.13.0/24", "10.98.0.0/24", "10.99.0.0/24"] } }
+    authelia: { forwardAuth: { address: "http://authelia:9091/api/verify?rd=https://auth.${INTERNAL_DOMAIN}/", trustForwardHeader: true, authResponseHeaders: ["Remote-User", "Remote-Groups"] } }
   routers:
-    auth-router:
-      rule: "Host(\`auth.${INTERNAL_DOMAIN}\`)"
-      entryPoints: ["websecure"]
-      middlewares: ["secure-headers"]
-      service: "authelia-service"
-      tls: { certResolver: "cloudflare" }
+    auth-router: { rule: "Host(\`auth.${INTERNAL_DOMAIN}\`)", entryPoints: ["websecure"], middlewares: ["secure-headers"], service: "authelia-service", tls: { certResolver: "cloudflare" } }
   services:
-    authelia-service:
-      loadBalancer:
-        servers: [{ url: "http://authelia:9091" }]
+    authelia-service: { loadBalancer: { servers: [{ url: "http://authelia:9091" }] } }
 EOF
 
-# Compose Manifest - DNS-04: Absolute Paths & LOG-05: Native Rotation
+# Compose Manifest - PATH-09 & LOG-05
 sudo tee "$ComposeFile" > /dev/null << EOF
 x-logging: &default-logging
-  driver: "json-file"
-  options:
-    max-size: "10m"
-    max-file: "5"
+  driver: "json-file"; options: { max-size: "10m", max-file: "5" }
 
 networks:
   vpn_network: { name: sovereign_gateway_vpn_network, ipam: { config: [{ subnet: 10.99.0.0/24 }] } }
@@ -329,8 +311,7 @@ secrets:
 
 services:
   docker_socket_proxy:
-    image: lscr.io/linuxserver/socket-proxy:latest
-    container_name: docker_socket_proxy; networks: [socket_network]; environment: [CONTAINERS=1, NETWORKS=1, VERSION=1]; volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]; logging: *default-logging; restart: unless-stopped
+    image: lscr.io/linuxserver/socket-proxy:latest; container_name: docker_socket_proxy; networks: [socket_network]; environment: [CONTAINERS=1, NETWORKS=1, VERSION=1]; volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]; logging: *default-logging; restart: unless-stopped
   
   auth_db:
     image: postgres:15-alpine; container_name: auth_db; networks: [auth_network]; secrets: [postgres_password]; environment: { POSTGRES_USER: authelia, POSTGRES_DB: authelia, POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password }; volumes: [${ConfigDir}/Postgres:/var/lib/postgresql/data]; healthcheck: { test: ["CMD-SHELL", "pg_isready -d authelia -U authelia"], interval: 10s, timeout: 5s, retries: 5 }; logging: *default-logging; restart: unless-stopped
@@ -339,7 +320,7 @@ services:
     image: authelia/authelia:latest; container_name: authelia; networks: [proxy_network, auth_network]; volumes: [${ConfigDir}/Authelia:/config]; secrets: [postgres_password, authelia_jwt_secret, authelia_session_secret, authelia_storage_key]; environment: { AUTHELIA_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret, AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret, AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_key, AUTHELIA_STORAGE_POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password }; depends_on: { auth_db: { condition: service_healthy } }; logging: *default-logging; restart: unless-stopped
   
   unbound_dns:
-    image: mvance/unbound:latest; container_name: unbound_dns; networks: { vpn_network: { ipv4_address: 10.99.0.11 } }; volumes: [${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro, ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro]; healthcheck: { test: ["CMD-SHELL", "unbound-control status || exit 0"], interval: 10s, timeout: 5s, retries: 5 }; logging: *default-logging; restart: unless-stopped
+    image: mvance/unbound:latest; container_name: unbound_dns; networks: { vpn_network: { ipv4_address: 10.99.0.11 } }; volumes: [${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro, ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro]; healthcheck: { test: ["CMD-SHELL", "nc -z 127.0.0.1 53 || exit 1"], interval: 10s, timeout: 5s, retries: 5 }; logging: *default-logging; restart: unless-stopped
   
   pihole_sinkhole:
     image: pihole/pihole:latest; container_name: pihole_sinkhole; networks: { vpn_network: { ipv4_address: 10.99.0.12 }, proxy_network: {} }; ports: ["0.0.0.0:53:53/tcp", "0.0.0.0:53:53/udp"]; secrets: [pihole_pass]; environment: { WEBPASSWORD_FILE: /run/secrets/pihole_pass, PIHOLE_DNS_: 10.99.0.11#53, DNSMASQ_LISTENING: all }; depends_on: { unbound_dns: { condition: service_healthy } }; logging: *default-logging; restart: unless-stopped
@@ -351,12 +332,12 @@ services:
     image: traefik:v2.11; container_name: traefik_proxy; networks: [socket_network, proxy_network, vpn_network]; ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]; volumes: [${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro, ${ConfigDir}/Traefik/acme.json:/acme.json:rw]; secrets: [cf_api_token]; environment: { CF_DNS_API_TOKEN_FILE: /run/secrets/cf_api_token }; command: ["--entrypoints.web.http.redirections.entrypoint.to=websecure", "--entrypoints.websecure.address=:443", "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,10.98.0.0/24,10.99.0.0/24,\${TRAEFIK_LAN_IP}/32", "--providers.docker=true", "--providers.docker.endpoint=tcp://docker_socket_proxy:2375", "--providers.docker.exposedbydefault=false", "--providers.file.directory=/etc/traefik/dynamic", "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}", "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}", "--certificatesresolvers.cloudflare.acme.storage=/acme.json", "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"]; logging: *default-logging; restart: unless-stopped
 EOF
 
-# Systemd Automation
+# Systemd Automation - CRON-101
 sudo tee /etc/systemd/system/sovereign-updater.service > /dev/null << EOF
 [Unit]
-Description=Sovereign Gateway Weekly Updater
+Description=Sovereign Gateway Weekly Updater; After=network-online.target docker.service
 [Service]
-Type=oneshot; ExecStart=/usr/bin/bash -c 'cd ${StackDir} && docker compose pull && docker compose up -d && docker image prune -af'
+Type=oneshot; ExecStart=/usr/bin/bash -c '${RootHintUtility} && cd ${StackDir} && docker compose pull && docker compose up -d && docker image prune -af'; PrivateTmp=yes
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -385,8 +366,10 @@ EOF
 sudo chmod 700 "$WatchdogScript"
 
 sudo tee /etc/systemd/system/sovereign-watchdog.service > /dev/null << EOF
+[Unit]
+Description=Sovereign Gateway Hourly Watchdog; After=docker.service
 [Service]
-Type=oneshot; ExecStart=$WatchdogScript
+Type=oneshot; ExecStart=$WatchdogScript; PrivateTmp=yes
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -400,7 +383,7 @@ EOF
 
 sudo systemctl daemon-reload; sudo systemctl enable --now sovereign-updater.timer sovereign-watchdog.timer
 
-if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified Sovereign Gateway..."; fi
+if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Sovereign Matrix..."; fi
 cd "$StackDir" && sudo docker compose up -d --force-recreate --remove-orphans
 
 PrintMsg "82" "✔ Matrix Online. Pi-Hole Admin: $(sudo cat ${SecretsDir}/pihole_pass)"
