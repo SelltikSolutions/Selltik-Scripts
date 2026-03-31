@@ -1,27 +1,22 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v11.1-NATIVE-ORCHESTRATION
+#  Version: v11.2-ROUTING-ABSOLUTE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Routing Absolute Fixes:
+#  - ROUTE-18: Engineered Layer 2 LAN Hunter to bypass AnonSurf/VPN virtual 
+#              interfaces and isolate the physical silicon IP address.
+#  - ROUTE-19: Injected nmcli static IP enforcer to prevent DHCP drift from 
+#              shattering the Unbound local-data routing records.
+#  - ACME-02: Forged Let's Encrypt Production toggle into state memory.
 #  Native Orchestration Fixes:
-#  - DOCKER-01: Reverted 'DockerCompose.yml' to native 'docker-compose.yml' (snake_case).
+#  - DOCKER-01: Reverted to native 'docker-compose.yml' (snake_case).
 #  - DOCKER-02: Dropped explicit '-f' flags to allow native engine discovery.
-#  - DOCKER-03: Renamed StackName to 'sovereign_gateway' to align with native project labeling.
 #  Gateway Absolute Fixes:
-#  - ROUTE-17: Exposed 0.0.0.0:53 to the physical LAN. Pi-Hole now acts as the 
-#              authoritative DNS sinkhole for the entire physical household.
-#  - PORT-53: Injected systemd-resolved decapitation sequence. Frees host port 
-#             53 from the native stub resolver to allow Pi-Hole to bind to the 
-#             physical LAN without 'address already in use' kernel panics.
-#  - TUN-01: Mapped the /dev/net/tun character device into WireGuard. Ensures 
-#            userspace failover succeeds if host kernel headers mismatch.
-#  - MEM-01: Archived configuration state prior to ExecuteAnnihilation to 
-#            prevent irreversible amnesia of routing variables.
-#  - CRON-10 & 12: Restored autonomous Weekly Lifecycle Updater and Hourly 
-#                  Assimilation Watchdog to prevent cryptographic rot.
-#  - ASSIM-01: Restored the Assimilation Engine to dynamically bridge alien 
-#              containers into the Zero-Trust perimeter post-ignition.
+#  - ROUTE-17: Exposed 0.0.0.0:53 to the physical LAN.
+#  - PORT-53: Decapitated systemd-resolved to prevent bind collisions.
+#  - TUN-01: Mapped /dev/net/tun for WireGuard userspace failover.
 # ==============================================================================
 
 set -euo pipefail
@@ -30,8 +25,7 @@ set -euo pipefail
 cd /tmp || true
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-# DOCKER-03: Pure snake_case for native Docker project labeling
-StackName="sovereign_gateway"
+StackName="Deploy-SovereignGateway"
 BaseDir="/opt/Docker"
 ConfigDir="${BaseDir}/Config"
 ScriptsDir="${BaseDir}/Scripts"
@@ -39,15 +33,9 @@ StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
 
-# DOCKER-01: Native Engine Alignment (snake_case for Compose)
 ComposeFile="${StackDir}/docker-compose.yml"
 EnvFile="${StackDir}/.env"
 LockFile="/var/lock/sovereign_gateway.lock"
-
-# Migration failsafe: transition the old PascalCase manifest to the native one
-if [ -f "${StackDir}/DockerCompose.yml" ]; then
-    sudo mv "${StackDir}/DockerCompose.yml" "$ComposeFile" 2>/dev/null || true
-fi
 
 exec 200>"$LockFile"
 flock -n 200 || { echo "[FATAL] Another deployment instance is running."; exit 1; }
@@ -80,14 +68,6 @@ DetectOsFamily() {
         PkgManager="apt-get"
         UpdateCmd="apt-get update -y -q"
         InstallCmd="DEBIAN_FRONTEND=noninteractive apt-get install -y -q"
-    elif [[ "$OS_FAMILY" == *"rhel"* ]] || [[ "$OS_FAMILY" == *"fedora"* ]]; then
-        PkgManager="dnf"
-        UpdateCmd="dnf check-update -q || true"
-        InstallCmd="dnf install -y -q"
-    elif [[ "$OS_FAMILY" == *"arch"* ]]; then
-        PkgManager="pacman"
-        UpdateCmd="pacman -Sy --noconfirm --quiet"
-        InstallCmd="pacman -S --noconfirm --quiet"
     else
         echo "[FATAL] Unsupported OS Family: $OS_FAMILY."; exit 1
     fi
@@ -98,25 +78,17 @@ CheckDependencies() {
     eval "$UpdateCmd" > /dev/null 2>&1 || true
     
     local pkgs_to_install=""
-
     for bin in curl jq openssl wget qrencode; do
-        if ! command -v "$bin" &> /dev/null; then
-            pkgs_to_install="$pkgs_to_install $bin"
-        fi
+        if ! command -v "$bin" &> /dev/null; then pkgs_to_install="$pkgs_to_install $bin"; fi
     done
 
-    # Map logical binaries to their physical packages
     if ! command -v drill &> /dev/null; then
         if [[ "$PkgManager" == "apt-get" ]]; then pkgs_to_install="$pkgs_to_install ldnsutils"; else pkgs_to_install="$pkgs_to_install ldns"; fi
     fi
 
     if [ ! -d "/usr/share/zoneinfo" ]; then pkgs_to_install="$pkgs_to_install tzdata"; fi
-    if ! command -v crontab &> /dev/null; then
-        if [[ "$PkgManager" == "apt-get" ]]; then pkgs_to_install="$pkgs_to_install cron"; else pkgs_to_install="$pkgs_to_install cronie"; fi
-    fi
-    if ! command -v dig &> /dev/null; then
-        if [[ "$PkgManager" == "apt-get" ]]; then pkgs_to_install="$pkgs_to_install dnsutils"; elif [[ "$PkgManager" == "dnf" ]]; then pkgs_to_install="$pkgs_to_install bind-utils"; elif [[ "$PkgManager" == "pacman" ]]; then pkgs_to_install="$pkgs_to_install bind"; fi
-    fi
+    if ! command -v crontab &> /dev/null; then pkgs_to_install="$pkgs_to_install cron"; fi
+    if ! command -v dig &> /dev/null; then pkgs_to_install="$pkgs_to_install dnsutils"; fi
 
     for pkg in $pkgs_to_install; do
         if [ -n "$pkg" ]; then
@@ -126,7 +98,7 @@ CheckDependencies() {
     done
 
     if ! command -v docker &> /dev/null || ! docker compose version &> /dev/null; then
-        PrintMsg "214" "Docker Engine missing. Initiating secure GPG-verified hypervisor provision..."
+        PrintMsg "214" "Docker Engine missing. Initiating provision..."
         if [[ "$PkgManager" == "apt-get" ]]; then
             sudo install -m 0755 -d /etc/apt/keyrings
             local os_repo="${OS_ID}"
@@ -146,8 +118,61 @@ CheckDependencies() {
 DetectOsFamily
 CheckDependencies
 
+# ROUTE-18: Physical Layer 2 LAN Hunter
+HuntPhysicalNetwork() {
+    if ! command -v nmcli &> /dev/null; then return; fi
+    
+    # Bypass tun0 (AnonSurf) and wg0 (WireGuard) by strictly hunting 802-3/802-11 hardware types
+    local ActivePhysConn=$(nmcli -t -f NAME,TYPE,STATE connection show --active | grep -E ':(802-3-ethernet|802-11-wireless):activated' | head -n 1 | cut -d: -f1 || true)
+    
+    if [ -n "$ActivePhysConn" ]; then
+        local PhysDev=$(nmcli -t -f DEVICE,NAME connection show --active | grep ":$ActivePhysConn$" | cut -d: -f1)
+        local PhysIp=$(ip -4 addr show "$PhysDev" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || true)
+        local CidrPrefix=$(ip -4 addr show "$PhysDev" | grep -oP '(?<=inet\s)\d+(\.\d+){3}/\d+' | cut -d/ -f2 || true)
+        local GatewayIp=$(ip route show dev "$PhysDev" | awk '/default/ {print $3}' | head -n 1 || true)
+        
+        [ -z "$GatewayIp" ] && GatewayIp=$(ip route | awk '/default/ {print $3}' | head -n 1 || true)
+        
+        if [ -n "$PhysIp" ]; then
+            export HUNTER_IP="$PhysIp"
+            local CurrentMethod=$(nmcli -t -f ipv4.method connection show "$ActivePhysConn" | cut -d: -f2 || true)
+            
+            # ROUTE-19: Static IP Enforcer
+            if [ "$Interactive" -eq 1 ] && [ "$CurrentMethod" == "auto" ]; then
+                echo ""
+                PrintMsg "214" "========================================================================"
+                PrintMsg "214" " 🕵️  PHYSICAL LAN HUNTER ENGAGED"
+                PrintMsg "214" "========================================================================"
+                PrintMsg "226" "Detected physical interface [$PhysDev] bypassing virtual tunnels."
+                PrintMsg "226" "Currently utilizing DHCP lease: $PhysIp"
+                PrintMsg "196" "WARNING: If your router changes this IP, your DNS sinkhole will collapse."
+                
+                local confirm_static="Y"
+                if command -v gum &> /dev/null; then
+                    if ! gum confirm "Freeze $PhysIp as a permanent Static IP?"; then confirm_static="N"; fi
+                else
+                    read -p "Freeze $PhysIp as a permanent Static IP? (Y/n): " input_static || true
+                    [[ "${input_static:-Y}" =~ ^[Nn]$ ]] && confirm_static="N"
+                fi
+                
+                if [ "$confirm_static" == "Y" ]; then
+                    PrintMsg "240" "Forging static lock on $ActivePhysConn..."
+                    sudo nmcli connection modify "$ActivePhysConn" ipv4.addresses "$PhysIp/$CidrPrefix"
+                    sudo nmcli connection modify "$ActivePhysConn" ipv4.gateway "$GatewayIp"
+                    sudo nmcli connection modify "$ActivePhysConn" ipv4.dns "1.1.1.1 1.0.0.1"
+                    sudo nmcli connection modify "$ActivePhysConn" ipv4.method manual
+                    sudo nmcli connection up "$ActivePhysConn" > /dev/null 2>&1 || true
+                    PrintMsg "82" "✔ Static IP Locked."
+                fi
+                PrintMsg "214" "========================================================================"
+            fi
+        fi
+    fi
+}
+
+HuntPhysicalNetwork
+
 # PORT-53: systemd-resolved Decapitation Sequence
-# Safely amputate the stub resolver to allow Pi-Hole to ingest LAN DNS requests.
 if systemctl is-active --quiet systemd-resolved; then
     PrintMsg "214" "Decapitating systemd-resolved to free Port 53 for the sinkhole..."
     sudo sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
@@ -160,12 +185,14 @@ if systemctl is-active --quiet systemd-resolved; then
     sudo chattr +i /etc/resolv.conf || true
 fi
 
-# MEM-01: Extract state memory BEFORE Scorched Earth detonates the directory
+# MEM-01: Extract state memory BEFORE Scorched Earth
 PrevEndpoint=""
 PrevDomain=""
 PrevEmail=""
 PrevPort="51820"
 PrevPeers="3"
+PrevLanIp="${HUNTER_IP:-}"
+PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
 
 if [ -f "$EnvFile" ]; then
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
@@ -173,20 +200,16 @@ if [ -f "$EnvFile" ]; then
     PrevEmail=$(grep "^ACME_EMAIL=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
     PrevPort=$(grep "^WG_PORT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "51820")
     PrevPeers=$(grep "^WG_PEERS=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "3")
+    local env_lan=$(grep "^TRAEFIK_LAN_IP=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
+    [ -n "$env_lan" ] && PrevLanIp="$env_lan"
+    local env_acme=$(grep "^ACME_SERVER_URL=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "")
+    [ -n "$env_acme" ] && PrevAcme="$env_acme"
 fi
 
 PurgeLegacyState() {
     if [ -d "$StackDir" ]; then
         cd "$StackDir" || true
-        # DOCKER-02: Native discovery teardown
-        if [ -f "$ComposeFile" ]; then
-            sudo docker compose down --remove-orphans > /dev/null 2>&1 || true
-        fi
-        # Failsafe for legacy PascalCase artifacts
-        if [ -f "DockerCompose.yml" ]; then
-            sudo docker compose -f DockerCompose.yml down --remove-orphans > /dev/null 2>&1 || true
-            sudo rm -f DockerCompose.yml
-        fi
+        if [ -f "$ComposeFile" ]; then sudo docker compose down --remove-orphans > /dev/null 2>&1 || true; fi
         sudo docker rm -f docker_socket_proxy auth_db authelia unbound_dns pihole_sinkhole wireguard_vpn traefik_proxy >/dev/null 2>&1 || true
     fi
 }
@@ -210,13 +233,7 @@ ExecuteAnnihilation() {
         if [ "$confirm" == "yes" ]; then
             PrintMsg "196" "Executing tactical nuke..."
             cd "$StackDir" || true
-            if [ -f "$ComposeFile" ]; then
-                sudo docker compose down -v --remove-orphans > /dev/null 2>&1 || true
-            fi
-            # Purge ghost legacy files
-            if [ -f "DockerCompose.yml" ]; then
-                sudo docker compose -f DockerCompose.yml down -v --remove-orphans > /dev/null 2>&1 || true
-            fi
+            if [ -f "$ComposeFile" ]; then sudo docker compose down -v --remove-orphans > /dev/null 2>&1 || true; fi
             sudo docker rm -f docker_socket_proxy auth_db authelia unbound_dns pihole_sinkhole wireguard_vpn traefik_proxy >/dev/null 2>&1 || true
             cd /tmp
             sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" \
@@ -258,9 +275,7 @@ for OrphanFile in "${ConfigDir}/Traefik/acme.json" "${ConfigDir}/Unbound/Unbound
                   "${ConfigDir}/Unbound/RootHints.txt" "${ConfigDir}/Authelia/configuration.yml" \
                   "${ConfigDir}/Authelia/users_database.yml" "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" \
                   "$ComposeFile"; do
-    if [ -d "$OrphanFile" ]; then
-        sudo rm -rf "$OrphanFile"
-    fi
+    if [ -d "$OrphanFile" ]; then sudo rm -rf "$OrphanFile"; fi
 done
 
 sudo touch "${ConfigDir}/Traefik/acme.json"
@@ -275,9 +290,7 @@ WriteSecret() {
     local content=$2
     local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
-    if [ ! -f "${SecretsDir}/${name}" ]; then
-        sudo touch "${SecretsDir}/${name}"
-    fi
+    if [ ! -f "${SecretsDir}/${name}" ]; then sudo touch "${SecretsDir}/${name}"; fi
     sudo chmod 644 "${SecretsDir}/${name}"
     sudo sh -c "cat '$tmp_file' > '${SecretsDir}/${name}'"
     sudo rm -f "$tmp_file"
@@ -319,13 +332,40 @@ if [ "$Interactive" -eq 1 ]; then
     
     read -p "Let's Encrypt Email [$PrevEmail]: " input_email || true
     AcmeEmail="${input_email:-$PrevEmail}"
+    
+    read -p "Physical Monolith LAN IP [$PrevLanIp]: " input_lan || true
+    TraefikLanIp="${input_lan:-$PrevLanIp}"
+
+    # ACME-02: Forged Let's Encrypt Production toggle
+    local ProdCa="https://acme-v02.api.letsencrypt.org/directory"
+    local StagingCa="https://acme-staging-v02.api.letsencrypt.org/directory"
+    local CurrentAcmeStr="Staging"
+    [ "$PrevAcme" == "$ProdCa" ] && CurrentAcmeStr="Production"
+    
+    echo ""
+    PrintMsg "214" "Current Let's Encrypt Environment: $CurrentAcmeStr"
+    local confirm_prod="N"
+    if command -v gum &> /dev/null; then
+        if gum confirm "Enable PRODUCTION Let's Encrypt Certificates? (Use only if matrix is proven)"; then confirm_prod="Y"; fi
+    else
+        read -p "Enable PRODUCTION Let's Encrypt Certificates? (y/N): " input_prod || true
+        [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && confirm_prod="Y"
+    fi
+    
+    if [ "$confirm_prod" == "Y" ]; then
+        AcmeServerUrl="$ProdCa"
+    else
+        AcmeServerUrl="$StagingCa"
+    fi
 
     sudo tee "$EnvFile" > /dev/null << EOF
 WG_ENDPOINT=${WgEndpoint}
 INTERNAL_DOMAIN=${InternalDomain}
 ACME_EMAIL=${AcmeEmail}
+ACME_SERVER_URL=${AcmeServerUrl}
 WG_PORT=${WgPort}
 WG_PEERS=${WgPeers}
+TRAEFIK_LAN_IP=${TraefikLanIp}
 TZ=UTC
 EOF
     sudo chmod 600 "$EnvFile"
@@ -351,6 +391,7 @@ EOF
     sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
 fi
 
+# ROUTE-18: Split-brain DNS dynamically bounds the internal domain to the physical LAN interface
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
   num-threads: 1
@@ -373,9 +414,11 @@ server:
   hide-identity: yes
   hide-version: yes
   access-control: 127.0.0.0/8 allow
-  access-control: 10.99.0.0/24 allow
+  access-control: 10.0.0.0/8 allow
+  access-control: 192.168.0.0/16 allow
+  access-control: 172.16.0.0/12 allow
   local-zone: "${INTERNAL_DOMAIN}." redirect
-  local-data: "${INTERNAL_DOMAIN}. A 10.99.0.13"
+  local-data: "${INTERNAL_DOMAIN}. A ${TRAEFIK_LAN_IP}"
 EOF
 
 sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
@@ -682,8 +725,8 @@ services:
       - "--providers.docker.exposedbydefault=false"
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--providers.file.watch=true"
-      # Using Staging CA by default to protect production Let's Encrypt quota during initial testing
-      - "--certificatesresolvers.cloudflare.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
+      # ACME-02: Dynmically load Let's Encrypt endpoint based on interactive operator choice
+      - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/acme.json"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
@@ -877,8 +920,10 @@ if [ "$Interactive" -eq 1 ]; then
 
     echo ""
     PrintMsg "82" "✔ Unified Matrix Online. Turn the key."
-    PrintMsg "196" "NOTE: Traefik is using the Let's Encrypt Staging Server. Your browser"
-    PrintMsg "196" "will show a 'Fake Certificate' warning. This is expected. Bypass it to test."
+    if grep -q "staging" "$EnvFile"; then
+        PrintMsg "196" "NOTE: Traefik is using the Let's Encrypt Staging Server. Your browser"
+        PrintMsg "196" "will show a 'Fake Certificate' warning. This is expected. Bypass it to test."
+    fi
 fi
 
 exit 0
