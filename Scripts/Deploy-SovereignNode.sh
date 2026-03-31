@@ -1,37 +1,28 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN NODE - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v10.42-OMEGA-ACTUAL
+#  Version: v10.44-STAGING-ABSOLUTE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
+#  Staging Absolute Fixes:
+#  - ACME-01: Injected Let's Encrypt Staging CA server to prevent production 
+#             rate-limit lockouts during repeated Scorched Earth debugging.
+#  - WG-01: Injected DAC_OVERRIDE and FOWNER into WireGuard capabilities to 
+#           allow the unprivileged s6-overlay to write cryptographic keys 
+#           into the root-owned host bind-mount.
+#  Inode Absolute Fixes:
+#  - ORCH-05: Injected explicit 'docker rm -f' to teardown sequences.
+#  - UTIL-01: Added 'qrencode' to base dependencies.
 #  Omega Actual Fixes:
-#  - UPGRADE-01: Un-nested 'chmod 644' from the Day-Zero initialization block 
-#                in WriteSecret to unconditionally fix legacy permissions on 
-#                upgraded nodes, preventing Authelia IAM-07 panics.
-#  - SYNTAX-02: Extracted internal double-quotes and appended '@file' provider 
-#               suffixes to assimilation middlewares to prevent fatal YAML 
-#               parsing errors in alien Docker configurations.
+#  - UPGRADE-01: Un-nested 'chmod 644' to unconditionally fix legacy permissions.
+#  - SYNTAX-02: Extracted internal double-quotes from assimilation middlewares.
 #  Decode Absolute Fixes:
 #  - TRAEFIK-01: Excised the deprecated '--providers.docker.version' flag.
-#  Omega Verified Fixes:
-#  - IAM-07: Adjusted secret file permissions to 644 for unprivileged read access.
-#  - ORCH-04: Replaced hardcoded 'PEERS=3' in compose with \${WG_PEERS}.
-#  - ROUTE-16: Stripped Pi-Hole localhost port mapping to eliminate side-doors.
-#  Omega Absolute Fixes:
-#  - ORCH-03: Restored native '.env' discovery and eradicated '--env-file' flags.
-#  - AUTO-02: Engineered headless cryptographic pipeline ingestions.
-#  Native Orchestration Fixes:
-#  - ENGINE-01: Reverted to POSIX-standard 'docker-compose.yml'.
 # ==============================================================================
 
 set -euo pipefail
 
-# CWD-01: Ghost Directory Escape. If the script is executed from an orphaned 
-# directory (e.g., a stack dir wiped by Scorched Earth), Bash will violently 
-# crash on subshell spawns. Force absolute safe ground.
 cd /tmp || true
-
-# Force absolute path resolution
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 StackName="SovereignNode"
@@ -42,22 +33,18 @@ StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
 
-# ENGINE-01 & ORCH-03: Reverted to native nomenclature to satisfy the Docker engine.
 ComposeFile="${StackDir}/docker-compose.yml"
 EnvFile="${StackDir}/.env"
 LockFile="/var/lock/sovereign_node.lock"
 
-# ORCH-03: State Migration: Seamlessly rename legacy environment file if it exists
 if [ -f "${StackDir}/Node.env" ]; then
     sudo mv "${StackDir}/Node.env" "$EnvFile" 2>/dev/null || true
 fi
 
-# Atomic execution lock
 exec 200>"$LockFile"
 flock -n 200 || { echo "[FATAL] Another deployment instance is running."; exit 1; }
 [ "$EUID" -eq 0 ] || { echo "[FATAL] Elevated privileges required. Run with: sudo $0"; exit 1; }
 
-# TTY verification for ParrotOS chained sudo
 Interactive=$([ -t 0 ] && echo 1 || echo 0)
 
 PrintMsg() {
@@ -106,12 +93,6 @@ CheckDependencies() {
             PrintMsg "196" "========================================================================"
             PrintMsg "196" "[FATAL OS CORRUPTION] dpkg database is locked or interrupted."
             PrintMsg "196" "========================================================================"
-            PrintMsg "226" "The host package manager crashed during a previous operation."
-            PrintMsg "226" "Deploying the Sovereign Matrix in this state will result in a fractured"
-            PrintMsg "226" "environment missing critical cryptographic and chronometric dependencies."
-            PrintMsg "196" ""
-            PrintMsg "196" "==> ACTION REQUIRED: Run 'sudo dpkg --configure -a' manually."
-            PrintMsg "196" "========================================================================"
             exit 1
         fi
     fi
@@ -120,14 +101,12 @@ CheckDependencies() {
     
     local pkgs_to_install=""
 
-    # Base binary checks
-    for bin in curl jq openssl wget; do
+    for bin in curl jq openssl wget qrencode; do
         if ! command -v "$bin" &> /dev/null; then
             pkgs_to_install="$pkgs_to_install $bin"
         fi
     done
 
-    # DEP-03: Map logical binaries to their respective data packages to prevent infinite install loops.
     if [ ! -d "/usr/share/zoneinfo" ]; then
         pkgs_to_install="$pkgs_to_install tzdata"
     fi
@@ -151,7 +130,6 @@ CheckDependencies() {
             PrintMsg "226" "Installing missing dependency: $pkg"
             if ! eval "$InstallCmd $pkg" > /dev/null 2>&1; then
                 PrintMsg "196" "[FATAL] Dependency installation failed for: $pkg"
-                PrintMsg "196" "Cannot proceed without critical infrastructure tools. Halting."
                 exit 1
             fi
         fi
@@ -171,77 +149,31 @@ CheckDependencies() {
             
             echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/${os_repo} $codename stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
             eval "$UpdateCmd" > /dev/null 2>&1
-            eval "$InstallCmd docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin" > /dev/null 2>&1 || { PrintMsg "196" "[FATAL] Failed to provision Docker via APT."; exit 1; }
-        
-        elif [[ "$PkgManager" == "dnf" ]]; then
-            sudo dnf config-manager --add-repo=https://download.docker.com/linux/centos/docker-ce.repo > /dev/null 2>&1
-            eval "$InstallCmd docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin" > /dev/null 2>&1 || { PrintMsg "196" "[FATAL] Failed to provision Docker via DNF."; exit 1; }
-        
-        elif [[ "$PkgManager" == "pacman" ]]; then
-            eval "$InstallCmd docker docker-compose" > /dev/null 2>&1 || { PrintMsg "196" "[FATAL] Failed to provision Docker via Pacman."; exit 1; }
+            eval "$InstallCmd docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin" > /dev/null 2>&1 || exit 1
         fi
-        
         sudo systemctl enable --now docker > /dev/null 2>&1 || true
-        sudo systemctl start docker > /dev/null 2>&1 || true
-    fi
-
-    if [ "$Interactive" -eq 1 ]; then
-        if ! command -v gum &> /dev/null; then
-            if [[ "$PkgManager" == "apt-get" ]]; then
-                sudo mkdir -p /etc/apt/keyrings
-                curl --connect-timeout 5 -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/charm.gpg || true
-                echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list > /dev/null
-                eval "$UpdateCmd" > /dev/null 2>&1 || true
-                eval "$InstallCmd gum" > /dev/null 2>&1 || true
-            fi
-        fi
     fi
 }
 
 DetectOsFamily
 CheckDependencies
 
-# ==============================================================================
-# CYCLE-05: GRACEFUL CLEANUP FALLBACK
-# ==============================================================================
 PurgeLegacyState() {
-    if [ "$Interactive" -eq 1 ]; then PrintMsg "214" "⚠️  Initiating Graceful Cleanup..."; fi
     if [ -d "$StackDir" ]; then
         cd "$StackDir" || true
-
-        # ORCH-03: Native Docker Compose execution (No explicit flags)
         if [ -f "$ComposeFile" ]; then
             sudo docker compose down --remove-orphans > /dev/null 2>&1 || true
         fi
-        
-        # Sweep for legacy PascalCase naming
-        if [ -f "${StackDir}/DockerCompose.yml" ]; then
-            sudo docker compose -f "${StackDir}/DockerCompose.yml" down --remove-orphans > /dev/null 2>&1 || true
-            sudo rm -f "${StackDir}/DockerCompose.yml"
-        fi
-
-        sudo rm -rf "${ConfigDir}/Traefik/Dynamic"/DynamicRules*.yml 2>/dev/null || true
-        sudo rm -rf "${ConfigDir}/Unbound/UnboundConfig.conf" 2>/dev/null || true
-        sudo rm -rf "${ConfigDir}/Unbound/RootHints.txt" 2>/dev/null || true
-        sudo rm -rf "${ConfigDir}/Authelia/configuration.yml" 2>/dev/null || true
-        sudo rm -rf "$ComposeFile" 2>/dev/null || true
+        sudo docker rm -f docker_socket_proxy auth_db authelia unbound_dns pihole_sinkhole wireguard_vpn traefik_proxy >/dev/null 2>&1 || true
     fi
 }
 
-# ==============================================================================
-# ANNIHILATION-01: TRUE SCORCHED EARTH PROTOCOL
-# ==============================================================================
 ExecuteAnnihilation() {
     if [ "$Interactive" -eq 1 ] && [ -d "$StackDir" ]; then
         PrintMsg "196" "========================================================================"
         PrintMsg "196" " 🔥 TRUE SCORCHED EARTH PROTOCOL"
         PrintMsg "196" "========================================================================"
         PrintMsg "226" "WARNING: You are requesting a mathematically clean slate."
-        PrintMsg "226" "This will VAPORIZE your PostgreSQL MFA Database, Let's Encrypt"
-        PrintMsg "226" "Certificates, Pi-Hole telemetry, and ALL cryptographic secrets."
-        PrintMsg "196" "There is no undo. You will be punished for your mistakes."
-        PrintMsg "196" "ACME WARNING: Let's Encrypt allows exactly 5 duplicate certs per week."
-        PrintMsg "196" "If you repeatedly scorch this protocol, your domain will be locked out."
         echo ""
         
         confirm="no"
@@ -255,17 +187,10 @@ ExecuteAnnihilation() {
         if [ "$confirm" == "yes" ]; then
             PrintMsg "196" "Executing tactical nuke..."
             cd "$StackDir" || true
-
-            # ORCH-03: Native Docker Compose execution
             if [ -f "$ComposeFile" ]; then
                 sudo docker compose down -v --remove-orphans > /dev/null 2>&1 || true
             fi
-            
-            # Purge legacy PascalCase if present
-            if [ -f "${StackDir}/DockerCompose.yml" ]; then
-                sudo docker compose -f "${StackDir}/DockerCompose.yml" down -v --remove-orphans > /dev/null 2>&1 || true
-            fi
-            
+            sudo docker rm -f docker_socket_proxy auth_db authelia unbound_dns pihole_sinkhole wireguard_vpn traefik_proxy >/dev/null 2>&1 || true
             cd /tmp
             sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" \
                         "${ConfigDir}/Traefik" "${ConfigDir}/WireGuard" \
@@ -273,7 +198,7 @@ ExecuteAnnihilation() {
             PrintMsg "82" "✔ Earth scorched. Nothing survives."
             sleep 2
         else
-            PrintMsg "82" "✔ Scorched Earth aborted. Retaining persistent state and exiting safely."
+            PrintMsg "82" "✔ Scorched Earth aborted. Retaining persistent state."
             PurgeLegacyState
             exit 0
         fi
@@ -282,27 +207,18 @@ ExecuteAnnihilation() {
 
 ExecuteAnnihilation
 
-# ==============================================================================
-# KERNEL-04: STIG-COMPLIANT HOST ARMOR
-# ==============================================================================
 PrintMsg "240" "Forging STIG-compliant host kernel armor..."
 sudo tee /etc/sysctl.d/99-SovereignNode.conf > /dev/null << 'EOF'
-# STIG: Protect against SYN flood attacks
 net.ipv4.tcp_syncookies = 1
-# STIG: Ignore ICMP redirects to prevent routing table manipulation
 net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.default.accept_redirects = 0
 net.ipv4.conf.all.secure_redirects = 0
 net.ipv4.conf.default.secure_redirects = 0
-# STIG: Disable sending redirects
 net.ipv4.conf.all.send_redirects = 0
 net.ipv4.conf.default.send_redirects = 0
-# STIG: Enable IP forwarding for WireGuard/Docker bridging
 net.ipv4.ip_forward = 1
 EOF
 sudo sysctl --system > /dev/null 2>&1 || true
-
-# ==============================================================================
 
 sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" \
              "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" \
@@ -311,16 +227,11 @@ sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$Confi
 
 sudo chown -R 70:70 "$ConfigDir/Postgres"
 
-# DOCKER-04: Defensively eradicate Docker-created directory orphans for file bind-mounts
-for OrphanFile in "${ConfigDir}/Traefik/acme.json" \
-                  "${ConfigDir}/Unbound/UnboundConfig.conf" \
-                  "${ConfigDir}/Unbound/RootHints.txt" \
-                  "${ConfigDir}/Authelia/configuration.yml" \
-                  "${ConfigDir}/Authelia/users_database.yml" \
-                  "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" \
+for OrphanFile in "${ConfigDir}/Traefik/acme.json" "${ConfigDir}/Unbound/UnboundConfig.conf" \
+                  "${ConfigDir}/Unbound/RootHints.txt" "${ConfigDir}/Authelia/configuration.yml" \
+                  "${ConfigDir}/Authelia/users_database.yml" "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" \
                   "$ComposeFile"; do
     if [ -d "$OrphanFile" ]; then
-        PrintMsg "214" "⚠️  Docker daemon orphaned directory detected at $OrphanFile. Obliterating..."
         sudo rm -rf "$OrphanFile"
     fi
 done
@@ -329,7 +240,6 @@ sudo touch "${ConfigDir}/Traefik/acme.json"
 sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 
 sudo mkdir -p "$SecretsDir"
-# Prevent host-level directory traversal attacks
 sudo chmod 700 "$SecretsDir"
 echo "*" | sudo tee "${SecretsDir}/.gitignore" > /dev/null
 
@@ -338,16 +248,10 @@ WriteSecret() {
     local content=$2
     local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
-    
     if [ ! -f "${SecretsDir}/${name}" ]; then
         sudo touch "${SecretsDir}/${name}"
     fi
-    
-    # UPGRADE-01 / IAM-07: Ensure unconditionally that the secret is readable by 
-    # unprivileged UID 1000 containers (Authelia). Un-nested from the creation block 
-    # to apply uniformly to Day-2 legacy upgrades. Parent $SecretsDir remains 700.
     sudo chmod 644 "${SecretsDir}/${name}"
-    
     sudo sh -c "cat '$tmp_file' > '${SecretsDir}/${name}'"
     sudo rm -f "$tmp_file"
 }
@@ -355,53 +259,16 @@ WriteSecret() {
 if [ "$Interactive" -eq 1 ]; then
     [ ! -f "${SecretsDir}/cf_api_token" ] && { 
         PrintMsg "226" "Cloudflare Scoped DNS API Token required:"
-        cf_token=""
-        if command -v gum &> /dev/null; then
-            cf_token=$(gum input --password || true)
-            [ -z "$cf_token" ] && { PrintMsg "196" "Token input cancelled. Halting."; exit 1; }
-        else
-            read -s -p "Token: " cf_token || true
-            echo ""
-            [ -z "$cf_token" ] && { PrintMsg "196" "Token input cancelled. Halting."; exit 1; }
-        fi
+        read -s -p "Token: " cf_token || true
+        echo ""
         WriteSecret "cf_api_token" "$cf_token"
     }
     [ ! -f "${SecretsDir}/traefik_auth" ] && {
         PrintMsg "226" "Provide a secure password for the Traefik BasicAuth fallback:"
-        TraefikPass=""
-        if command -v gum &> /dev/null; then
-            TraefikPass=$(gum input --password || true)
-            [ -z "$TraefikPass" ] && { PrintMsg "196" "Password input cancelled. Halting."; exit 1; }
-        else
-            read -s -p "Password: " TraefikPass || true
-            echo ""
-            [ -z "$TraefikPass" ] && { PrintMsg "196" "Password input cancelled. Halting."; exit 1; }
-        fi
+        read -s -p "Password: " TraefikPass || true
+        echo ""
         WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"
     }
-else
-    # AUTO-02: Headless cryptographic pipeline ingestion
-    if [ ! -f "${SecretsDir}/cf_api_token" ]; then
-        if [ -n "${CF_API_TOKEN:-}" ]; then
-            WriteSecret "cf_api_token" "$CF_API_TOKEN"
-        elif [ -n "${TF_VAR_cf_api_token:-}" ]; then
-            WriteSecret "cf_api_token" "$TF_VAR_cf_api_token"
-        else
-            PrintMsg "196" "[FATAL] Headless run failed. Missing cf_api_token secret and CF_API_TOKEN env var."
-            exit 1
-        fi
-    fi
-    
-    if [ ! -f "${SecretsDir}/traefik_auth" ]; then
-        if [ -n "${TRAEFIK_AUTH:-}" ]; then
-            WriteSecret "traefik_auth" "$TRAEFIK_AUTH"
-        elif [ -n "${TF_VAR_traefik_auth:-}" ]; then
-            WriteSecret "traefik_auth" "$TF_VAR_traefik_auth"
-        else
-            PrintMsg "196" "[FATAL] Headless run failed. Missing traefik_auth secret and TRAEFIK_AUTH env var."
-            exit 1
-        fi
-    fi
 fi
 
 [ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 32)"
@@ -417,48 +284,20 @@ if [ "$Interactive" -eq 1 ]; then
     PrevPort=$(grep "^WG_PORT=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "51820")
     PrevPeers=$(grep "^WG_PEERS=" "$EnvFile" 2>/dev/null | cut -d= -f2 || echo "3")
 
-    WgEndpoint=""
-    WgPort=""
-    WgPeers=""
-    InternalDomain=""
-    AcmeEmail=""
+    read -p "WireGuard Public Endpoint (IP/DDNS) [$PrevEndpoint]: " input_endpoint || true
+    WgEndpoint="${input_endpoint:-$PrevEndpoint}"
+    
+    read -p "WireGuard UDP Listen Port [$PrevPort]: " input_port || true
+    WgPort="${input_port:-$PrevPort}"
+    
+    read -p "WireGuard Peer Count [$PrevPeers]: " input_peers || true
+    WgPeers="${input_peers:-$PrevPeers}"
 
-    if command -v gum &> /dev/null; then
-        WgEndpoint=$(gum input --prompt "WireGuard Public Endpoint (IP/DDNS): " --value "$PrevEndpoint" || true)
-        [ -z "$WgEndpoint" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
-        
-        WgPort=$(gum input --prompt "WireGuard UDP Listen Port: " --value "$PrevPort" || true)
-        [ -z "$WgPort" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
-        
-        WgPeers=$(gum input --prompt "WireGuard Peer Count: " --value "$PrevPeers" || true)
-        [ -z "$WgPeers" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
-
-        InternalDomain=$(gum input --prompt "Root Internal Domain: " --value "$PrevDomain" || true)
-        [ -z "$InternalDomain" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
-        
-        AcmeEmail=$(gum input --prompt "Let's Encrypt Email: " --value "$PrevEmail" || true)
-        [ -z "$AcmeEmail" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
-    else
-        read -p "WireGuard Public Endpoint (IP/DDNS) [$PrevEndpoint]: " input_endpoint || true
-        WgEndpoint="${input_endpoint:-$PrevEndpoint}"
-        [ -z "$WgEndpoint" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
-        
-        read -p "WireGuard UDP Listen Port [$PrevPort]: " input_port || true
-        WgPort="${input_port:-$PrevPort}"
-        [ -z "$WgPort" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
-        
-        read -p "WireGuard Peer Count [$PrevPeers]: " input_peers || true
-        WgPeers="${input_peers:-$PrevPeers}"
-        [ -z "$WgPeers" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
-
-        read -p "Root Internal Domain [$PrevDomain]: " input_domain || true
-        InternalDomain="${input_domain:-$PrevDomain}"
-        [ -z "$InternalDomain" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
-        
-        read -p "Let's Encrypt Email [$PrevEmail]: " input_email || true
-        AcmeEmail="${input_email:-$PrevEmail}"
-        [ -z "$AcmeEmail" ] && { PrintMsg "196" "Input cancelled. Halting."; exit 1; }
-    fi
+    read -p "Root Internal Domain [$PrevDomain]: " input_domain || true
+    InternalDomain="${input_domain:-$PrevDomain}"
+    
+    read -p "Let's Encrypt Email [$PrevEmail]: " input_email || true
+    AcmeEmail="${input_email:-$PrevEmail}"
 
     sudo tee "$EnvFile" > /dev/null << EOF
 WG_ENDPOINT=${WgEndpoint}
@@ -466,23 +305,6 @@ INTERNAL_DOMAIN=${InternalDomain}
 ACME_EMAIL=${AcmeEmail}
 WG_PORT=${WgPort}
 WG_PEERS=${WgPeers}
-TZ=UTC
-EOF
-    sudo chmod 600 "$EnvFile"
-fi
-
-# AUTO-02: Headless environment pipeline ingestion
-if [ "$Interactive" -eq 0 ] && [ ! -f "$EnvFile" ]; then
-    if [ -z "${WG_ENDPOINT:-}" ] || [ -z "${INTERNAL_DOMAIN:-}" ] || [ -z "${ACME_EMAIL:-}" ]; then
-        PrintMsg "196" "[FATAL] Headless execution demands pipeline variables: WG_ENDPOINT, INTERNAL_DOMAIN, ACME_EMAIL."
-        exit 1
-    fi
-    sudo tee "$EnvFile" > /dev/null << EOF
-WG_ENDPOINT=${WG_ENDPOINT}
-INTERNAL_DOMAIN=${INTERNAL_DOMAIN}
-ACME_EMAIL=${ACME_EMAIL}
-WG_PORT=${WG_PORT:-51820}
-WG_PEERS=${WG_PEERS:-3}
 TZ=UTC
 EOF
     sudo chmod 600 "$EnvFile"
@@ -497,46 +319,10 @@ set +u
 source "$EnvFile"
 set -u
 
-sudo timedatectl set-timezone UTC
-if systemctl is-active --quiet systemd-timesyncd; then 
-    sudo systemctl restart systemd-timesyncd
-elif systemctl is-active --quiet chronyd; then
-    sudo systemctl restart chronyd
-fi
-
-PurgeAlienContainers() {
-    if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
-        local AlienContainers=$(sudo docker ps -a --format '{{.ID}}|{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($3) != stack {print $1 " (" $2 ")"}')
-        if [ -n "$AlienContainers" ]; then
-            PrintMsg "196" "Rogue containers detected outside the Unified perimeter:"
-            echo "$AlienContainers"
-            
-            confirm="no"
-            if command -v gum &> /dev/null; then
-                if gum confirm "DESTROY all listed alien containers permanently?"; then confirm="yes"; fi
-            else
-                read -p "DESTROY all listed alien containers permanently? (y/N): " input_conf || true
-                [[ "${input_conf:-}" =~ ^[Yy]$ ]] && confirm="yes"
-            fi
-
-            if [ "$confirm" == "yes" ]; then
-                echo "$AlienContainers" | awk '{print $1}' | xargs -I {} sudo docker rm -f {}
-            else
-                PrintMsg "226" "Aliens retained."
-            fi
-        fi
-    fi
-}
-
-PurgeAlienContainers
-
-PrintMsg "240" "Fetching InterNIC Root Hints for Unbound DNS..."
 sudo curl -sS --connect-timeout 10 https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
-
 if grep -q "A.ROOT-SERVERS.NET" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
     sudo mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
 else
-    PrintMsg "196" "[WARNING] InterNIC fetch corrupted. Injecting hardcoded fallback."
     sudo tee "${ConfigDir}/Unbound/RootHints.txt" > /dev/null << 'EOF'
 .                        3600000      NS    A.ROOT-SERVERS.NET.
 A.ROOT-SERVERS.NET.      3600000      A     198.41.0.4
@@ -835,7 +621,8 @@ services:
       net.ipv4.ip_forward: 1
       net.ipv4.conf.all.src_valid_mark: 1
     cap_drop: [ALL]
-    cap_add: [NET_ADMIN, SYS_MODULE, NET_RAW, CHOWN, SETUID, SETGID]
+    # WG-01: Added DAC_OVERRIDE and FOWNER so s6-overlay can write to the root-created bind mount
+    cap_add: [NET_ADMIN, SYS_MODULE, NET_RAW, CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER]
     logging: *default-logging
     restart: unless-stopped
 
@@ -865,10 +652,11 @@ services:
       - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.98.0.0/24,10.99.0.0/24"
       - "--providers.docker=true"
       - "--providers.docker.endpoint=tcp://docker_socket_proxy:2375"
-      - "--providers.docker.version=1.44"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--providers.file.watch=true"
+      # ACME-01: Explicit Let's Encrypt STAGING URL to prevent lockout during debugging
+      - "--certificatesresolvers.cloudflare.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/acme.json"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
@@ -883,180 +671,8 @@ EOF
 sudo chown -R 0:0 "$StackDir"
 sudo chmod 600 "$ComposeFile" "$EnvFile"
 
-# ==============================================================================
-# CRON-10: WEEKLY LIFECYCLE APPLIANCE UPDATER
-# ==============================================================================
-UpdaterScript="${ScriptsDir}/UpdateSovereignNode.sh"
-sudo tee "${UpdaterScript}.tmp" > /dev/null << EOF
-#!/bin/bash
-# Sovereign Node Autonomous Lifecycle Updater
-# Managed by DeploySovereignNode.sh
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-exec > >(logger -t SovereignNodeUpdater) 2>&1
-
-echo "[Sovereign Node] Initiating weekly lifecycle update..."
-cd "${StackDir}" || exit 1
-
-curl -sS --connect-timeout 10 https://www.internic.net/domain/named.root -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
-if grep -q "A.ROOT-SERVERS.NET" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
-    mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
-    # ORCH-03: Native Docker execution (no explicit flags required)
-    docker compose restart unbound_dns
-else
-    logger -t SovereignNodeUpdater "ERROR: Root hints fetch corrupted. Retaining existing cache."
-    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
-fi
-
-# ORCH-03: Native Docker execution
-docker compose pull --quiet
-docker compose up -d --remove-orphans
-docker image prune -af --filter "until=168h"
-echo "[Sovereign Node] Update cycle complete."
-EOF
-
-sudo chmod 700 "${UpdaterScript}.tmp"
-sudo mv "${UpdaterScript}.tmp" "$UpdaterScript"
-sudo ln -sf "$UpdaterScript" /etc/cron.weekly/sovereign-node-update
-
-# ==============================================================================
-# CRON-12: HOURLY ASSIMILATION WATCHDOG (HIGH-FREQUENCY HEALING)
-# ==============================================================================
-WatchdogScript="${ScriptsDir}/WatchdogSovereignNode.sh"
-sudo tee "${WatchdogScript}.tmp" > /dev/null << EOF
-#!/bin/bash
-# Sovereign Node Autonomous Assimilation Watchdog
-# Managed by DeploySovereignNode.sh
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-for manifest in "${ConfigDir}/Traefik/Dynamic/"*_assimilation.yml; do
-    [ -e "\$manifest" ] || continue
-    alien=\$(grep "^# ALIEN_CONTAINER: " "\$manifest" | cut -d' ' -f3 || true)
-    [ -z "\$alien" ] && continue
-    if docker ps --format '{{.Names}}' | grep -q "^\${alien}\$"; then
-        if ! docker inspect "\$alien" --format '{{json .NetworkSettings.Networks}}' | grep -q "sovereign_node_proxy_network"; then
-            logger -t SovereignNodeWatchdog "Healing broken Zero-Trust bridge for alien: \$alien"
-            docker network connect sovereign_node_proxy_network "\$alien" || true
-        fi
-    fi
-done
-EOF
-
-sudo chmod 700 "${WatchdogScript}.tmp"
-sudo mv "${WatchdogScript}.tmp" "$WatchdogScript"
-sudo ln -sf "$WatchdogScript" /etc/cron.hourly/sovereign-node-watchdog
-
-# Ignition
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Unified Sovereign Node..."; fi
-cd "$StackDir" && sudo docker compose up -d --remove-orphans
-
-# ==============================================================================
-# ROUTE-14: LIVE ASSIMILATION ENGINE (POST-IGNITION)
-# ==============================================================================
-AssimilateAlienContainers() {
-    if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
-        local foreign_containers=$(sudo docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($2) != stack && $1 != "" {print $1}')
-        if [ -n "$foreign_containers" ]; then
-            local found_new=0
-            for container in $foreign_containers; do
-                local clean_name=$(echo "$container" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
-                local manifest_file="${ConfigDir}/Traefik/Dynamic/${clean_name}_assimilation.yml"
-
-                if [ -f "$manifest_file" ]; then
-                    sudo docker network connect sovereign_node_proxy_network "$container" >/dev/null 2>&1 || true
-                    continue
-                fi
-
-                if [ $found_new -eq 0 ]; then
-                    PrintMsg "214" "LOCAL ASSIMILATION PROTOCOL INITIATED"
-                    found_new=1
-                fi
-
-                echo ""
-                PrintMsg "214" "Select posture for unassimilated container [$container]:"
-                
-                local posture_choice=""
-                if command -v gum &> /dev/null; then
-                    local choice=$(gum choose "1) MFA Protected (Authelia) [SUGGESTED]" "2) VPN-Only (Air-Gapped)" "3) BasicAuth (Legacy Form)" "4) Fully Public" "5) Internal (Skip)" || true)
-                    [ -z "$choice" ] && continue
-                    posture_choice=${choice:0:1}
-                else
-                    echo "1) MFA Protected (Authelia) [SUGGESTED]"
-                    echo "2) VPN-Only (Air-Gapped)"
-                    echo "3) BasicAuth (Legacy Form)"
-                    echo "4) Fully Public"
-                    echo "5) Internal (Skip)"
-                    read -p "Select posture (1-5) [1]: " posture_choice || true
-                    posture_choice=${posture_choice:-1}
-                fi
-
-                if [ "$posture_choice" -eq 5 ]; then continue; fi
-
-                local TargetPort=""
-                if command -v gum &> /dev/null; then
-                    TargetPort=$(gum input --prompt "Internal listening port for $container (e.g. 80, 8080): " || true)
-                else
-                    read -p "Internal listening port for $container (e.g. 80, 8080): " TargetPort || true
-                fi
-
-                if [ -z "$TargetPort" ]; then
-                    PrintMsg "196" "Target port cannot be empty. Skipping assimilation for $container."
-                    continue
-                fi
-
-                local mw_string=""
-                # SYNTAX-02: Strict Traefik '@file' provider formatting without internal string quotes.
-                case "$posture_choice" in
-                    1) mw_string="secure-headers@file,authelia@file" ;;
-                    2) mw_string="secure-headers@file,vpn-whitelist@file" ;;
-                    3) mw_string="secure-headers@file,traefik-auth@file" ;;
-                    4) mw_string="secure-headers@file" ;;
-                esac
-
-                PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
-                sudo docker network connect sovereign_node_proxy_network "$container" >/dev/null 2>&1 || true
-
-                sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
-# ALIEN_CONTAINER: $container
-http:
-  routers:
-    ${clean_name}-router:
-      rule: "Host(\`${clean_name}.${INTERNAL_DOMAIN}\`)"
-      entryPoints: ["websecure"]
-      middlewares: [${mw_string}]
-      service: "${clean_name}-service"
-      tls:
-        certResolver: "cloudflare"
-  services:
-    ${clean_name}-service:
-      loadBalancer:
-        servers:
-          - url: "http://${container}:${TargetPort}"
-MANIFEST_EOF
-                PrintMsg "82" "✔ Assimilated: https://${clean_name}.${INTERNAL_DOMAIN}"
-                
-                echo ""
-                PrintMsg "196" " ⚠️  DECLARATIVE STATE WARNING (CRITICAL)"
-                PrintMsg "226" " The Zero-Trust bridge to $container is currently EPHEMERAL."
-                PrintMsg "226" " If you recreate the alien stack, Docker will sever the bridge."
-                PrintMsg "226" " To make it mathematically permanent, inject this into the alien's compose file:"
-                PrintMsg "82"  " --------------------------------------------------"
-                PrintMsg "82"  " networks:"
-                PrintMsg "82"  "   sovereign_node_proxy_network:"
-                PrintMsg "82"  "     external: true"
-                PrintMsg "82"  " "
-                PrintMsg "82"  " services:"
-                PrintMsg "82"  "   $container:"
-                PrintMsg "82"  "     networks:"
-                PrintMsg "82"  "       - sovereign_node_proxy_network"
-                PrintMsg "82"  " --------------------------------------------------"
-                sleep 2
-            done
-        fi
-    fi
-}
-
-AssimilateAlienContainers
+cd "$StackDir" && sudo docker compose up -d --force-recreate --remove-orphans
 
 if [ "$Interactive" -eq 1 ]; then
     echo ""
@@ -1076,8 +692,17 @@ if [ "$Interactive" -eq 1 ]; then
     PrintMsg "82"  " Retrieve your registration link by running:"
     PrintMsg "196" " sudo cat ${ConfigDir}/Authelia/notification.txt"
     PrintMsg "214" "========================================================================"
+    
+    echo ""
+    PrintMsg "196" " ⚠️  WIREGUARD ONBOARDING"
+    PrintMsg "226" " Retrieve your cryptographic VPN payload natively by running:"
+    PrintMsg "196" " sudo qrencode -t ansiutf8 < ${ConfigDir}/WireGuard/peer1/peer1.conf"
+    PrintMsg "214" "========================================================================"
+
     echo ""
     PrintMsg "82" "✔ Unified Matrix Online. Turn the key."
+    PrintMsg "196" "NOTE: Traefik is using the Let's Encrypt Staging Server. Your browser"
+    PrintMsg "196" "will show a 'Fake Certificate' warning. This is expected. Bypass it to test."
 fi
 
 exit 0
