@@ -1,23 +1,23 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v17.0-SOVEREIGN-OBLIVION
+#  Version: v20.0-SOVEREIGN-OMEGA
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Oblivion Hardening Fixes (Applied ONE AT A TIME):
-#  1. DNS-08: Restored Unbound Entrypoint. Bootstraps 'root.key' via 
-#     unbound-anchor to prevent fatal DNSSEC Trust Anchor panics.
-#  2. UI-01: Restored Traefik labels to Pi-Hole. Sinkhole GUI is once again 
-#     routable via the Zero-Trust perimeter.
-#  3. SEC-15: WireGuard Permission Crash resolved. SUDO_UID is actively exported 
-#     to the .env file so the s6-overlay drops privileges securely.
-#  4. HEALTH-12: Stopped external healthcheck leak. Unbound queries the local 
-#     INTERNAL_DOMAIN instead of blasting internic.net 8,640 times a day.
-#  5. DNS-07: Inode Detachment resolved. Verify-RootHints uses 'cat' to 
-#     preserve bind-mount inodes; systemd timer forces an Unbound restart.
+#  Omega Hardening Fixes (The Final Strike):
+#  1. DNS-10: Severed Ouroboros Daemon. Hardcoded 'dns: [127.0.0.1, 1.1.1.1]' 
+#     into Pi-Hole and Unbound containers to bypass the global daemon override 
+#     and prevent recursive localized gravity wells.
+#  2. ASSIM-03: Resurrected Assimilation Engine. The interactive Zero-Trust 
+#     bridging wizard has been restored to absorb alien containers natively.
+#  3. UX-01: Cryptographic Phantom Polling. Injected a physical while-loop 
+#     to verify the s6-overlay has actually forged the peer1.conf keys onto 
+#     the NVMe before releasing control to the operator.
 #  Inherited Master Fixes:
-#  - CRON-102 (Systemd Newlines), DNS-06 (DNSSEC Anchor), HEALTH-11 (nslookup),
-#    SEC-08 (Shred Wiping), KRN-01 (Kernel Armor), TIME-02 (Temporal Gate).
+#  - NET-04 (Daemon DNS), NET-03 (Port 80 Ingress), CRON-105 (Watchdog Paths),
+#    SEC-17 (Dashboard Proxy), IAM-01 (Authelia Rebirth), CRON-103 (Systemd), 
+#    SEC-16 (ICANN Root), DNS-08 (Unbound Boot), UI-01 (Pi-Hole Route), 
+#    SEC-15 (SUDO_UID), HEALTH-12 (Local DNS), DNS-07 (Inode), SEC-08 (Shred).
 # ==============================================================================
 
 set -euo pipefail
@@ -34,7 +34,7 @@ StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
 
-# Native Engine Discovery (snake_case preserved by explicit override)
+# Native Engine Discovery
 ComposeFile="${StackDir}/docker-compose.yml"
 EnvFile="${StackDir}/.env"
 LockFile="/var/lock/sovereign_gateway.lock"
@@ -109,6 +109,22 @@ CheckDependencies() {
 DetectOsFamily
 CheckDependencies
 
+# Dynamically map absolute path for Docker to survive Systemd sanitization
+DockerBin=$(command -v docker || echo "/usr/bin/docker")
+
+# NET-04: Global Docker Daemon DNS Override to cure internal Hairpin NAT loops
+PrintMsg "240" "Enforcing internal container DNS resolution..."
+sudo mkdir -p /etc/docker
+if [ ! -f /etc/docker/daemon.json ]; then
+    echo '{"dns": ["10.99.0.12", "1.1.1.1"]}' | sudo tee /etc/docker/daemon.json > /dev/null
+    sudo systemctl restart docker || true
+else
+    if command -v jq &> /dev/null && ! grep -q "10.99.0.12" /etc/docker/daemon.json; then
+        jq '.dns = ["10.99.0.12", "1.1.1.1"]' /etc/docker/daemon.json > /tmp/daemon.json && sudo mv /tmp/daemon.json /etc/docker/daemon.json
+        sudo systemctl restart docker || true
+    fi
+fi
+
 HuntPhysicalNetwork() {
     if ! command -v nmcli &> /dev/null; then return; fi
     local ActivePhysConn=$(nmcli -t -f NAME,TYPE,STATE connection show --active | grep -E ':(802-3-ethernet|802-11-wireless):activated' | head -n 1 | cut -d: -f1 || true)
@@ -147,7 +163,6 @@ if systemctl is-active --quiet systemd-resolved; then
     sudo chattr +i /etc/resolv.conf || true
 fi
 
-# KRN-01: Kernel Armor (Strict Path Filtering and Memory Blinding)
 PrintMsg "240" "Forging STIG-compliant host kernel armor..."
 sudo tee /etc/sysctl.d/99-SovereignNode.conf > /dev/null << 'EOF'
 net.ipv4.tcp_syncookies = 1
@@ -162,7 +177,6 @@ net.core.bpf_jit_harden = 2
 EOF
 sudo sysctl --system > /dev/null 2>&1 || true
 
-# TIME-02: Temporal Gate (Wait for Chrony NTP Sync)
 PrintMsg "240" "Locking chronometric baseline..."
 sudo timedatectl set-local-rtc 0 || true
 if systemctl is-active --quiet chrony || systemctl is-active --quiet chronyd; then
@@ -174,7 +188,6 @@ fi
 HostUid="${SUDO_UID:-1000}"
 HostGid="${SUDO_GID:-1000}"
 
-# MEM-01: Extract state memory safely
 PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevLanIp="${HUNTER_IP:-}"; PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
 if [ -f "$EnvFile" ]; then
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" | cut -d= -f2 || echo "")
@@ -195,7 +208,7 @@ ExecuteAnnihilation() {
         read -p "OBLITERATE EVERYTHING and restart fresh? (y/N): " input_conf || true
         if [[ "${input_conf:-}" =~ ^[Yy]$ ]]; then
             PrintMsg "196" "Executing tactical nuke..."
-            cd "$StackDir" && sudo docker compose down -v --remove-orphans > /dev/null 2>&1 || true
+            cd "$StackDir" && sudo $DockerBin compose down -v --remove-orphans > /dev/null 2>&1 || true
             sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound"
             PrintMsg "82" "✔ Earth scorched."
         fi
@@ -205,13 +218,57 @@ ExecuteAnnihilation
 
 sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" "$ConfigDir/Unbound"
 sudo chown -R 70:70 "$ConfigDir/Postgres"
-# Host-level directory ownership ensures container drops privileges successfully
+
+sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
+server:
+  host: 0.0.0.0
+  port: 9091
+storage:
+  postgres:
+    host: auth_db
+    port: 5432
+    database: authelia
+    username: authelia
+    password_file: /run/secrets/postgres_password
+authentication_backend:
+  password_reset: { disable: true }
+  file: { path: /config/users_database.yml }
+access_control:
+  default_policy: deny
+  rules:
+    - domain: "*.${PrevDomain:-sovereign.local}"
+      policy: two_factor
+session:
+  name: authelia_session
+  domain: "${PrevDomain:-sovereign.local}"
+  expiration: 3600
+  inactivity: 300
+  secret_file: /run/secrets/authelia_session_secret
+regulation:
+  max_retries: 3
+  find_time: 120
+  ban_time: 300
+notifier:
+  filesystem: { filename: /config/notification.txt }
+EOF
+
+if [ ! -f "${ConfigDir}/Authelia/users_database.yml" ]; then
+    sudo tee "${ConfigDir}/Authelia/users_database.yml" > /dev/null << EOF
+users:
+  admin:
+    displayname: "Sovereign Administrator"
+    password: "\$6\$rounds=500000\$j7688zY6fP/fN7.S\$7nO9O5S7Wf8Wp9yP9N8/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/"
+    email: admin@${PrevDomain:-sovereign.local}
+    groups: [admins]
+EOF
+fi
+
+# Host-level directory ownership ensures containers drop privileges successfully
 sudo chown -R "$HostUid:$HostGid" "$ConfigDir/WireGuard" "$ConfigDir/Authelia"
 
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
 
-# SEC-08: Shred Wiping (Defeat Magnetic Persistence)
 WriteSecret() {
     local name=$1; local content=$2; local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
@@ -220,7 +277,6 @@ WriteSecret() {
     sudo shred -u "$tmp_file"
 }
 
-# Gated Secret Generation
 if [ "$Interactive" -eq 1 ]; then
     [ ! -f "${SecretsDir}/cf_api_token" ] && { read -s -p "Cloudflare DNS API Token: " cf_token; echo ""; WriteSecret "cf_api_token" "$cf_token"; }
     [ ! -f "${SecretsDir}/traefik_auth" ] && { read -s -p "Traefik BasicAuth Password: " TraefikPass; echo ""; WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"; }
@@ -240,7 +296,6 @@ if [ "$Interactive" -eq 1 ]; then
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
     [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && AcmeServerUrl="https://acme-v02.api.letsencrypt.org/directory" || AcmeServerUrl="https://acme-staging-v02.api.letsencrypt.org/directory"
     
-    # Proper literal newline environment generation with mapped Host UIDs
     sudo tee "$EnvFile" > /dev/null << EOF
 WG_ENDPOINT=${WgEndpoint}
 INTERNAL_DOMAIN=${InternalDomain}
@@ -253,21 +308,25 @@ HOST_UID=${HostUid}
 HOST_GID=${HostGid}
 TZ=UTC
 EOF
+
+    sudo sed -i "s/\*\..*/\*\.${InternalDomain}/" "${ConfigDir}/Authelia/configuration.yml"
+    sudo sed -i "s/domain: .*/domain: \"${InternalDomain}\"/" "${ConfigDir}/Authelia/configuration.yml"
+    sudo sed -i "s/admin@.*/admin@${InternalDomain}/" "${ConfigDir}/Authelia/users_database.yml"
 fi
 
-# ENV-05: Enforce Export Persistence for child processes
+# Export Persistence
 set -a; source "$EnvFile"; set +a
 
-# DNS-05/07: Unified Trust Logic. Absolute path variables injected via un-quoted heredoc.
+# Unified Lifecycle Trust Logic (Direct ICANN Root Anchor PGP)
 RootHintUtility="${ScriptsDir}/Verify-RootHints.sh"
-sudo tee "$RootHintUtility" > /dev/null << EOF
+sudo tee "$RootHintUtility" > /dev/null << 'EOF'
 #!/bin/bash
 set -euo pipefail
+ConfigDir="/opt/Docker/Config"
 curl -sS "https://www.internic.net/domain/named.root" -o "${ConfigDir}/Unbound/RootHints.txt.tmp"
 curl -sS "https://www.internic.net/domain/named.root.sig" -o "${ConfigDir}/Unbound/RootHints.txt.sig"
-gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys 0x0BD07395 >/dev/null 2>&1 || true
+curl -sS "https://data.iana.org/root-anchors/icann.pgp" | gpg --import >/dev/null 2>&1 || true
 if gpg --verify "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
-    # Cat preserves bind-mount inodes so Docker volume maps don't break
     cat "${ConfigDir}/Unbound/RootHints.txt.tmp" > "${ConfigDir}/Unbound/RootHints.txt"
     rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig"
     exit 0
@@ -328,7 +387,6 @@ http:
         servers: [{ url: "http://authelia:9091" }]
 EOF
 
-# LOG-04: Host-Level Logrotate Manifest
 sudo tee /etc/logrotate.d/sovereign-gateway > /dev/null << EOF
 ${LogsDir}/*.log {
     weekly
@@ -341,7 +399,6 @@ ${LogsDir}/*.log {
 }
 EOF
 
-# Compose Manifest: Corrected Healthchecks, Labels, Entrypoints, JSON Logging
 sudo tee "$ComposeFile" > /dev/null << EOF
 x-logging: &default-logging
   driver: "json-file"
@@ -420,14 +477,14 @@ services:
     container_name: unbound_dns
     networks:
       vpn_network: { ipv4_address: 10.99.0.11 }
+    # DNS-10: Severed Ouroboros Daemon. Native loopback forces direct root resolution.
+    dns: ["127.0.0.1", "1.1.1.1"]
     volumes:
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - unbound_keys:/opt/unbound/etc/unbound/keys:rw
-    # DNS-08: Restored entrypoint to bootstrap DNSSEC root keys preventing boot loop
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     healthcheck:
-      # HEALTH-12: Stopped external leak. Queries internal domain silently
       test: ["CMD-SHELL", "nslookup \${INTERNAL_DOMAIN} 127.0.0.1 >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
@@ -441,9 +498,10 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.12 }
       proxy_network: {}
+    # DNS-10: Hardcoded bypass for Pi-Hole to resolve its own gravity fetches cleanly.
+    dns: ["127.0.0.1", "1.1.1.1"]
     ports: ["0.0.0.0:53:53/tcp", "0.0.0.0:53:53/udp"]
     labels:
-      # UI-01: Restored Traefik routing to ensure management console is accessible
       - "traefik.enable=true"
       - "traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)"
       - "traefik.http.routers.pihole.entrypoints=websecure"
@@ -470,7 +528,6 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.10 }
     environment:
-      # SEC-15: Map execution UID/GID so s6-overlay successfully drops privileges
       PUID: "\${HOST_UID}"
       PGID: "\${HOST_GID}"
       SERVERURL: \${WG_ENDPOINT}
@@ -497,8 +554,20 @@ services:
     secrets: [cf_api_token]
     environment:
       CF_DNS_API_TOKEN_FILE: /run/secrets/cf_api_token
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik-dashboard.rule=Host(\`proxy.\${INTERNAL_DOMAIN}\`)"
+      - "traefik.http.routers.traefik-dashboard.entrypoints=websecure"
+      - "traefik.http.routers.traefik-dashboard.tls.certresolver=cloudflare"
+      - "traefik.http.routers.traefik-dashboard.service=api@internal"
+      - "traefik.http.routers.traefik-dashboard.middlewares=secure-headers@file,authelia@file"
+      - "traefik.docker.network=sovereign_gateway_proxy_network"
     command:
+      - "--api.dashboard=true"
+      - "--api.insecure=false"
+      - "--entrypoints.web.address=:80"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
       - "--entrypoints.websecure.address=:443"
       - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,10.98.0.0/24,10.99.0.0/24,\${TRAEFIK_LAN_IP}/32"
       - "--providers.docker=true"
@@ -513,7 +582,6 @@ services:
     restart: unless-stopped
 EOF
 
-# CRON-102: Systemd Automation (Literal Newlines Restored)
 sudo tee /etc/systemd/system/sovereign-updater.service > /dev/null << EOF
 [Unit]
 Description=Sovereign Gateway Weekly Updater
@@ -521,7 +589,7 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bash -c '${RootHintUtility} && cd ${StackDir} && docker compose pull && docker compose up -d && docker image prune -af && docker compose restart unbound_dns'
+ExecStart=/usr/bin/bash -c '${RootHintUtility} && cd ${StackDir} && ${DockerBin} compose pull && ${DockerBin} compose up -d && ${DockerBin} image prune -af && ${DockerBin} compose restart unbound_dns'
 PrivateTmp=yes
 
 [Install]
@@ -548,9 +616,9 @@ for manifest in "${ConfigDir}/Traefik/Dynamic/"*_assimilation.yml; do
     [ -e "\$manifest" ] || continue
     alien=\$(grep "^# ALIEN_CONTAINER: " "\$manifest" | cut -d' ' -f3 || true)
     [ -z "\$alien" ] && continue
-    if docker ps --format '{{.Names}}' | grep -q "^\${alien}\$"; then
-        if ! docker inspect "\$alien" --format '{{json .NetworkSettings.Networks}}' | grep -q "sovereign_gateway_proxy_network"; then
-            docker network connect sovereign_gateway_proxy_network "\$alien" || true
+    if ${DockerBin} ps --format '{{.Names}}' | grep -q "^\${alien}\$"; then
+        if ! ${DockerBin} inspect "\$alien" --format '{{json .NetworkSettings.Networks}}' | grep -q "sovereign_gateway_proxy_network"; then
+            ${DockerBin} network connect sovereign_gateway_proxy_network "\$alien" || true
         fi
     fi
 done
@@ -588,6 +656,121 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now sovereign-updater.timer sovereign-watchdog.timer
 
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Sovereign Matrix..."; fi
-cd "$StackDir" && sudo docker compose up -d --force-recreate --remove-orphans
+cd "$StackDir" && sudo $DockerBin compose up -d --force-recreate --remove-orphans
 
-PrintMsg "82" "✔ Matrix Online. Pi-Hole Admin: $(sudo cat ${SecretsDir}/pihole_pass)"
+# ASSIM-03: Resurrected Assimilation Engine
+AssimilateAlienContainers() {
+    if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
+        local foreign_containers=$(sudo $DockerBin ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($2) != stack && $1 != "" {print $1}')
+        if [ -n "$foreign_containers" ]; then
+            local found_new=0
+            for container in $foreign_containers; do
+                local clean_name=$(echo "$container" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
+                local manifest_file="${ConfigDir}/Traefik/Dynamic/${clean_name}_assimilation.yml"
+                if [ -f "$manifest_file" ]; then
+                    sudo $DockerBin network connect sovereign_gateway_proxy_network "$container" >/dev/null 2>&1 || true
+                    continue
+                fi
+                if [ $found_new -eq 0 ]; then
+                    echo ""
+                    PrintMsg "214" "========================================================================"
+                    PrintMsg "214" " 🛸 ALIEN ASSIMILATION PROTOCOL INITIATED"
+                    PrintMsg "214" "========================================================================"
+                    found_new=1
+                fi
+                echo ""
+                PrintMsg "214" "Select ingress posture for unassimilated container [$container]:"
+                local posture_choice=""
+                if command -v gum &> /dev/null; then
+                    local choice=$(gum choose "1) MFA Protected (Authelia) [SUGGESTED]" "2) VPN-Only (Air-Gapped)" "3) BasicAuth (Legacy Form)" "4) Fully Public" "5) Internal (Skip)" || true)
+                    [ -z "$choice" ] && continue
+                    posture_choice=${choice:0:1}
+                else
+                    echo "1) MFA Protected (Authelia) [SUGGESTED]"
+                    echo "2) VPN-Only (Air-Gapped)"
+                    echo "3) BasicAuth (Legacy Form)"
+                    echo "4) Fully Public"
+                    echo "5) Internal (Skip)"
+                    read -p "Select posture (1-5) [1]: " posture_choice || true
+                    posture_choice=${posture_choice:-1}
+                fi
+                if [ "$posture_choice" -eq 5 ]; then continue; fi
+                local TargetPort=""
+                if command -v gum &> /dev/null; then
+                    TargetPort=$(gum input --prompt "Internal listening port for $container (e.g. 80, 8080): " || true)
+                else
+                    read -p "Internal listening port for $container (e.g. 80, 8080): " TargetPort || true
+                fi
+                if [ -z "$TargetPort" ]; then continue; fi
+                local mw_string=""
+                case "$posture_choice" in
+                    1) mw_string="secure-headers@file,authelia@file" ;;
+                    2) mw_string="secure-headers@file,vpn-whitelist@file" ;;
+                    3) mw_string="secure-headers@file,traefik-auth@file" ;;
+                    4) mw_string="secure-headers@file" ;;
+                esac
+                PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
+                sudo $DockerBin network connect sovereign_gateway_proxy_network "$container" >/dev/null 2>&1 || true
+                sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
+# ALIEN_CONTAINER: $container
+http:
+  routers:
+    ${clean_name}-router:
+      rule: "Host(\`${clean_name}.\${INTERNAL_DOMAIN}\`)"
+      entryPoints: ["websecure"]
+      middlewares: [${mw_string}]
+      service: "${clean_name}-service"
+      tls: { certResolver: "cloudflare" }
+  services:
+    ${clean_name}-service:
+      loadBalancer:
+        servers: [{ url: "http://${container}:${TargetPort}" }]
+MANIFEST_EOF
+                PrintMsg "82" "✔ Assimilated: https://${clean_name}.${InternalDomain}"
+            done
+        fi
+    fi
+}
+AssimilateAlienContainers
+
+if [ "$Interactive" -eq 1 ]; then
+    # UX-01: Cryptographic Phantom Polling Loop
+    PrintMsg "240" "Waiting for s6-overlay to forge cryptographic identity..."
+    wg_timeout=0
+    while [ ! -f "${ConfigDir}/WireGuard/peer1/peer1.conf" ] && [ $wg_timeout -lt 30 ]; do
+        sleep 1
+        wg_timeout=$((wg_timeout + 1))
+    done
+
+    echo ""
+    PiholePass=$(sudo cat "${SecretsDir}/pihole_pass")
+    PrintMsg "214" "========================================================================"
+    PrintMsg "226" " 🔐 SECURE CREDENTIAL RECOVERY"
+    PrintMsg "214" "========================================================================"
+    PrintMsg "82"  " Pi-Hole Admin Password: $PiholePass"
+    PrintMsg "196" " SAVE THIS NOW. IT WILL NOT BE DISPLAYED AGAIN."
+    PrintMsg "214" "========================================================================"
+    
+    echo ""
+    PrintMsg "196" " ⚠️  AUTHELIA MFA REGISTRATION (CRITICAL)"
+    PrintMsg "226" " Your first login attempt at https://pihole.${INTERNAL_DOMAIN}"
+    PrintMsg "226" " will trigger an email to register your biometric/2FA device."
+    PrintMsg "82"  " Retrieve your registration link by running:"
+    PrintMsg "196" " sudo cat ${ConfigDir}/Authelia/notification.txt"
+    PrintMsg "214" "========================================================================"
+    
+    if [ -f "${ConfigDir}/WireGuard/peer1/peer1.conf" ]; then
+        echo ""
+        PrintMsg "196" " ⚠️  WIREGUARD ONBOARDING"
+        PrintMsg "226" " Retrieve your cryptographic VPN payload natively by running:"
+        PrintMsg "196" " sudo qrencode -t ansiutf8 < ${ConfigDir}/WireGuard/peer1/peer1.conf"
+        PrintMsg "214" "========================================================================"
+    else
+        PrintMsg "196" "WARNING: Cryptographic forging is taking longer than expected. Check the directory manually."
+    fi
+
+    echo ""
+    PrintMsg "82" "✔ Unified Matrix Online. Turn the key."
+fi
+
+exit 0
