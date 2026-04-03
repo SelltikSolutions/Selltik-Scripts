@@ -1,21 +1,21 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v22.0-SOVEREIGN-VANGUARD
+#  Version: v23.0-SOVEREIGN-TERMINUS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Vanguard Hardening Fixes (The Final Polish):
-#  1. SEC-19: Kernel Compromise Sealed. Explicitly appended cap_drop: [ALL] 
-#     and cap_add: [NET_ADMIN, NET_RAW] to WireGuard, amputating SYS_MODULE.
-#  2. NET-05: Anonymity Bleed Sealed. Violently disabled IPv6 in the host kernel 
-#     sysctl matrix to prevent SLAAC shadow-routing and physical MAC leaking.
-#  3. SEC-20: TOCTOU Teardown Sealed. ExecuteAnnihilation now aggressively 
-#     utilizes `shred -u` on all cryptographic master keys before unlinking inodes.
-#  4. DNS-11: DNSSEC Permissions Sealed. Unbound container now strictly boots as 
-#     root (0:0) to chown the trust anchors before stepping down to _unbound.
-#  Inherited Master Fixes:
-#  - PROXY-01 (Events=1), SEC-18 (chmod 600), UX-02 (Prune -f), DNS-10 (Loopback),
-#    ASSIM-03 (Wizard), UX-01 (Polling), NET-04 (Daemon DNS), NET-03 (Port 80).
+#  Terminus Hardening Fixes (The Absolute End):
+#  1. DNS-12: Bootstrapping MITM Cured. Hardcoded the strict cryptographic 
+#     fingerprint validation for the ICANN PGP block to defeat HTTPS interception.
+#  2. SEC-21: Unbound Container Escape Neutralized. Explicitly injected 
+#     'username: "unbound"' into the configuration to force the root-booted 
+#     container to drop privileges before listening on Port 53.
+#  3. HEALTH-13: Boot Storm Stabilized. Added a 30s start_period to the Unbound 
+#     healthcheck to survive the DNSSEC trust anchor initialization lag.
+#  Inherited Vanguard/Aegis/Omega Master Fixes:
+#  - SEC-19 (Kernel Amputation), NET-05 (IPv6 Disable), SEC-20 (TOCTOU Shred)
+#  - PROXY-01 (Events=1), SEC-18 (chmod 600), UX-02 (Prune -f), DNS-10 (Loopback)
+#  - ASSIM-03 (Wizard), UX-01 (Polling), NET-04 (Daemon DNS), NET-03 (Port 80).
 # ==============================================================================
 
 set -euo pipefail
@@ -324,7 +324,7 @@ fi
 # Export Persistence
 set -a; source "$EnvFile"; set +a
 
-# Unified Lifecycle Trust Logic (Direct ICANN Root Anchor PGP)
+# DNS-12: Bootstrapping MITM Cured (Cryptographic fingerprint pinned locally)
 RootHintUtility="${ScriptsDir}/Verify-RootHints.sh"
 sudo tee "$RootHintUtility" > /dev/null << 'EOF'
 #!/bin/bash
@@ -332,27 +332,39 @@ set -euo pipefail
 ConfigDir="/opt/Docker/Config"
 curl -sS "https://www.internic.net/domain/named.root" -o "${ConfigDir}/Unbound/RootHints.txt.tmp"
 curl -sS "https://www.internic.net/domain/named.root.sig" -o "${ConfigDir}/Unbound/RootHints.txt.sig"
-curl -sS "https://data.iana.org/root-anchors/icann.pgp" | gpg --import >/dev/null 2>&1 || true
+
+# Fetch PGP Block but rigorously assert the mathematical fingerprint before continuing
+curl -sS "https://data.iana.org/root-anchors/icann.pgp" -o "${ConfigDir}/Unbound/icann.pgp"
+gpg --import "${ConfigDir}/Unbound/icann.pgp" >/dev/null 2>&1 || true
+
+if ! gpg --fingerprint 0x0BD07395 | tr -d ' ' | grep -q "E0F2C1291162E536E8EEEEF0F781C36C0BD07395"; then
+    echo "[FATAL] ICANN PGP Fingerprint mismatch. MitM detected."
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/icann.pgp"
+    exit 1
+fi
+
 if gpg --verify "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
     cat "${ConfigDir}/Unbound/RootHints.txt.tmp" > "${ConfigDir}/Unbound/RootHints.txt"
-    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig"
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/icann.pgp"
     exit 0
 else
-    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig"
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/icann.pgp"
     exit 1
 fi
 EOF
 sudo chmod 700 "$RootHintUtility"
 
-PrintMsg "240" "Verifying DNS Root Hints via GPG..."
+PrintMsg "240" "Verifying DNS Root Hints via PGP Pinning..."
 sudo touch "${ConfigDir}/Unbound/RootHints.txt"
 sudo "$RootHintUtility" || { PrintMsg "196" "[FATAL] GPG Signature Failure. Supply chain compromised."; exit 1; }
 
+# SEC-21: Unbound Container Escape Neutralized (username directive forced)
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
   interface: 0.0.0.0
   port: 53
   do-ip4: yes
+  username: "unbound"
   root-hints: "/opt/unbound/etc/unbound/root.hints"
   auto-trust-anchor-file: "/opt/unbound/etc/unbound/keys/root.key"
   chroot: ""
@@ -484,7 +496,6 @@ services:
     container_name: unbound_dns
     networks:
       vpn_network: { ipv4_address: 10.99.0.11 }
-    # DNS-11: Boots as root to safely chown the trust anchors before stepping down privileges
     user: "0:0"
     dns: ["127.0.0.1", "1.1.1.1"]
     volumes:
@@ -497,6 +508,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      # HEALTH-13: Start period survives the unbound-anchor boot delay
+      start_period: 30s
     logging: *default-logging
     restart: unless-stopped
   
@@ -534,7 +547,6 @@ services:
     container_name: wireguard_vpn
     networks:
       vpn_network: { ipv4_address: 10.99.0.10 }
-    # SEC-19: Completely amputated SYS_MODULE vector. Relies securely on userspace /dev/net/tun.
     cap_drop: ["ALL"]
     cap_add: ["NET_ADMIN", "NET_RAW"]
     environment:
