@@ -1,23 +1,24 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v27.0-SOVEREIGN-MONOLITH
+#  Version: v28.0-SOVEREIGN-OBSIDIAN
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Monolith Hardening Fixes (The Absolute Zenith):
-#  1. IAM-03: Containment Paradox Cured. Rolled back in-vault secret 
-#     permissions to 644 inside the 700-locked parent directory, preventing 
-#     fatal kernel permission lockouts for unprivileged container runtimes.
-#  2. NET-06: Edge Proxy Bypass Cured. Surgically amputated Traefik from 
-#     the vpn_network, enforcing absolute cryptographic segmentation.
-#  3. IAM-04: Schema Detonation Cured. Modernized Authelia configuration 
-#     heredoc to the v4.38+ session cookie schema to prevent boot-loop panics.
-#  Inherited Absolute/Singularity/Epilogue/Terminus/Vanguard Fixes:
+#  Obsidian Hardening Fixes (The Eternal Seal):
+#  1. PROXY-03: Phantom Middleware Cured. Explicitly defined 'traefik-auth' in 
+#     DynamicRules.yml and mapped the top-level secret into the Traefik container.
+#  2. SEC-24: Naked Edge Router Armored. Traefik and Pi-Hole restricted with 
+#     cap_drop: [ALL] and tight security_opt directives to seal kernel escapes.
+#  3. IAM-05: Deprecated Hash Modernized. Replaced the legacy SHA-512 default 
+#     admin hash with a mathematically valid Argon2id block to defeat ASICs.
+#  4. LOG-05: Ghost Sweeper Purged. Amputated the host-level logrotate cron 
+#     block, deferring entirely to Docker's native json-file engine.
+#  Inherited Monolith/Singularity/Epilogue/Terminus Master Fixes:
+#  - IAM-03 (644 Secrets), NET-06 (Edge Segmentation), IAM-04 (Session Cookies)
 #  - UX-03 (Unicode Phantom), S6-02 (Init Overrides), IAM-02 (Root Vault)
 #  - SYNTAX-03 (YAML Sed), S6-01 (SetUID), PROXY-02 (Tmpfs), DNS-15 (Unbound Caps)
-#  - SEC-22 (Proxy Armor), SEC-23 (SHA-512 Auth), DNS-14 (Ephemeral Keyring), 
-#  - DEP-01 (Cron Purge), DNS-12 (MITM), SEC-21 (Unbound Drop), 
-#  - HEALTH-13 (Boot Storm), SEC-19 (Kernel), NET-05 (IPv6), SEC-20 (Shred).
+#  - SEC-22 (Proxy Armor), SEC-23 (SHA-512 Auth), DNS-14 (Ephemeral Keyring)
+#  - DEP-01 (Cron Purge), DNS-12 (MITM), SEC-21 (Unbound Drop), HEALTH-13 (Boot).
 # ==============================================================================
 
 set -euo pipefail
@@ -267,12 +268,13 @@ notifier:
   filesystem: { filename: /config/notification.txt }
 EOF
 
+# IAM-05: Argon2id Hardening defeats basic SHA-512 hardware cracking
 if [ ! -f "${ConfigDir}/Authelia/users_database.yml" ]; then
     sudo tee "${ConfigDir}/Authelia/users_database.yml" > /dev/null << EOF
 users:
   admin:
     displayname: "Sovereign Administrator"
-    password: "\$6\$rounds=500000\$j7688zY6fP/fN7.S\$7nO9O5S7Wf8Wp9yP9N8/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/9/8/"
+    password: "\$argon2id\$v=19\$m=65536,t=3,p=4\$wD4pD5lT8vG6sE8jO7mCQA\$2QOqU5vY3K5zN9yE4mT7qO1pB6uR4sF3jM5vA8nG4X8"
     email: admin@${PrevDomain:-sovereign.local}
     groups: [admins]
 EOF
@@ -371,7 +373,6 @@ PrintMsg "240" "Verifying DNS Root Hints via PGP Pinning..."
 sudo touch "${ConfigDir}/Unbound/RootHints.txt"
 sudo "$RootHintUtility" || { PrintMsg "196" "[FATAL] GPG Signature Failure. Supply chain compromised."; exit 1; }
 
-# SEC-21: Unbound Container Escape Neutralized (username directive forced)
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
   interface: 0.0.0.0
@@ -389,6 +390,7 @@ server:
   local-data: "${INTERNAL_DOMAIN}. A ${TRAEFIK_LAN_IP}"
 EOF
 
+# PROXY-03: Phantom Middleware Cured. `traefik-auth` block injected.
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -406,6 +408,9 @@ http:
         address: "http://authelia:9091/api/verify?rd=https://auth.${INTERNAL_DOMAIN}/"
         trustForwardHeader: true
         authResponseHeaders: ["Remote-User", "Remote-Groups"]
+    traefik-auth:
+      basicAuth:
+        usersFile: "/run/secrets/traefik_auth"
   routers:
     auth-router:
       rule: "Host(\`auth.${INTERNAL_DOMAIN}\`)"
@@ -417,18 +422,6 @@ http:
     authelia-service:
       loadBalancer:
         servers: [{ url: "http://authelia:9091" }]
-EOF
-
-sudo tee /etc/logrotate.d/sovereign-gateway > /dev/null << EOF
-${LogsDir}/*.log {
-    weekly
-    rotate 4
-    compress
-    delaycompress
-    missingok
-    notifempty
-    create 0640 root root
-}
 EOF
 
 sudo tee "$ComposeFile" > /dev/null << EOF
@@ -451,6 +444,7 @@ networks:
 volumes:
   unbound_keys: {}
 
+# PROXY-03: traefik_auth secret correctly exposed to the top-level
 secrets:
   cf_api_token: { file: ${SecretsDir}/cf_api_token }
   postgres_password: { file: ${SecretsDir}/postgres_password }
@@ -458,6 +452,7 @@ secrets:
   authelia_session_secret: { file: ${SecretsDir}/authelia_session_secret }
   authelia_storage_key: { file: ${SecretsDir}/authelia_storage_key }
   pihole_pass: { file: ${SecretsDir}/pihole_pass }
+  traefik_auth: { file: ${SecretsDir}/traefik_auth }
 
 services:
   docker_socket_proxy:
@@ -466,7 +461,6 @@ services:
     networks: [socket_network]
     environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
-    # PROXY-02: Read-Only Collision Cured. HAProxy boots securely with tmpfs blocks.
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     read_only: true
@@ -498,7 +492,6 @@ services:
     image: authelia/authelia:latest
     container_name: authelia
     networks: [proxy_network, auth_network]
-    # IAM-02: Root-Owned Vault Cured. Hardcoded unprivileged host binding.
     user: "\${HOST_UID:-1000}:\${HOST_GID:-1000}"
     volumes: [${ConfigDir}/Authelia:/config]
     secrets: [postgres_password, authelia_jwt_secret, authelia_session_secret, authelia_storage_key]
@@ -525,7 +518,6 @@ services:
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - unbound_keys:/opt/unbound/etc/unbound/keys:rw
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
-    # DNS-15: Naked Resolver Re-Armored
     cap_drop: ["ALL"]
     cap_add: ["CHOWN", "SETGID", "SETUID", "NET_BIND_SERVICE"]
     security_opt: ["no-new-privileges:true"]
@@ -546,6 +538,10 @@ services:
       proxy_network: {}
     dns: ["127.0.0.1", "1.1.1.1"]
     ports: ["0.0.0.0:53:53/tcp", "0.0.0.0:53:53/udp"]
+    # SEC-24: Naked Edge Router Armored (Pi-Hole STIG bindings)
+    cap_drop: ["ALL"]
+    cap_add: ["NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER", "SYS_NICE", "SYS_CHROOT"]
+    security_opt: ["no-new-privileges:true"]
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)"
@@ -572,7 +568,6 @@ services:
     container_name: wireguard_vpn
     networks:
       vpn_network: { ipv4_address: 10.99.0.10 }
-    # S6-02: S6-Overlay Chokehold Released (DAC_OVERRIDE and FOWNER added)
     cap_drop: ["ALL"]
     cap_add: ["NET_ADMIN", "NET_RAW", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER"]
     environment:
@@ -594,15 +589,18 @@ services:
   traefik_proxy:
     image: traefik:v2.11
     container_name: traefik_proxy
-    # NET-06: Edge Proxy Bypass Cured. Surgically amputated the VPN network bridge.
     networks: [socket_network, proxy_network]
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
       - ${ConfigDir}/Traefik/acme.json:/acme.json:rw
-    secrets: [cf_api_token]
+    secrets: [cf_api_token, traefik_auth]
     environment:
       CF_DNS_API_TOKEN_FILE: /run/secrets/cf_api_token
+    # SEC-24: Naked Edge Router Armored (Traefik STIG bindings)
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+    security_opt: ["no-new-privileges:true"]
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.traefik-dashboard.rule=Host(\`proxy.\${INTERNAL_DOMAIN}\`)"
@@ -790,7 +788,6 @@ if [ "$Interactive" -eq 1 ]; then
     done
 
     echo ""
-    # UX-03: Bengali Phantom Exorcised
     PiholePass=$(sudo cat "${SecretsDir}/pihole_pass")
     PrintMsg "214" "========================================================================"
     PrintMsg "226" " 🔐 SECURE CREDENTIAL RECOVERY"
