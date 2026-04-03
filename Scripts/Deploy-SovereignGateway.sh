@@ -1,21 +1,21 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v23.0-SOVEREIGN-TERMINUS
+#  Version: v24.0-SOVEREIGN-EPILOGUE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Terminus Hardening Fixes (The Absolute End):
-#  1. DNS-12: Bootstrapping MITM Cured. Hardcoded the strict cryptographic 
-#     fingerprint validation for the ICANN PGP block to defeat HTTPS interception.
-#  2. SEC-21: Unbound Container Escape Neutralized. Explicitly injected 
-#     'username: "unbound"' into the configuration to force the root-booted 
-#     container to drop privileges before listening on Port 53.
-#  3. HEALTH-13: Boot Storm Stabilized. Added a 30s start_period to the Unbound 
-#     healthcheck to survive the DNSSEC trust anchor initialization lag.
-#  Inherited Vanguard/Aegis/Omega Master Fixes:
-#  - SEC-19 (Kernel Amputation), NET-05 (IPv6 Disable), SEC-20 (TOCTOU Shred)
-#  - PROXY-01 (Events=1), SEC-18 (chmod 600), UX-02 (Prune -f), DNS-10 (Loopback)
-#  - ASSIM-03 (Wizard), UX-01 (Polling), NET-04 (Daemon DNS), NET-03 (Port 80).
+#  Epilogue Hardening Fixes (The Absolute End):
+#  1. SEC-22: Unarmored Proxy Cured. docker_socket_proxy is now locked down 
+#     with cap_drop: [ALL], no-new-privileges, and a read_only filesystem.
+#  2. SEC-23: MD5 BasicAuth Weakness Purged. Upgraded Traefik's fallback 
+#     authentication generation to SHA-512 (-6) to defeat Hashcat acceleration.
+#  3. DNS-14: Ephemeral Keyring Isolation. GPG verification now utilizes a 
+#     temporary keyring, preventing permanent pollution of the host trust store.
+#  4. DEP-01: Cron Phantom Amputated. Actively purges the legacy cron daemon 
+#     from the host OS, enforcing the strict migration to systemd timers.
+#  Inherited Master Fixes:
+#  - DNS-12 (MITM), SEC-21 (Unbound Drop), HEALTH-13 (Boot Storm), 
+#  - SEC-19 (Kernel), NET-05 (IPv6), SEC-20 (TOCTOU Shred), DNS-11 (Keys).
 # ==============================================================================
 
 set -euo pipefail
@@ -102,6 +102,10 @@ CheckDependencies() {
         sudo sh get-docker.sh > /dev/null 2>&1
         sudo systemctl enable --now docker > /dev/null 2>&1 || true
     fi
+
+    # DEP-01: Amputate legacy cron dependency to minimize attack surface
+    if systemctl is-active --quiet cron; then sudo systemctl disable --now cron >/dev/null 2>&1 || true; fi
+    sudo apt-get purge -y cron >/dev/null 2>&1 || true
 }
 
 DetectOsFamily
@@ -179,7 +183,7 @@ net.core.bpf_jit_harden = 2
 EOF
 sudo sysctl --system > /dev/null 2>&1 || true
 
-# TIME-02: Temporal Gate (Wait for Chrony NTP Sync)
+# TIME-02: Temporal Gate
 PrintMsg "240" "Locking chronometric baseline..."
 sudo timedatectl set-local-rtc 0 || true
 if systemctl is-active --quiet chrony || systemctl is-active --quiet chronyd; then
@@ -275,7 +279,7 @@ sudo chown -R "$HostUid:$HostGid" "$ConfigDir/WireGuard" "$ConfigDir/Authelia"
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
 
-# SEC-18: Hardened Defense-in-Depth Permissions (644 -> 600)
+# SEC-18: Hardened Defense-in-Depth Permissions
 WriteSecret() {
     local name=$1; local content=$2; local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
@@ -286,7 +290,8 @@ WriteSecret() {
 
 if [ "$Interactive" -eq 1 ]; then
     [ ! -f "${SecretsDir}/cf_api_token" ] && { read -s -p "Cloudflare DNS API Token: " cf_token; echo ""; WriteSecret "cf_api_token" "$cf_token"; }
-    [ ! -f "${SecretsDir}/traefik_auth" ] && { read -s -p "Traefik BasicAuth Password: " TraefikPass; echo ""; WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"; }
+    # SEC-23: Upgraded Traefik's BasicAuth to SHA-512 crypt hashing (-6)
+    [ ! -f "${SecretsDir}/traefik_auth" ] && { read -s -p "Traefik BasicAuth Password: " TraefikPass; echo ""; WriteSecret "traefik_auth" "admin:$(openssl passwd -6 "$TraefikPass")"; }
 fi
 [ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_jwt_secret" ] && WriteSecret "authelia_jwt_secret" "$(openssl rand -base64 32)"
@@ -324,31 +329,33 @@ fi
 # Export Persistence
 set -a; source "$EnvFile"; set +a
 
-# DNS-12: Bootstrapping MITM Cured (Cryptographic fingerprint pinned locally)
+# DNS-12 & DNS-14: Bootstrapping MITM Cured, Ephemeral Keyring Isolation
 RootHintUtility="${ScriptsDir}/Verify-RootHints.sh"
 sudo tee "$RootHintUtility" > /dev/null << 'EOF'
 #!/bin/bash
 set -euo pipefail
 ConfigDir="/opt/Docker/Config"
+EphKeyring="${ConfigDir}/Unbound/icann.gpg"
+
 curl -sS "https://www.internic.net/domain/named.root" -o "${ConfigDir}/Unbound/RootHints.txt.tmp"
 curl -sS "https://www.internic.net/domain/named.root.sig" -o "${ConfigDir}/Unbound/RootHints.txt.sig"
-
-# Fetch PGP Block but rigorously assert the mathematical fingerprint before continuing
 curl -sS "https://data.iana.org/root-anchors/icann.pgp" -o "${ConfigDir}/Unbound/icann.pgp"
-gpg --import "${ConfigDir}/Unbound/icann.pgp" >/dev/null 2>&1 || true
 
-if ! gpg --fingerprint 0x0BD07395 | tr -d ' ' | grep -q "E0F2C1291162E536E8EEEEF0F781C36C0BD07395"; then
+# Import strictly into an ephemeral keyring, avoiding permanent host pollution
+gpg --no-default-keyring --keyring "$EphKeyring" --import "${ConfigDir}/Unbound/icann.pgp" >/dev/null 2>&1 || true
+
+if ! gpg --no-default-keyring --keyring "$EphKeyring" --fingerprint 0x0BD07395 | tr -d ' ' | grep -q "E0F2C1291162E536E8EEEEF0F781C36C0BD07395"; then
     echo "[FATAL] ICANN PGP Fingerprint mismatch. MitM detected."
-    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/icann.pgp"
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/icann.pgp" "$EphKeyring" "${EphKeyring}~"
     exit 1
 fi
 
-if gpg --verify "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
+if gpg --no-default-keyring --keyring "$EphKeyring" --verify "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
     cat "${ConfigDir}/Unbound/RootHints.txt.tmp" > "${ConfigDir}/Unbound/RootHints.txt"
-    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/icann.pgp"
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/icann.pgp" "$EphKeyring" "${EphKeyring}~"
     exit 0
 else
-    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/icann.pgp"
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/icann.pgp" "$EphKeyring" "${EphKeyring}~"
     exit 1
 fi
 EOF
@@ -453,6 +460,10 @@ services:
     networks: [socket_network]
     environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
+    # SEC-22: Unarmored Proxy Cured. Ruthlessly sealed container escape vectors.
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
     logging: *default-logging
     restart: unless-stopped
   
@@ -508,7 +519,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      # HEALTH-13: Start period survives the unbound-anchor boot delay
       start_period: 30s
     logging: *default-logging
     restart: unless-stopped
