@@ -1,22 +1,21 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v21.0-SOVEREIGN-AEGIS
+#  Version: v22.0-SOVEREIGN-VANGUARD
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Aegis Hardening Fixes (The Final Polish):
-#  1. PROXY-01: Deaf Reverse Proxy Cured. Re-injected 'EVENTS=1' into the 
-#     docker_socket_proxy environment to restore Traefik's dynamic awareness.
-#  2. SEC-18: Defense-in-Depth Sealed. Hardened WriteSecret from 644 to 600, 
-#     ensuring master cryptographic keys are never world-readable on the host.
-#  3. UX-02: Scorched Earth Updater Tamed. Removed the destructive '-a' flag 
-#     from the weekly systemd image prune to preserve dormant alien caches.
+#  Vanguard Hardening Fixes (The Final Polish):
+#  1. SEC-19: Kernel Compromise Sealed. Explicitly appended cap_drop: [ALL] 
+#     and cap_add: [NET_ADMIN, NET_RAW] to WireGuard, amputating SYS_MODULE.
+#  2. NET-05: Anonymity Bleed Sealed. Violently disabled IPv6 in the host kernel 
+#     sysctl matrix to prevent SLAAC shadow-routing and physical MAC leaking.
+#  3. SEC-20: TOCTOU Teardown Sealed. ExecuteAnnihilation now aggressively 
+#     utilizes `shred -u` on all cryptographic master keys before unlinking inodes.
+#  4. DNS-11: DNSSEC Permissions Sealed. Unbound container now strictly boots as 
+#     root (0:0) to chown the trust anchors before stepping down to _unbound.
 #  Inherited Master Fixes:
-#  - DNS-10 (Ouroboros Daemon), ASSIM-03 (Assimilation Engine), UX-01 (Crypto Polling)
-#  - NET-04 (Daemon DNS), NET-03 (Port 80 Ingress), CRON-105 (Watchdog Paths),
-#    SEC-17 (Dashboard Proxy), IAM-01 (Authelia Rebirth), CRON-103 (Systemd), 
-#    SEC-16 (ICANN Root), DNS-08 (Unbound Boot), UI-01 (Pi-Hole Route), 
-#    SEC-15 (SUDO_UID), HEALTH-12 (Local DNS), DNS-07 (Inode), SEC-08 (Shred).
+#  - PROXY-01 (Events=1), SEC-18 (chmod 600), UX-02 (Prune -f), DNS-10 (Loopback),
+#    ASSIM-03 (Wizard), UX-01 (Polling), NET-04 (Daemon DNS), NET-03 (Port 80).
 # ==============================================================================
 
 set -euo pipefail
@@ -162,6 +161,7 @@ if systemctl is-active --quiet systemd-resolved; then
     sudo chattr +i /etc/resolv.conf || true
 fi
 
+# KRN-01 & NET-05: Kernel Armor and IPv6 Shadow-Routing Elimination
 PrintMsg "240" "Forging STIG-compliant host kernel armor..."
 sudo tee /etc/sysctl.d/99-SovereignNode.conf > /dev/null << 'EOF'
 net.ipv4.tcp_syncookies = 1
@@ -170,12 +170,16 @@ net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.default.accept_redirects = 0
 net.ipv4.conf.all.rp_filter = 1
 net.ipv4.conf.default.rp_filter = 1
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
 kernel.kptr_restrict = 2
 kernel.dmesg_restrict = 1
 net.core.bpf_jit_harden = 2
 EOF
 sudo sysctl --system > /dev/null 2>&1 || true
 
+# TIME-02: Temporal Gate (Wait for Chrony NTP Sync)
 PrintMsg "240" "Locking chronometric baseline..."
 sudo timedatectl set-local-rtc 0 || true
 if systemctl is-active --quiet chrony || systemctl is-active --quiet chronyd; then
@@ -199,6 +203,7 @@ if [ -f "$EnvFile" ]; then
     [ -n "$env_acme" ] && PrevAcme="$env_acme"
 fi
 
+# SEC-20: TOCTOU Teardown Sealed (Mathematical overwrite before unlink)
 ExecuteAnnihilation() {
     if [ "$Interactive" -eq 1 ] && [ -d "$StackDir" ]; then
         PrintMsg "196" "========================================================================"
@@ -208,8 +213,10 @@ ExecuteAnnihilation() {
         if [[ "${input_conf:-}" =~ ^[Yy]$ ]]; then
             PrintMsg "196" "Executing tactical nuke..."
             cd "$StackDir" && sudo $DockerBin compose down -v --remove-orphans > /dev/null 2>&1 || true
+            PrintMsg "214" "Mathematically shredding cryptographic master keys..."
+            [ -d "${SecretsDir}" ] && sudo find "${SecretsDir}" -type f -exec shred -u {} \; || true
             sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound"
-            PrintMsg "82" "✔ Earth scorched."
+            PrintMsg "82" "✔ Earth scorched. Magnetic persistence neutralized."
         fi
     fi
 }
@@ -432,7 +439,6 @@ services:
     image: lscr.io/linuxserver/socket-proxy:latest
     container_name: docker_socket_proxy
     networks: [socket_network]
-    # PROXY-01: Re-injected EVENTS=1 so Traefik can hear dynamic container states
     environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
     logging: *default-logging
@@ -478,6 +484,8 @@ services:
     container_name: unbound_dns
     networks:
       vpn_network: { ipv4_address: 10.99.0.11 }
+    # DNS-11: Boots as root to safely chown the trust anchors before stepping down privileges
+    user: "0:0"
     dns: ["127.0.0.1", "1.1.1.1"]
     volumes:
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
@@ -526,6 +534,9 @@ services:
     container_name: wireguard_vpn
     networks:
       vpn_network: { ipv4_address: 10.99.0.10 }
+    # SEC-19: Completely amputated SYS_MODULE vector. Relies securely on userspace /dev/net/tun.
+    cap_drop: ["ALL"]
+    cap_add: ["NET_ADMIN", "NET_RAW"]
     environment:
       PUID: "\${HOST_UID}"
       PGID: "\${HOST_GID}"
@@ -588,7 +599,6 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
-# UX-02: Prune uses strict -f (removes only dangling), preserving offline caches.
 ExecStart=/usr/bin/bash -c '${RootHintUtility} && cd ${StackDir} && ${DockerBin} compose pull && ${DockerBin} compose up -d && ${DockerBin} image prune -f && ${DockerBin} compose restart unbound_dns'
 PrivateTmp=yes
 
