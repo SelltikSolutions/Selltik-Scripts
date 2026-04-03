@@ -1,17 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v26.0-SOVEREIGN-ABSOLUTE
+#  Version: v27.0-SOVEREIGN-MONOLITH
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Absolute Hardening Fixes (The Final Cut):
-#  1. UX-03: Bengali Phantom Exorcised. Replaced the corrupted unicode string 
-#     in the Pi-Hole credential recovery block to prevent a fatal bash abort.
-#  2. S6-02: S6-Overlay Chokehold Released. Injected DAC_OVERRIDE and FOWNER 
-#     into WireGuard's capabilities so the init system can bind the host mounts.
-#  3. IAM-02: Root-Owned Vault Cured. Hardcoded the user directive into the 
-#     Authelia runtime so MFA payloads write as the unprivileged host user.
-#  Inherited Singularity/Epilogue/Terminus/Vanguard Master Fixes:
+#  Monolith Hardening Fixes (The Absolute Zenith):
+#  1. IAM-03: Containment Paradox Cured. Rolled back in-vault secret 
+#     permissions to 644 inside the 700-locked parent directory, preventing 
+#     fatal kernel permission lockouts for unprivileged container runtimes.
+#  2. NET-06: Edge Proxy Bypass Cured. Surgically amputated Traefik from 
+#     the vpn_network, enforcing absolute cryptographic segmentation.
+#  3. IAM-04: Schema Detonation Cured. Modernized Authelia configuration 
+#     heredoc to the v4.38+ session cookie schema to prevent boot-loop panics.
+#  Inherited Absolute/Singularity/Epilogue/Terminus/Vanguard Fixes:
+#  - UX-03 (Unicode Phantom), S6-02 (Init Overrides), IAM-02 (Root Vault)
 #  - SYNTAX-03 (YAML Sed), S6-01 (SetUID), PROXY-02 (Tmpfs), DNS-15 (Unbound Caps)
 #  - SEC-22 (Proxy Armor), SEC-23 (SHA-512 Auth), DNS-14 (Ephemeral Keyring), 
 #  - DEP-01 (Cron Purge), DNS-12 (MITM), SEC-21 (Unbound Drop), 
@@ -229,6 +231,7 @@ ExecuteAnnihilation
 sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" "$ConfigDir/Unbound"
 sudo chown -R 70:70 "$ConfigDir/Postgres"
 
+# IAM-04: Schema Detonation Cured. Rebuilt heredoc mapped to v4.38+ arrays.
 sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -250,10 +253,12 @@ access_control:
       policy: two_factor
 session:
   name: authelia_session
-  domain: "${PrevDomain:-sovereign.local}"
+  secret_file: /run/secrets/authelia_session_secret
   expiration: 3600
   inactivity: 300
-  secret_file: /run/secrets/authelia_session_secret
+  cookies:
+    - domain: "${PrevDomain:-sovereign.local}"
+      authelia_url: "https://auth.${PrevDomain:-sovereign.local}"
 regulation:
   max_retries: 3
   find_time: 120
@@ -279,11 +284,11 @@ sudo chown -R "$HostUid:$HostGid" "$ConfigDir/WireGuard" "$ConfigDir/Authelia"
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
 
-# SEC-18: Hardened Defense-in-Depth Permissions
+# IAM-03: Containment Paradox Cured. Rolled back to 644 inside 700 vault.
 WriteSecret() {
     local name=$1; local content=$2; local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
-    sudo touch "${SecretsDir}/${name}"; sudo chmod 600 "${SecretsDir}/${name}"
+    sudo touch "${SecretsDir}/${name}"; sudo chmod 644 "${SecretsDir}/${name}"
     sudo sh -c "cat '$tmp_file' > '${SecretsDir}/${name}'"
     sudo shred -u "$tmp_file"
 }
@@ -321,9 +326,10 @@ HOST_GID=${HostGid}
 TZ=UTC
 EOF
 
-    # SYNTAX-03: YAML Bounded Substitution cures the fatal consumption of the closing quote.
+    # SYNTAX-03 & IAM-04: YAML Bounded Substitution matching strict array paths.
     sudo sed -i "s/\*\.[^\"]*/\*\.${InternalDomain}/" "${ConfigDir}/Authelia/configuration.yml"
     sudo sed -i "s/domain: .*/domain: \"${InternalDomain}\"/" "${ConfigDir}/Authelia/configuration.yml"
+    sudo sed -i "s|authelia_url: .*|authelia_url: \"https://auth.${InternalDomain}\"|" "${ConfigDir}/Authelia/configuration.yml"
     sudo sed -i "s/admin@.*/admin@${InternalDomain}/" "${ConfigDir}/Authelia/users_database.yml"
 fi
 
@@ -588,7 +594,8 @@ services:
   traefik_proxy:
     image: traefik:v2.11
     container_name: traefik_proxy
-    networks: [socket_network, proxy_network, vpn_network]
+    # NET-06: Edge Proxy Bypass Cured. Surgically amputated the VPN network bridge.
+    networks: [socket_network, proxy_network]
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
