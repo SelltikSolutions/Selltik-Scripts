@@ -1,17 +1,16 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v50.0-SOVEREIGN-TERMINUS
+#  Version: v51.0-SOVEREIGN-MONOLITH
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Terminus Hardening Fixes (The Ultimate Absolute Truth):
-#  1. IAM-09: Double-Secret Detonation Cured. Excised the secret_file directive 
-#     from the Authelia YAML to allow the environment variable sole injection rights, 
-#     preventing a fatal configuration overlap and container crash-loop.
-#  2. NET-15: Pi-Hole Bind Death Cured. Restored NET_BIND_SERVICE to the Pi-Hole 
-#     capabilities array, allowing the unprivileged daemon to legally bind port 53.
-#  3. ORCH-14: Socket Blindness Cured. Re-injected EVENTS=1 into the socket proxy 
-#     so Traefik can dynamically read network state changes for alien assimilation.
+#  Monolith Hardening Fixes (The Unbreakable Vault):
+#  1. IAM-15: Unprivileged Secret Lockout Cured. Chown'd the 600-permission 
+#     secrets to the $HostUid:$HostGid context to allow Authelia to boot.
+#  2. IAM-16: Authelia Parser Detonation Cured. Nested session attributes 
+#     (name, expiration, inactivity) inside the cookies array for modern schema.
+#  3. CAP-04: FTL Real-Time Chokehold Cured. Restored SYS_NICE to Pi-Hole, 
+#     granting the unprivileged daemon the right to prioritize DNS traffic.
 #  Inherited Master Fixes:
 #  - PRIVACY-03 (DNS Split Blackhole), BOOT-11 (Bind Panic), PROXY-07 (Spoofing)
 #  - SEC-27 (644 Hemorrhage), NET-14 (Open Resolver Cannon), KRN-05 (TUN Void)
@@ -23,9 +22,7 @@
 #  - ORCH-11 (Watchdog Ghost), SEC-26 (Cap Bloat), BOOT-08 (Trap Paradox)
 #  - PROXY-05 (File Provider YAML), PRIVACY-01 (Full-Tunnel), ROUTE-19 (Quotes)
 #  - WG-04 (iproute2 Panic), KRN-03 (WG Mod STIG), ROUTE-17 (Backslash Residue)
-#  - VOL-01 (Pi-Hole Persistence), ORCH-09 (Headless .env STIG)
-#  - ORCH-08 (Headless .env), IAM-07 (Global Authelia), ROUTE-16 (CamelCase)
-#  - TRAEFIK-02 (Null CIDR Panic), WG-03 (Trailing Comma), S6-05 (SIGHUP).
+#  - VOL-01 (Pi-Hole Persistence), ORCH-09 (Headless .env STIG).
 # ==============================================================================
 
 set -euo pipefail
@@ -142,7 +139,6 @@ if [ -f /etc/docker/daemon.json ]; then
     fi
 fi
 
-# ROUTE-20: Localhost Blackhole Cured. Dynamically mapping host topology via nmcli.
 HuntPhysicalNetwork() {
     if ! command -v nmcli &> /dev/null; then return; fi
     local ActivePhysConn=$(nmcli -t -f NAME,TYPE,STATE connection show --active | grep -E ':(802-3-ethernet|802-11-wireless):activated' | head -n 1 | cut -d: -f1 || true)
@@ -248,18 +244,20 @@ ExecuteAnnihilation() {
 }
 ExecuteAnnihilation
 
-sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" "$ConfigDir/Unbound"
-sudo chown -R 70:70 "$ConfigDir/Postgres"
-sudo chown -R "$HostUid:$HostGid" "$ConfigDir/WireGuard" "$ConfigDir/Authelia"
+sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d" "${ConfigDir}/Unbound"
+sudo chown -R 70:70 "${ConfigDir}/Postgres"
+sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard" "${ConfigDir}/Authelia"
 
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
 
-# SEC-07 & SEC-27: Inode-preserving secret management with bitwise shredding and strict 600 permissions
+# SEC-07, SEC-27, & IAM-15: Bitwise shredding, strict 600 limits, and unprivileged ownership context.
 WriteSecret() {
     local name=$1; local content=$2; local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
-    sudo touch "${SecretsDir}/${name}"; sudo chmod 600 "${SecretsDir}/${name}"
+    sudo touch "${SecretsDir}/${name}"
+    sudo chown "$HostUid:$HostGid" "${SecretsDir}/${name}"
+    sudo chmod 600 "${SecretsDir}/${name}"
     sudo sh -c "cat '$tmp_file' > '${SecretsDir}/${name}'"
     sudo shred -u "$tmp_file"
 }
@@ -292,7 +290,6 @@ if [ "$Interactive" -eq 1 ]; then
     
     read -p "Route ALL remote internet traffic through VPN? [Y/n]: " input_tunnel
     
-    # PRIVACY-03: DNS Split-Tunnel Blackhole Cured. Internal Docker subnets natively forced over the VPN interface.
     if [[ "${input_tunnel:-Y}" =~ ^[Nn]$ ]]; then
         WgAllowedIps="10.13.13.0/24,10.99.0.0/24"
         if [ -n "$PrevLanSubnet" ]; then
@@ -304,7 +301,6 @@ if [ "$Interactive" -eq 1 ]; then
         WgAllowedIps="0.0.0.0/0, ::/0"
     fi
 else
-    # ORCH-09: Headless Null Trap Cured.
     if [ -z "${PrevEndpoint:-}" ] || [ -z "${PrevEmail:-}" ]; then
         PrintMsg "196" "[FATAL] Headless deployment detected, but master .env cache is missing."
         exit 1
@@ -329,11 +325,9 @@ HOST_GID=${HostGid}
 TZ=UTC
 EOF
 
-# Export persistence for native variable mapping
 set -a; source "$EnvFile"; set +a
 
-# ENV-04 & IAM-09: Schrödinger's Domain Cured. Double-Secret Detonation Cured.
-# Removed secret_file under session to defer completely to environment variable injection.
+# ENV-04, IAM-09, & IAM-16: Nested modern attributes in cookies block to stop schema validator detoantion.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -354,12 +348,12 @@ access_control:
     - domain: "*.${INTERNAL_DOMAIN}"
       policy: two_factor
 session:
-  name: authelia_session
-  expiration: 3600
-  inactivity: 300
   cookies:
     - domain: "${INTERNAL_DOMAIN}"
       authelia_url: "https://auth.${INTERNAL_DOMAIN}"
+      name: authelia_session
+      expiration: 3600
+      inactivity: 300
 regulation:
   max_retries: 3
   find_time: 120
@@ -496,7 +490,6 @@ services:
     image: lscr.io/linuxserver/socket-proxy:latest
     container_name: docker_socket_proxy
     networks: [socket_network]
-    # ORCH-14: Socket Blindness Cured. Re-injected EVENTS=1 for Traefik API vision.
     environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, S6_READ_ONLY_ROOT=1]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
     cap_drop: [ALL]
@@ -532,6 +525,7 @@ services:
     image: authelia/authelia:latest
     container_name: authelia
     networks: [proxy_network, auth_network]
+    user: "\${HOST_UID:-1000}:\${HOST_GID:-1000}"
     volumes: [${ConfigDir}/Authelia:/config]
     secrets: [postgres_password, authelia_jwt_secret, authelia_session_secret, authelia_storage_key]
     environment:
@@ -588,8 +582,8 @@ services:
     depends_on:
       unbound_dns: { condition: service_healthy }
     cap_drop: [ALL]
-    # NET-15: Pi-Hole Bind Death Cured. Granted NET_BIND_SERVICE to unprivileged daemon.
-    cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, KILL, NET_BIND_SERVICE]
+    # CAP-04: FTL Real-Time Chokehold Cured. SYS_NICE restored for unprivileged priority mapping.
+    cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, KILL, NET_BIND_SERVICE, SYS_NICE]
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)"
