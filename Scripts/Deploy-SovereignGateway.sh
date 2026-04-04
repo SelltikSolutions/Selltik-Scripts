@@ -1,18 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v46.0-SOVEREIGN-PHALANX
+#  Version: v47.0-SOVEREIGN-AEON
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Phalanx Hardening Fixes (The Ultimate Vanguard):
-#  1. TLS-02: Ephemeral ACME Void Cured. Explicitly mapped the acme.json 
-#     volume bind and command argument to /etc/traefik/acme/acme.json to 
-#     prevent Let's Encrypt rate-limiting via certificate vaporization.
-#  2. BOOT-10: Authelia Healthcheck Deadlock Cured. Replaced the non-existent 
-#     binary command with a native wget API ping, resolving the Traefik dependency race.
-#  3. PRIVACY-02: Split-Tunnel Blackhole Cured. Dynamically re-injected the 
-#     physical LAN subnet into WgAllowedIps to prevent internal DNS bleed.
+#  Aeon Hardening Fixes (The Final Absolute Truth):
+#  1. ROUTE-20: Localhost Blackhole Cured. Resurrected the nmcli Physical Network 
+#     Hunter to dynamically map the host LAN IP, stopping Unbound from handing 
+#     127.0.0.1 to remote WireGuard clients.
+#  2. LOG-06: Host Storage Exhaustion Cured. Re-injected strict JSON-file logging 
+#     caps (max-size: 10m, max-file: 5) across all services to prevent root partition death.
+#  3. ORCH-13: Supply Chain Stagnation Cured. Restored the sandboxed sovereign-updater 
+#     systemd timer to ensure continuous CVE patching and DNS root hint rotation.
 #  Inherited Master Fixes:
+#  - TLS-02 (ACME Void), BOOT-10 (Auth Deadlock), PRIVACY-02 (Split-Tunnel Bleed)
 #  - ENV-04 (Schrödinger's Domain), BOOT-09 (Identity Race), PROXY-06 (Assimilation)
 #  - ORCH-12 (Routing Blackhole), SEC-07 (Magnetic Erase), DNS-12 (PGP Pinning)
 #  - KRN-04 (STIG Sysctls), ORCH-11 (Watchdog Ghost), SEC-26 (Cap Bloat)
@@ -38,7 +39,7 @@ SecretsDir="${StackDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
 
 # Native Engine Discovery
-ComposeFile="${StackDir}/docker-compose.yml"
+ComposeFile="${StackDir}/DockerCompose.yml"
 EnvFile="${StackDir}/.env"
 LockFile="/var/lock/sovereign_gateway.lock"
 
@@ -137,6 +138,37 @@ if [ -f /etc/docker/daemon.json ]; then
     fi
 fi
 
+# ROUTE-20: Localhost Blackhole Cured. Dynamically mapping host topology via nmcli.
+HuntPhysicalNetwork() {
+    if ! command -v nmcli &> /dev/null; then return; fi
+    local ActivePhysConn=$(nmcli -t -f NAME,TYPE,STATE connection show --active | grep -E ':(802-3-ethernet|802-11-wireless):activated' | head -n 1 | cut -d: -f1 || true)
+    if [ -n "$ActivePhysConn" ]; then
+        local PhysDev=$(nmcli -t -f DEVICE,NAME connection show --active | grep ":$ActivePhysConn$" | cut -d: -f1)
+        local PhysIp=$(ip -4 addr show "$PhysDev" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || true)
+        local CidrPrefix=$(ip -4 addr show "$PhysDev" | grep -oP '(?<=inet\s)\d+(\.\d+){3}/\d+' | cut -d/ -f2 || true)
+        local GatewayIp=$(ip route show dev "$PhysDev" | awk '/default/ {print $3}' | head -n 1 || true)
+        local LanSubnet=$(ip route show dev "$PhysDev" | awk '/proto kernel.*scope link/ {print $1}' | head -n 1 || true)
+        
+        if [ -n "$PhysIp" ]; then
+            export HUNTER_IP="$PhysIp"
+            export HUNTER_SUBNET="${LanSubnet:-}"
+            local CurrentMethod=$(nmcli -t -f ipv4.method connection show "$ActivePhysConn" | cut -d: -f2 || true)
+            if [ "$Interactive" -eq 1 ] && [ "$CurrentMethod" == "auto" ]; then
+                echo ""
+                PrintMsg "214" "🕵️ PHYSICAL LAN HUNTER ENGAGED"
+                PrintMsg "226" "Detected physical interface [$PhysDev]. Fixed lease: $PhysIp"
+                read -p "Freeze $PhysIp as a permanent Static IP? (Y/n): " input_static || true
+                if [[ ! "${input_static:-Y}" =~ ^[Nn]$ ]]; then
+                    sudo nmcli connection modify "$ActivePhysConn" ipv4.addresses "$PhysIp/$CidrPrefix" ipv4.gateway "$GatewayIp" ipv4.dns "1.1.1.1 1.0.0.1" ipv4.method manual
+                    sudo nmcli connection up "$ActivePhysConn" > /dev/null 2>&1 || true
+                    PrintMsg "82" "✔ Static IP Locked."
+                fi
+            fi
+        fi
+    fi
+}
+HuntPhysicalNetwork
+
 # AU-8: Enforce absolute temporal consistency for audit trails
 PrintMsg "240" "Anchoring chronometric infrastructure to UTC..."
 sudo timedatectl set-local-rtc 0 || true
@@ -173,8 +205,8 @@ fi
 HostUid="${SUDO_UID:-1000}"
 HostGid="${SUDO_GID:-1000}"
 
-PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevLanIp=""; PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
-PrevLanSubnet=""; PrevWgPeers="3"; PrevAllowedIps="0.0.0.0/0, ::/0"
+PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevLanIp="${HUNTER_IP:-}"; PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
+PrevLanSubnet="${HUNTER_SUBNET:-}"; PrevWgPeers="3"; PrevAllowedIps="0.0.0.0/0, ::/0"
 
 if [ -f "$EnvFile" ]; then
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" | cut -d= -f2 || echo "")
@@ -201,7 +233,7 @@ ExecuteAnnihilation() {
         read -p "OBLITERATE EVERYTHING and restart fresh? (y/N): " input_conf || true
         if [[ "${input_conf:-}" =~ ^[Yy]$ ]]; then
             PrintMsg "196" "Executing tactical nuke..."
-            cd "$StackDir" && sudo $DockerBin compose down -v --remove-orphans > /dev/null 2>&1 || true
+            cd "$StackDir" && sudo $DockerBin compose -f "$ComposeFile" down -v --remove-orphans > /dev/null 2>&1 || true
             PrintMsg "214" "Mathematically shredding cryptographic master keys..."
             [ -d "${SecretsDir}" ] && sudo find "${SecretsDir}" -type f -exec shred -u {} \; || true
             sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound"
@@ -247,8 +279,13 @@ if [ "$Interactive" -eq 1 ]; then
     read -p "WireGuard Public Endpoint [$PrevEndpoint]: " input_endpoint; WgEndpoint="${input_endpoint:-$PrevEndpoint}"
     read -p "Internal Root Domain [$PrevDomain]: " input_domain; InternalDomain="${input_domain:-$PrevDomain}"
     read -p "Let's Encrypt Email [$PrevEmail]: " input_email; AcmeEmail="${input_email:-$PrevEmail}"
-    read -p "Monolith LAN IP: " input_lan; TraefikLanIp="${input_lan:-127.0.0.1}"
+    read -p "Monolith LAN IP [$PrevLanIp]: " input_lan; TraefikLanIp="${input_lan:-$PrevLanIp}"
+    # ROUTE-20 Fallback: Never permit 127.0.0.1 to enter DNS records if dynamically discovered.
+    TraefikLanIp="${TraefikLanIp:-127.0.0.1}"
     read -p "WireGuard Peer Count [$PrevWgPeers]: " input_peers; WgPeers="${input_peers:-$PrevWgPeers}"
+    read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
+    [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && AcmeServerUrl="https://acme-v02.api.letsencrypt.org/directory" || AcmeServerUrl="https://acme-staging-v02.api.letsencrypt.org/directory"
+    
     read -p "Route ALL remote internet traffic through VPN? [Y/n]: " input_tunnel
     
     # PRIVACY-02: Split-Tunnel Blackhole Cured. Dynamically injects internal routing blocks.
@@ -269,7 +306,7 @@ else
         exit 1
     fi
     WgEndpoint="${PrevEndpoint}"; InternalDomain="${PrevDomain}"; AcmeEmail="${PrevEmail}"
-    TraefikLanIp="127.0.0.1"; WgPeers="${PrevWgPeers}"; AcmeServerUrl="${PrevAcme}"
+    TraefikLanIp="${PrevLanIp:-127.0.0.1}"; WgPeers="${PrevWgPeers}"; AcmeServerUrl="${PrevAcme}"
     WgAllowedIps="${PrevAllowedIps}"
 fi
 
@@ -277,7 +314,7 @@ sudo tee "$EnvFile" > /dev/null << EOF
 WG_ENDPOINT=${WgEndpoint}
 INTERNAL_DOMAIN=${InternalDomain}
 ACME_EMAIL=${AcmeEmail}
-ACME_SERVER_URL=${AcmeServerUrl:-https://acme-staging-v02.api.letsencrypt.org/directory}
+ACME_SERVER_URL=${AcmeServerUrl}
 WG_PORT=${PrevPort:-51820}
 WG_PEERS=${WgPeers}
 TRAEFIK_LAN_IP=${TraefikLanIp}
@@ -292,7 +329,7 @@ EOF
 set -a; source "$EnvFile"; set +a
 
 # ENV-04: Schrödinger's Domain Cured. Writes pure configuration using live exported $INTERNAL_DOMAIN
-sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
+sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
   port: 9091
@@ -305,7 +342,7 @@ storage:
     password_file: /run/secrets/postgres_password
 authentication_backend:
   password_reset: { disable: true }
-  file: { path: /config/users_database.yml }
+  file: { path: /config/UsersDatabase.yml }
 access_control:
   default_policy: deny
   rules:
@@ -327,8 +364,8 @@ notifier:
   filesystem: { filename: /config/notification.txt }
 EOF
 
-if [ ! -f "${ConfigDir}/Authelia/users_database.yml" ]; then
-    sudo tee "${ConfigDir}/Authelia/users_database.yml" > /dev/null << EOF
+if [ ! -f "${ConfigDir}/Authelia/UsersDatabase.yml" ]; then
+    sudo tee "${ConfigDir}/Authelia/UsersDatabase.yml" > /dev/null << EOF
 users:
   admin:
     displayname: "Sovereign Administrator"
@@ -418,7 +455,14 @@ http:
         servers: [{ url: "http://authelia:9091" }]
 EOF
 
+# LOG-06: Host Storage Exhaustion Cured. Hard caps applied globally to JSON drivers.
 sudo tee "$ComposeFile" > /dev/null << EOF
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 networks:
   vpn_network:
     name: sovereign_gateway_vpn_network
@@ -458,6 +502,7 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2375/version || exit 1"]
       interval: 10s
+    logging: *default-logging
     restart: unless-stopped
 
   auth_db:
@@ -475,6 +520,7 @@ services:
     security_opt: [no-new-privileges:true]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -d authelia -U authelia"]
+    logging: *default-logging
     restart: unless-stopped
 
   authelia:
@@ -492,12 +538,12 @@ services:
     depends_on:
       auth_db: { condition: service_healthy }
     cap_drop: [ALL]
-    # BOOT-10: Authelia Deadlock Cured. API ping utilizing native wget over non-existent binary command.
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9091/api/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+    logging: *default-logging
     restart: unless-stopped
 
   unbound_dns:
@@ -514,6 +560,7 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "drill -p 53 internic.net @127.0.0.1 || exit 1"]
       start_period: 30s
+    logging: *default-logging
     restart: unless-stopped
 
   pihole_sinkhole:
@@ -545,6 +592,7 @@ services:
       - "traefik.http.middlewares.pihole-redirect.redirectregex.replacement=https://pihole.\${INTERNAL_DOMAIN}/admin/"
       - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file,pihole-redirect"
       - "traefik.docker.network=sovereign_gateway_proxy_network"
+    logging: *default-logging
     restart: unless-stopped
 
   wireguard_vpn:
@@ -570,6 +618,7 @@ services:
       - /lib/modules:/lib/modules:ro
       - ${ConfigDir}/WireGuard:/config
     ports: ["0.0.0.0:\${WG_PORT}:\${WG_PORT}/udp"]
+    logging: *default-logging
     restart: unless-stopped
 
   traefik_proxy:
@@ -577,13 +626,11 @@ services:
     container_name: traefik_proxy
     networks: [socket_network, proxy_network]
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
-    # TLS-02: Ephemeral ACME Void Cured. Explicit mount and target to /etc/traefik/acme/acme.json
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
       - ${ConfigDir}/Traefik/acme.json:/etc/traefik/acme/acme.json:rw
     secrets: [cf_api_token, traefik_auth]
     environment: [CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token]
-    # BOOT-09: Race condition killed. Traefik awaits both proxy socket AND Identity Provider.
     depends_on:
       docker_socket_proxy: { condition: service_healthy }
       authelia: { condition: service_healthy }
@@ -602,7 +649,36 @@ services:
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     security_opt: [no-new-privileges:true]
+    logging: *default-logging
     restart: unless-stopped
+EOF
+
+# ORCH-13: Supply Chain Stagnation Cured. Restoring the Sovereign Updater daemon.
+sudo tee /etc/systemd/system/sovereign-updater.service > /dev/null << EOF
+[Unit]
+Description=Sovereign Gateway Weekly Updater
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash -c '${RootHintUtility} && cd ${StackDir} && ${DockerBin} compose -f ${ComposeFile} pull && ${DockerBin} compose -f ${ComposeFile} up -d && ${DockerBin} image prune -f && ${DockerBin} compose -f ${ComposeFile} restart unbound_dns'
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo tee /etc/systemd/system/sovereign-updater.timer > /dev/null << EOF
+[Unit]
+Description=Weekly Timer for Sovereign Updater
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=12h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
 EOF
 
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
@@ -648,10 +724,10 @@ WantedBy=timers.target
 EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now sovereign-watchdog.timer
+sudo systemctl enable --now sovereign-watchdog.timer sovereign-updater.timer
 
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Sovereign Matrix..."; fi
-cd "$StackDir" && sudo $DockerBin compose up -d --force-recreate --remove-orphans
+cd "$StackDir" && sudo $DockerBin compose -f "$ComposeFile" up -d --force-recreate --remove-orphans
 
 AssimilateAlienContainers() {
     ProxyNetworkName="sovereign_gateway_proxy_network"
