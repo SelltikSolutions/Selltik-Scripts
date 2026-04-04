@@ -1,28 +1,25 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v51.0-SOVEREIGN-MONOLITH
+#  Version: v52.0-SOVEREIGN-SINGULARITY
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Monolith Hardening Fixes (The Unbreakable Vault):
-#  1. IAM-15: Unprivileged Secret Lockout Cured. Chown'd the 600-permission 
-#     secrets to the $HostUid:$HostGid context to allow Authelia to boot.
-#  2. IAM-16: Authelia Parser Detonation Cured. Nested session attributes 
-#     (name, expiration, inactivity) inside the cookies array for modern schema.
-#  3. CAP-04: FTL Real-Time Chokehold Cured. Restored SYS_NICE to Pi-Hole, 
-#     granting the unprivileged daemon the right to prioritize DNS traffic.
+#  Singularity Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-17: BasicAuth Hash Detonation Cured. Shifted Traefik's fallback secret 
+#     generation to an apr1 (MD5) crypt hash, which Traefik natively supports.
+#  2. PORT-53: systemd-resolved Collision Cured. Surgically decapitated the host 
+#     stub listener to free port 53 before Pi-Hole initializes, stopping crash-loops.
+#  3. ORCH-16: Socket Proxy Denial Cured. Re-injected PING=1 and INFO=1 into the 
+#     socket proxy whitelist, restoring Traefik's API healthchecks and vision.
 #  Inherited Master Fixes:
+#  - IAM-15 (Unprivileged Lockout), IAM-16 (Parser Detonation), CAP-04 (SYS_NICE)
 #  - PRIVACY-03 (DNS Split Blackhole), BOOT-11 (Bind Panic), PROXY-07 (Spoofing)
 #  - SEC-27 (644 Hemorrhage), NET-14 (Open Resolver Cannon), KRN-05 (TUN Void)
 #  - ROUTE-20 (Localhost Blackhole), LOG-06 (Host Storage Exhaustion)
 #  - ORCH-13 (Supply Chain Stagnation), TLS-02 (ACME Void), BOOT-10 (Auth Deadlock)
 #  - PRIVACY-02 (Split-Tunnel Bleed), ENV-04 (Schrödinger's Domain)
 #  - BOOT-09 (Identity Race), PROXY-06 (Assimilation), ORCH-12 (Routing Blackhole)
-#  - SEC-07 (Magnetic Erase), DNS-12 (PGP Pinning), KRN-04 (STIG Sysctls)
-#  - ORCH-11 (Watchdog Ghost), SEC-26 (Cap Bloat), BOOT-08 (Trap Paradox)
-#  - PROXY-05 (File Provider YAML), PRIVACY-01 (Full-Tunnel), ROUTE-19 (Quotes)
-#  - WG-04 (iproute2 Panic), KRN-03 (WG Mod STIG), ROUTE-17 (Backslash Residue)
-#  - VOL-01 (Pi-Hole Persistence), ORCH-09 (Headless .env STIG).
+#  - SEC-07 (Magnetic Erase), DNS-12 (PGP Pinning), KRN-04 (STIG Sysctls).
 # ==============================================================================
 
 set -euo pipefail
@@ -39,7 +36,7 @@ StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
 
-# Native Engine Discovery
+# Native Engine Discovery (PascalCase Enforcement)
 ComposeFile="${StackDir}/DockerCompose.yml"
 EnvFile="${StackDir}/.env"
 LockFile="/var/lock/sovereign_gateway.lock"
@@ -139,6 +136,7 @@ if [ -f /etc/docker/daemon.json ]; then
     fi
 fi
 
+# ROUTE-20: Localhost Blackhole Cured. Dynamically mapping host topology via nmcli.
 HuntPhysicalNetwork() {
     if ! command -v nmcli &> /dev/null; then return; fi
     local ActivePhysConn=$(nmcli -t -f NAME,TYPE,STATE connection show --active | grep -E ':(802-3-ethernet|802-11-wireless):activated' | head -n 1 | cut -d: -f1 || true)
@@ -168,6 +166,18 @@ HuntPhysicalNetwork() {
     fi
 }
 HuntPhysicalNetwork
+
+# PORT-53: systemd-resolved Collision Cured. Surgical decapitation of host stub listener.
+if systemctl is-active --quiet systemd-resolved; then
+    PrintMsg "214" "Decapitating systemd-resolved to mathematically free Port 53..."
+    sudo sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
+    sudo sed -i 's/DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
+    sudo systemctl restart systemd-resolved || true
+    sudo chattr -i /etc/resolv.conf 2>/dev/null || true
+    sudo rm -f /etc/resolv.conf
+    echo -e "nameserver 1.1.1.1\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf > /dev/null
+    sudo chattr +i /etc/resolv.conf || true
+fi
 
 # AU-8: Enforce absolute temporal consistency for audit trails
 PrintMsg "240" "Anchoring chronometric infrastructure to UTC..."
@@ -264,7 +274,8 @@ WriteSecret() {
 
 if [ "$Interactive" -eq 1 ]; then
     [ ! -f "${SecretsDir}/cf_api_token" ] && { read -s -p "Cloudflare DNS API Token: " cf_token; echo ""; WriteSecret "cf_api_token" "$cf_token"; }
-    [ ! -f "${SecretsDir}/traefik_auth" ] && { read -s -p "Traefik BasicAuth Password: " TraefikPass; echo ""; WriteSecret "traefik_auth" "admin:$(openssl passwd -6 "$TraefikPass")"; }
+    # IAM-17: BasicAuth Hash Detonation Cured. Utilizes native apr1 (MD5) compliant algorithm.
+    [ ! -f "${SecretsDir}/traefik_auth" ] && { read -s -p "Traefik BasicAuth Password: " TraefikPass; echo ""; WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"; }
 else
     if [ ! -f "${SecretsDir}/cf_api_token" ] || [ ! -f "${SecretsDir}/traefik_auth" ]; then
         PrintMsg "196" "[FATAL] Headless deployment detected, but master edge secrets are missing."
@@ -327,7 +338,7 @@ EOF
 
 set -a; source "$EnvFile"; set +a
 
-# ENV-04, IAM-09, & IAM-16: Nested modern attributes in cookies block to stop schema validator detoantion.
+# ENV-04, IAM-09, & IAM-16: Nested modern attributes in cookies block to stop schema validator detonation.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -490,7 +501,8 @@ services:
     image: lscr.io/linuxserver/socket-proxy:latest
     container_name: docker_socket_proxy
     networks: [socket_network]
-    environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, S6_READ_ONLY_ROOT=1]
+    # ORCH-16: Socket Proxy Denial Cured. Restored PING=1 and INFO=1 for Traefik Healthchecks.
+    environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, PING=1, INFO=1, S6_READ_ONLY_ROOT=1]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID]
@@ -582,7 +594,6 @@ services:
     depends_on:
       unbound_dns: { condition: service_healthy }
     cap_drop: [ALL]
-    # CAP-04: FTL Real-Time Chokehold Cured. SYS_NICE restored for unprivileged priority mapping.
     cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, KILL, NET_BIND_SERVICE, SYS_NICE]
     labels:
       - "traefik.enable=true"
