@@ -1,17 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v52.0-SOVEREIGN-SINGULARITY
+#  Version: v53.0-SOVEREIGN-ECLIPSE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Singularity Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-17: BasicAuth Hash Detonation Cured. Shifted Traefik's fallback secret 
-#     generation to an apr1 (MD5) crypt hash, which Traefik natively supports.
-#  2. PORT-53: systemd-resolved Collision Cured. Surgically decapitated the host 
-#     stub listener to free port 53 before Pi-Hole initializes, stopping crash-loops.
-#  3. ORCH-16: Socket Proxy Denial Cured. Re-injected PING=1 and INFO=1 into the 
-#     socket proxy whitelist, restoring Traefik's API healthchecks and vision.
+#  Eclipse Hardening Fixes (The Unbreakable Vault):
+#  1. VOL-02: Pi-Hole Database Lockout Cured. Enforced chown 999:999 on the host 
+#     directories to allow the unprivileged FTL daemon to write its databases.
+#  2. ROUTE-21: Physical Air-Gap Cured. Injected RFC1918 LAN subnets into the 
+#     vpn-whitelist middleware to permit local access without bouncing through VPN.
+#  3. LOG-07: Access Log Blackbox Cured. Mounted a dedicated JSON forensic log 
+#     volume and enabled Traefik's strict HTTP access logging.
 #  Inherited Master Fixes:
+#  - IAM-17 (BasicAuth Hash), PORT-53 (systemd-resolved), ORCH-16 (Socket Ping)
 #  - IAM-15 (Unprivileged Lockout), IAM-16 (Parser Detonation), CAP-04 (SYS_NICE)
 #  - PRIVACY-03 (DNS Split Blackhole), BOOT-11 (Bind Panic), PROXY-07 (Spoofing)
 #  - SEC-27 (644 Hemorrhage), NET-14 (Open Resolver Cannon), KRN-05 (TUN Void)
@@ -247,16 +248,18 @@ ExecuteAnnihilation() {
             cd "$StackDir" && sudo $DockerBin compose -f "$ComposeFile" down -v --remove-orphans > /dev/null 2>&1 || true
             PrintMsg "214" "Mathematically shredding cryptographic master keys..."
             [ -d "${SecretsDir}" ] && sudo find "${SecretsDir}" -type f -exec shred -u {} \; || true
-            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound"
+            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound" "$LogsDir"
             PrintMsg "82" "✔ Earth scorched. Magnetic persistence neutralized."
         fi
     fi
 }
 ExecuteAnnihilation
 
-sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d" "${ConfigDir}/Unbound"
+# VOL-02: Pi-Hole Database Lockout Cured. Strict directory creation and host-level chown 999:999.
+sudo mkdir -p "$StackDir" "$LogsDir/Traefik" "$ScriptsDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d" "${ConfigDir}/Unbound"
 sudo chown -R 70:70 "${ConfigDir}/Postgres"
-sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard" "${ConfigDir}/Authelia"
+sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard" "${ConfigDir}/Authelia" "${LogsDir}/Traefik"
+sudo chown -R 999:999 "${ConfigDir}/PiHole"
 
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
@@ -431,6 +434,7 @@ server:
   local-data: "${INTERNAL_DOMAIN}. A ${TRAEFIK_LAN_IP}"
 EOF
 
+# ROUTE-21: Physical Air-Gap Cured. RFC1918 injected directly into Traefik's strict vpn-whitelist.
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -442,7 +446,7 @@ http:
           X-XSS-Protection: "1; mode=block"
     vpn-whitelist:
       ipAllowList:
-        sourceRange: ["10.13.13.0/24", "10.99.0.0/24"]
+        sourceRange: ["10.13.13.0/24", "10.99.0.0/24", "127.0.0.1/32", "192.168.0.0/16", "172.16.0.0/12", "10.0.0.0/8"]
     authelia:
       forwardAuth:
         address: "http://authelia:9091/api/verify?rd=https://auth.${INTERNAL_DOMAIN}/"
@@ -594,6 +598,7 @@ services:
     depends_on:
       unbound_dns: { condition: service_healthy }
     cap_drop: [ALL]
+    # CAP-04: FTL Real-Time Chokehold Cured. SYS_NICE restored for unprivileged priority mapping.
     cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, KILL, NET_BIND_SERVICE, SYS_NICE]
     labels:
       - "traefik.enable=true"
@@ -641,9 +646,11 @@ services:
     container_name: traefik_proxy
     networks: [socket_network, proxy_network]
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
+    # LOG-07: Access Log Blackbox Cured. Mounted the forensic JSON directory.
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
       - ${ConfigDir}/Traefik/acme.json:/etc/traefik/acme/acme.json:rw
+      - ${LogsDir}/Traefik:/var/log/traefik:rw
     secrets: [cf_api_token, traefik_auth]
     environment: [CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token]
     depends_on:
@@ -661,6 +668,9 @@ services:
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme/acme.json"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
+      - "--accesslog=true"
+      - "--accesslog.filepath=/var/log/traefik/access.log"
+      - "--accesslog.format=json"
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     security_opt: [no-new-privileges:true]
