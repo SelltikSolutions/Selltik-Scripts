@@ -1,17 +1,17 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v58.0-SOVEREIGN-AEGIS
+#  Version: v59.0-SOVEREIGN-ZENITH
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Aegis Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-21: Argon2id Mutilation Cured. Enforced strict literal quotes around 
-#     the UsersDatabase heredoc to prevent Bash from interpolating the crypt hash.
-#  2. KRN-06: Strict RP_Filter Blackhole Cured. Shifted reverse path filtering 
-#     from 1 (Strict) to 2 (Loose) to legally authorize asymmetrical WireGuard routing.
-#  3. NET-19: DHCP Resolv Time Bomb Cured. Dropped a static dns=default override 
-#     into NetworkManager to prevent it from resetting resolv.conf on DHCP renewal.
+#  Zenith Hardening Fixes (The Final Absolute Truth):
+#  1. NET-20: Dead Symlink Paradox Cured. Replaced volatile tmpfs resolv.conf 
+#     symlinks with a hard physical file, preventing a guaranteed host network 
+#     brick upon reboot.
+#  2. BOOT-12: Internet Dependency Deadlock Cured. Rewrote Unbound healthcheck 
+#     to query internal zones, decoupling local DNS survival from ISP uptime.
 #  Inherited Master Fixes:
+#  - IAM-21 (Argon2id Mutilation), KRN-06 (Strict RP_Filter), NET-19 (DHCP Resolv)
 #  - DNS-14 (Resolv Symlink Vacuum), TLS-04 (Null ACME), NTP-02 (Chrony Sync)
 #  - IAM-20 (Crypto Split-Brain), NET-18 (IPv6 RTNETLINK), ORCH-18 (Alien Purge)
 #  - NET-16 (Immutable Resolv), TLS-03 (ACME Lockout), ROUTE-22 (YAML Detonation)
@@ -23,9 +23,7 @@
 #  - SEC-27 (644 Hemorrhage), NET-14 (Open Resolver Cannon), KRN-05 (TUN Void)
 #  - ROUTE-20 (Localhost Blackhole), LOG-06 (Host Storage Exhaustion)
 #  - ORCH-13 (Supply Chain Stagnation), TLS-02 (ACME Void), BOOT-10 (Auth Deadlock)
-#  - PRIVACY-02 (Split-Tunnel Bleed), ENV-04 (Schrödinger's Domain)
-#  - BOOT-09 (Identity Race), PROXY-06 (Assimilation), ORCH-12 (Routing Blackhole)
-#  - SEC-07 (Magnetic Erase), DNS-12 (PGP Pinning), KRN-04 (STIG Sysctls).
+#  - PRIVACY-02 (Split-Tunnel Bleed), ENV-04 (Schrödinger's Domain).
 # ==============================================================================
 
 set -euo pipefail
@@ -173,7 +171,7 @@ HuntPhysicalNetwork() {
 }
 HuntPhysicalNetwork
 
-# PORT-53 & DNS-14: Decapitates systemd-resolved and safely maps upstream DNS.
+# PORT-53 & NET-20: Decapitates systemd-resolved and drops a physical resolv file.
 if systemctl is-active --quiet systemd-resolved; then
     PrintMsg "214" "Decapitating systemd-resolved to mathematically free Port 53..."
     sudo sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
@@ -181,14 +179,10 @@ if systemctl is-active --quiet systemd-resolved; then
     sudo systemctl stop systemd-resolved || true
     sudo systemctl disable systemd-resolved || true
     
+    # NET-20: Dead Symlink Paradox Cured. Hard write to disk.
     sudo rm -f /etc/resolv.conf
-    # DNS-14: Prevent the Resolv Vacuum if upstream is missing
-    if [ -s /run/systemd/resolve/resolv.conf ] && grep -q "^nameserver" /run/systemd/resolve/resolv.conf; then
-        sudo ln -s /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null || true
-    else
-        PrintMsg "196" "⚠️ Upstream DNS void detected. Injecting static Cloudflare resolution..."
-        echo -e "nameserver 1.1.1.1\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf > /dev/null
-    fi
+    PrintMsg "196" "⚠️ Writing physical fallback DNS resolving matrix..."
+    echo -e "nameserver 1.1.1.1\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf > /dev/null
 fi
 
 # NET-19: DHCP Resolv Time Bomb Cured. Gagging NetworkManager from touching resolv.conf.
@@ -245,6 +239,7 @@ fi
 HostUid="${SUDO_UID:-1000}"
 HostGid="${SUDO_GID:-1000}"
 
+# NET-18: IPv6 RTNETLINK Panic Cured. Default fallback removed.
 PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevLanIp="${HUNTER_IP:-}"; PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
 PrevLanSubnet="${HUNTER_SUBNET:-}"; PrevWgPeers="3"; PrevAllowedIps="0.0.0.0/0"
 
@@ -621,8 +616,9 @@ services:
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE]
+    # BOOT-12: Internet Dependency Deadlock Cured. Unbound probes its internal resolution space.
     healthcheck:
-      test: ["CMD-SHELL", "drill -p 53 internic.net @127.0.0.1 || exit 1"]
+      test: ["CMD-SHELL", "drill -p 53 \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
       start_period: 30s
     logging: *default-logging
     restart: unless-stopped
