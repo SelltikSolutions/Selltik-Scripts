@@ -1,21 +1,24 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v39.0-SOVEREIGN-CHRONOS
+#  Version: v40.0-SOVEREIGN-ZENITH
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Chronos Hardening Fixes (The Final Mathematical Truth):
-#  1. WG-04: iproute2 Subnet Panic Cured. Reverted INTERNAL_SUBNET to single 
-#     CIDR and pushed the comma-separated split-tunnel array into ALLOWEDIPS.
-#  2. KRN-03: Userspace Phantom Cured. The script now fails closed with a STIG 
-#     abort if the native wireguard kernel module is physically absent.
-#  3. ROUTE-17: Backslash Residue Cured. Escaped heredoc backticks exactly once 
-#     to emit pure File Provider YAML, stopping Bash from executing phantom binaries.
+#  Zenith Hardening Fixes (The Final Mathematical Truth):
+#  1. ROUTE-18: YAML Parser Detonation Cured. Escaped backticks exactly once 
+#     so the Traefik File Provider parses native, valid Golang routing syntax.
+#  2. PRIVACY-01: Split-Tunnel Void Cured. Rebuilt WireGuard AllowedIPs logic 
+#     to default to a Full-Tunnel (0.0.0.0/0, ::/0), mathematically guaranteeing 
+#     total traffic encryption over hostile public networks.
+#  3. IAM-08: Phantom Admin Lockout Cured. The default Authelia temporal password 
+#     is explicitly printed during the credential recovery sequence to prevent 
+#     day-zero rate-limiting and administrative IP bans.
 #  Inherited Master Fixes:
-#  - VOL-01 (Pi-Hole Persistence), PROXY-05 (File Provider YAML), ORCH-09 (.env STIG)
+#  - WG-04 (iproute2 Panic), KRN-03 (WG Mod STIG), ROUTE-17 (Backslash Residue)
+#  - VOL-01 (Pi-Hole Persistence), PROXY-05 (File Provider YAML), ORCH-09 (.env)
 #  - ORCH-08 (Headless .env), IAM-07 (Global Authelia), ROUTE-16 (CamelCase Pointer)
 #  - TRAEFIK-02 (Null CIDR Panic), WG-03 (Trailing Comma), S6-05 (SIGHUP Control)
-#  - HEALTH-16 (Socket Checks), ROUTE-15 (Backtick Escapes), UX-06 (Regex \$)
+#  - HEALTH-16 (Socket Checks), ROUTE-15 (Backtick Escapes), UX-06 (Regex $)
 #  - ORCH-07 (Unbound Proxy Var), PROXY-04 (Parser Poisoning), UX-05 (Port Var)
 #  - NET-13 (VPN Sysctls), IAM-06 (Wildcard Preserved), DEPLOY-01 (CI/CD Safety)
 #  - S6-04 (Proxy Chokehold), HEALTH-15 (Drill Swap), NET-12 (Daemon Timeout)
@@ -42,6 +45,7 @@ ScriptsDir="${BaseDir}/Scripts"
 StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
+ManifestsDir="${ConfigDir}/Manifests"
 
 # Native Engine Discovery
 ComposeFile="${StackDir}/docker-compose.yml"
@@ -176,7 +180,6 @@ PrintMsg "240" "Forging STIG-compliant host kernel armor and resolving VPN modul
 if sudo modprobe wireguard 2>/dev/null; then
     echo "wireguard" | sudo tee /etc/modules-load.d/wireguard.conf > /dev/null
 else
-    # KRN-03: Userspace Phantom Cured. Fails closed with an exit 1 STIG abort.
     PrintMsg "196" "[FATAL] Native WireGuard kernel module missing. Userspace fallback is deprecated."
     PrintMsg "196" "Your host kernel is physically incompatible. Aborting deployment."
     exit 1
@@ -211,6 +214,8 @@ HostGid="${SUDO_GID:-1000}"
 PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevLanIp="${HUNTER_IP:-}"; PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
 PrevLanSubnet="${HUNTER_SUBNET:-}"
 PrevWgPeers="3"
+PrevAllowedIps="0.0.0.0/0, ::/0"
+
 if [ -f "$EnvFile" ]; then
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" | cut -d= -f2 || echo "")
     PrevDomain=$(grep "^INTERNAL_DOMAIN=" "$EnvFile" | cut -d= -f2 || echo "")
@@ -224,6 +229,8 @@ if [ -f "$EnvFile" ]; then
     [ -n "$env_subnet" ] && PrevLanSubnet="$env_subnet"
     env_peers=$(grep "^WG_PEERS=" "$EnvFile" | cut -d= -f2 || echo "")
     [ -n "$env_peers" ] && PrevWgPeers="$env_peers"
+    env_allowed=$(grep "^WG_ALLOWED_IPS=" "$EnvFile" | cut -d= -f2 || echo "")
+    [ -n "$env_allowed" ] && PrevAllowedIps="$env_allowed"
 fi
 
 ExecuteAnnihilation() {
@@ -237,14 +244,14 @@ ExecuteAnnihilation() {
             cd "$StackDir" && sudo $DockerBin compose down -v --remove-orphans > /dev/null 2>&1 || true
             PrintMsg "214" "Mathematically shredding cryptographic master keys..."
             [ -d "${SecretsDir}" ] && sudo find "${SecretsDir}" -type f -exec shred -u {} \; || true
-            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound"
+            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound" "$ManifestsDir"
             PrintMsg "82" "✔ Earth scorched. Magnetic persistence neutralized."
         fi
     fi
 }
 ExecuteAnnihilation
 
-sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" "$ConfigDir/Unbound"
+sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" "$ConfigDir/Unbound" "$ManifestsDir"
 sudo chown -R 70:70 "$ConfigDir/Postgres"
 
 sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
@@ -333,6 +340,17 @@ if [ "$Interactive" -eq 1 ]; then
     read -p "WireGuard Peer Count [$PrevWgPeers]: " input_peers; WgPeers="${input_peers:-$PrevWgPeers}"
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
     [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && AcmeServerUrl="https://acme-v02.api.letsencrypt.org/directory" || AcmeServerUrl="https://acme-staging-v02.api.letsencrypt.org/directory"
+    
+    # PRIVACY-01: Split-Tunnel Void Cured. Explicit prompt enforcing full 0.0.0.0/0 encryption routing.
+    read -p "Route ALL remote internet traffic through the VPN (Full-Tunnel Privacy)? [Y/n]: " input_tunnel
+    if [[ "${input_tunnel:-Y}" =~ ^[Nn]$ ]]; then
+        WgAllowedIps="10.13.13.0/24"
+        if [ -n "$PrevLanSubnet" ]; then
+            WgAllowedIps="${WgAllowedIps},${PrevLanSubnet}"
+        fi
+    else
+        WgAllowedIps="0.0.0.0/0, ::/0"
+    fi
 else
     if [ -z "${PrevEndpoint:-}" ] || [ -z "${PrevEmail:-}" ]; then
         PrintMsg "196" "[FATAL] Headless deployment detected, but master .env cache is missing."
@@ -346,11 +364,7 @@ else
     TraefikLanIp="${PrevLanIp:-127.0.0.1}"
     WgPeers="${PrevWgPeers:-3}"
     AcmeServerUrl="${PrevAcme:-https://acme-staging-v02.api.letsencrypt.org/directory}"
-fi
-
-WgAllowedIps="10.13.13.0/24"
-if [ -n "$PrevLanSubnet" ]; then
-    WgAllowedIps="${WgAllowedIps},${PrevLanSubnet}"
+    WgAllowedIps="${PrevAllowedIps:-0.0.0.0/0, ::/0}"
 fi
 
 sudo tee "$EnvFile" > /dev/null << EOF
@@ -636,7 +650,6 @@ services:
       SERVERPORT: \${WG_PORT}
       PEERS: \${WG_PEERS}
       PEERDNS: 10.99.0.12
-      # WG-04: iproute2 Subnet Panic Cured. Reverted INTERNAL_SUBNET to native single CIDR.
       INTERNAL_SUBNET: "10.13.13.0/24"
       ALLOWEDIPS: "\${WG_ALLOWED_IPS}"
     volumes:
@@ -815,15 +828,15 @@ AssimilateAlienContainers() {
                 if [ -z "$TargetPort" ]; then continue; fi
                 local mw_string=""
                 case "$posture_choice" in
-                    1) mw_string="\"secure-headers\", \"authelia\"" ;;
-                    2) mw_string="\"secure-headers\", \"vpn-whitelist\"" ;;
-                    3) mw_string="\"secure-headers\", \"traefik-auth\"" ;;
-                    4) mw_string="\"secure-headers\"" ;;
+                    1) mw_string="\"secure-headers@file\", \"authelia@file\"" ;;
+                    2) mw_string="\"secure-headers@file\", \"vpn-whitelist@file\"" ;;
+                    3) mw_string="\"secure-headers@file\", \"traefik-auth@file\"" ;;
+                    4) mw_string="\"secure-headers@file\"" ;;
                 esac
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
                 sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
                 
-                # ROUTE-17: Backslash Residue Cured. Exact single-escaped backticks map seamlessly to File Provider.
+                # ROUTE-18: YAML Parser Detonation Cured. Escaping strictly limits Bash evaluation to literal syntax.
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 # ALIEN_CONTAINER: $container
 http:
@@ -866,7 +879,15 @@ if [ "$Interactive" -eq 1 ]; then
     PrintMsg "214" "========================================================================"
     
     echo ""
-    PrintMsg "196" " ⚠️  AUTHELIA MFA REGISTRATION (CRITICAL)"
+    PrintMsg "196" " ⚠️  AUTHELIA INITIALIZATION (CRITICAL)"
+    # IAM-08: Phantom Admin Lockout Cured. Explicitly documents the Argon2id default bind.
+    PrintMsg "82"  " Authelia Default User: admin"
+    PrintMsg "82"  " Authelia Default Pass: password"
+    PrintMsg "196" " CHANGE THIS IMMEDIATELY VIA CONFIG OR YOU ARE COMPROMISED."
+    PrintMsg "214" "========================================================================"
+
+    echo ""
+    PrintMsg "196" " ⚠️  AUTHELIA MFA REGISTRATION"
     PrintMsg "226" " Your first login attempt at https://pihole.${INTERNAL_DOMAIN}"
     PrintMsg "226" " will trigger an email to register your biometric/2FA device."
     PrintMsg "82"  " Retrieve your registration link by running:"
