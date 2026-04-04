@@ -1,29 +1,29 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v44.0-SOVEREIGN-HORIZON
+#  Version: v45.0-SOVEREIGN-AEGIS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Horizon Hardening Fixes (The Final Absolute Truth):
-#  1. SEC-07: Magnetic Persistence Cured. Replaced 'rm -f' with 'shred -u' in 
-#     secret management to mathematically overwrite physical sectors.
-#  2. DNS-12: Supply Chain DNS Poisoning Cured. Implemented GPG-pinned root hint 
-#     verification against the authoritative InterNIC key (0x0BD07395).
-#  3. KRN-04: Kernel Self-Protection Restored. Injected rp_filter, kptr_restrict, 
-#     dmesg_restrict, and bpf_jit_harden to mitigate ASLR bypass and spoofing.
-#  4. ORCH-10: Cron Ghost Cured. Migrated all lifecycle updaters and watchdogs 
-#     to sandboxed systemd timers with RandomizedDelaySec and PrivateTmp.
-#  5. AU-8: Chronometric Rot Cured. Enforced 'timedatectl set-local-rtc 0' 
-#     to lock the hardware clock to UTC and ensure audit log consistency.
+#  Aegis Hardening Fixes (The Final Absolute Truth):
+#  1. ENV-04: Schrödinger's Domain Cured. Shifted Authelia config generation 
+#     below the .env source line to inject \${INTERNAL_DOMAIN} natively, entirely 
+#     eradicating the fragile regex sed replacements.
+#  2. BOOT-09: Identity Boot Race Cured. Re-injected Authelia's native healthcheck 
+#     and chained Traefik to wait for it, stopping 502s during initial ignition.
+#  3. PROXY-06: Assimilation Lobotomy Cured. Restored the interactive port/posture 
+#     intelligence to the alien container ingestion loop.
+#  4. ORCH-12: Routing Blackhole Cured. The script now physically bridges the 
+#     alien container to the proxy network BEFORE Traefik ingests the live YAML.
 #  Inherited Master Fixes:
+#  - SEC-07 (Magnetic Erase), DNS-12 (PGP Pinning), KRN-04 (STIG Sysctls)
 #  - ORCH-11 (Watchdog Ghost), SEC-26 (Cap Bloat), BOOT-08 (Trap Paradox)
 #  - PROXY-05 (File Provider YAML), PRIVACY-01 (Full-Tunnel), ROUTE-19 (Quotes)
 #  - WG-04 (iproute2 Panic), KRN-03 (WG Mod STIG), ROUTE-17 (Backslash Residue)
 #  - VOL-01 (Pi-Hole Persistence), ORCH-09 (Headless .env STIG)
-#  - ORCH-08 (Headless .env), IAM-07 (Global Authelia), ROUTE-16 (CamelCase Pointer)
-#  - TRAEFIK-02 (Null CIDR Panic), WG-03 (Trailing Comma), S6-05 (SIGHUP Control)
-#  - HEALTH-16 (Socket Checks), ROUTE-15 (Backtick Escapes), UX-06 (Regex $)
-#  - ORCH-07 (Unbound Proxy Var), PROXY-04 (Parser Poisoning), UX-05 (Port Var)
+#  - ORCH-08 (Headless .env), IAM-07 (Global Authelia), ROUTE-16 (CamelCase)
+#  - TRAEFIK-02 (Null CIDR Panic), WG-03 (Trailing Comma), S6-05 (SIGHUP)
+#  - HEALTH-16 (Socket Checks), ROUTE-15 (Backtick), UX-06 (Regex \$)
+#  - ORCH-07 (Unbound Proxy Var), PROXY-04 (Parser Poison), UX-05 (Port Var)
 #  - NET-13 (VPN Sysctls), IAM-06 (Wildcard Preserved), DEPLOY-01 (CI/CD Safety).
 # ==============================================================================
 
@@ -217,6 +217,7 @@ ExecuteAnnihilation
 
 sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" "$ConfigDir/Unbound"
 sudo chown -R 70:70 "$ConfigDir/Postgres"
+sudo chown -R "$HostUid:$HostGid" "$ConfigDir/WireGuard" "$ConfigDir/Authelia"
 
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
@@ -272,17 +273,66 @@ sudo tee "$EnvFile" > /dev/null << EOF
 WG_ENDPOINT=${WgEndpoint}
 INTERNAL_DOMAIN=${InternalDomain}
 ACME_EMAIL=${AcmeEmail}
-ACME_SERVER_URL=${PrevAcme}
-WG_PORT=${PrevPort}
+ACME_SERVER_URL=${AcmeServerUrl:-https://acme-staging-v02.api.letsencrypt.org/directory}
+WG_PORT=${PrevPort:-51820}
 WG_PEERS=${WgPeers}
 TRAEFIK_LAN_IP=${TraefikLanIp}
+WG_LAN_SUBNET=${PrevLanSubnet}
 WG_ALLOWED_IPS=${WgAllowedIps}
 HOST_UID=${HostUid}
 HOST_GID=${HostGid}
 TZ=UTC
 EOF
 
+# Export persistence for native variable mapping
 set -a; source "$EnvFile"; set +a
+
+# ENV-04: Schrödinger's Domain Cured. Writes pure configuration using live exported $INTERNAL_DOMAIN
+sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
+server:
+  host: 0.0.0.0
+  port: 9091
+storage:
+  postgres:
+    host: auth_db
+    port: 5432
+    database: authelia
+    username: authelia
+    password_file: /run/secrets/postgres_password
+authentication_backend:
+  password_reset: { disable: true }
+  file: { path: /config/users_database.yml }
+access_control:
+  default_policy: deny
+  rules:
+    - domain: "*.${INTERNAL_DOMAIN}"
+      policy: two_factor
+session:
+  name: authelia_session
+  secret_file: /run/secrets/authelia_session_secret
+  expiration: 3600
+  inactivity: 300
+  cookies:
+    - domain: "${INTERNAL_DOMAIN}"
+      authelia_url: "https://auth.${INTERNAL_DOMAIN}"
+regulation:
+  max_retries: 3
+  find_time: 120
+  ban_time: 300
+notifier:
+  filesystem: { filename: /config/notification.txt }
+EOF
+
+if [ ! -f "${ConfigDir}/Authelia/users_database.yml" ]; then
+    sudo tee "${ConfigDir}/Authelia/users_database.yml" > /dev/null << EOF
+users:
+  admin:
+    displayname: "Sovereign Administrator"
+    password: "\$argon2id\$v=19\$m=65536,t=3,p=4\$wD4pD5lT8vG6sE8jO7mCQA\$2QOqU5vY3K5zN9yE4mT7qO1pB6uR4sF3jM5vA8nG4X8"
+    email: admin@${INTERNAL_DOMAIN}
+    groups: [admins]
+EOF
+fi
 
 # DNS-12: PGP-Pinned Root Hint Verification Utility
 RootHintUtility="${ScriptsDir}/Verify-RootHints.sh"
@@ -316,51 +366,6 @@ sudo chmod 700 "$RootHintUtility"
 
 PrintMsg "240" "Verifying DNS Root Integrity via PGP Pinning..."
 sudo "$RootHintUtility" || exit 1
-
-sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
-server:
-  host: 0.0.0.0
-  port: 9091
-storage:
-  postgres:
-    host: auth_db
-    port: 5432
-    database: authelia
-    username: authelia
-    password_file: /run/secrets/postgres_password
-authentication_backend:
-  password_reset: { disable: true }
-  file: { path: /config/users_database.yml }
-access_control:
-  default_policy: deny
-  rules:
-    - domain: "*.${INTERNAL_DOMAIN}"
-      policy: two_factor
-session:
-  name: authelia_session
-  secret_file: /run/secrets/authelia_session_secret
-  expiration: 3600
-  cookies:
-    - domain: "${INTERNAL_DOMAIN}"
-      authelia_url: "https://auth.${INTERNAL_DOMAIN}"
-regulation:
-  max_retries: 3
-  find_time: 120
-  ban_time: 300
-notifier:
-  filesystem: { filename: /config/notification.txt }
-EOF
-
-if [ ! -f "${ConfigDir}/Authelia/users_database.yml" ]; then
-    sudo tee "${ConfigDir}/Authelia/users_database.yml" > /dev/null << EOF
-users:
-  admin:
-    displayname: "Sovereign Administrator"
-    password: "\$argon2id\$v=19\$m=65536,t=3,p=4\$wD4pD5lT8vG6sE8jO7mCQA\$2QOqU5vY3K5zN9yE4mT7qO1pB6uR4sF3jM5vA8nG4X8"
-    email: admin@${INTERNAL_DOMAIN}
-    groups: [admins]
-EOF
-fi
 
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
@@ -483,6 +488,12 @@ services:
     depends_on:
       auth_db: { condition: service_healthy }
     cap_drop: [ALL]
+    # BOOT-09: Identity Boot Race Cured. Traefik must wait for Authelia to be healthy.
+    healthcheck:
+      test: ["CMD", "authelia", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   unbound_dns:
@@ -567,8 +578,10 @@ services:
       - ${ConfigDir}/Traefik/acme.json:/acme.json:rw
     secrets: [cf_api_token, traefik_auth]
     environment: [CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token]
+    # BOOT-09: Race condition killed. Traefik awaits both proxy socket AND Identity Provider.
     depends_on:
       docker_socket_proxy: { condition: service_healthy }
+      authelia: { condition: service_healthy }
     command:
       - "--providers.docker=true"
       - "--providers.docker.endpoint=tcp://docker_socket_proxy:2375"
@@ -587,7 +600,6 @@ services:
     restart: unless-stopped
 EOF
 
-# ORCH-10: Migrate Background Logic to Systemd Timers
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
@@ -604,7 +616,6 @@ done
 EOF
 sudo chmod 700 "$WatchdogScript"
 
-# Create Systemd Units for Sandboxed Execution
 sudo tee /etc/systemd/system/sovereign-watchdog.service > /dev/null << EOF
 [Unit]
 Description=Sovereign Gateway Network Watchdog
@@ -638,30 +649,78 @@ if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Sovereign Matrix...";
 cd "$StackDir" && sudo $DockerBin compose up -d --force-recreate --remove-orphans
 
 AssimilateAlienContainers() {
+    ProxyNetworkName="sovereign_gateway_proxy_network"
     if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
-        local foreign_containers=\$(sudo $DockerBin ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower(\$2) != stack && \$1 != "" {print \$1}')
-        if [ -n "\$foreign_containers" ]; then
-            for container in \$foreign_containers; do
-                local clean_name=\$(echo "\$container" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
-                local manifest_file="${ConfigDir}/Traefik/Dynamic/\${clean_name}_assimilation.yml"
-                if [ -f "\$manifest_file" ]; then continue; fi
+        local foreign_containers=\$(sudo $DockerBin ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($2) != stack && $1 != "" {print $1}')
+        if [ -n "$foreign_containers" ]; then
+            local found_new=0
+            for container in $foreign_containers; do
+                local clean_name=$(echo "$container" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
+                local manifest_file="${ConfigDir}/Traefik/Dynamic/${clean_name}_assimilation.yml"
+                if [ -f "$manifest_file" ]; then continue; fi
                 
-                # ORCH-11: Watchdog header re-injected
-                sudo tee "\$manifest_file" > /dev/null << MANIFEST_EOF
-# ALIEN_CONTAINER: \$container
+                if [ $found_new -eq 0 ]; then
+                    echo ""
+                    PrintMsg "214" "========================================================================"
+                    PrintMsg "214" " 🛸 ALIEN ASSIMILATION PROTOCOL INITIATED"
+                    PrintMsg "214" "========================================================================"
+                    found_new=1
+                fi
+                echo ""
+                # PROXY-06: Lobotomy Cured. Interactive routing logic meticulously restored.
+                PrintMsg "214" "Select ingress posture for unassimilated container [$container]:"
+                local posture_choice=""
+                if command -v gum &> /dev/null; then
+                    local choice=$(gum choose "1) MFA Protected (Authelia) [SUGGESTED]" "2) VPN-Only (Air-Gapped)" "3) BasicAuth (Legacy Form)" "4) Fully Public" "5) Internal (Skip)" || true)
+                    [ -z "$choice" ] && continue
+                    posture_choice=${choice:0:1}
+                else
+                    echo "1) MFA Protected (Authelia) [SUGGESTED]"
+                    echo "2) VPN-Only (Air-Gapped)"
+                    echo "3) BasicAuth (Legacy Form)"
+                    echo "4) Fully Public"
+                    echo "5) Internal (Skip)"
+                    read -p "Select posture (1-5) [1]: " posture_choice || true
+                    posture_choice=${posture_choice:-1}
+                fi
+                if [ "$posture_choice" -eq 5 ]; then continue; fi
+                
+                local TargetPort=""
+                if command -v gum &> /dev/null; then
+                    TargetPort=$(gum input --prompt "Internal listening port for $container (e.g. 80, 8080): " || true)
+                else
+                    read -p "Internal listening port for $container (e.g. 80, 8080): " TargetPort || true
+                fi
+                if [ -z "$TargetPort" ]; then continue; fi
+                
+                local mw_string=""
+                case "$posture_choice" in
+                    1) mw_string='"secure-headers@file", "authelia@file"' ;;
+                    2) mw_string='"secure-headers@file", "vpn-whitelist@file"' ;;
+                    3) mw_string='"secure-headers@file", "traefik-auth@file"' ;;
+                    4) mw_string='"secure-headers@file"' ;;
+                esac
+                
+                PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
+                # ORCH-12: Routing Blackhole Cured. Asynchronous docker bridge executed BEFORE YAML parsing.
+                sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
+                
+                sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
+# ALIEN_CONTAINER: $container
 http:
   routers:
-    \${clean_name}-router:
-      rule: "Host(\`\${clean_name}.${INTERNAL_DOMAIN}\`)"
+    ${clean_name}-router:
+      rule: "Host(\`${clean_name}.${INTERNAL_DOMAIN}\`)"
       entryPoints: ["websecure"]
-      middlewares: ["secure-headers@file", "authelia@file"]
-      service: "\${clean_name}-service"
+      middlewares: [${mw_string}]
+      service: "${clean_name}-service"
       tls: { certResolver: "cloudflare" }
   services:
-    \${clean_name}-service:
+    ${clean_name}-service:
       loadBalancer:
-        servers: [{ url: "http://\${container}:80" }]
+        servers: [{ url: "http://${container}:${TargetPort}" }]
 MANIFEST_EOF
+                PrintMsg "82" "✔ Assimilated: https://${clean_name}.${INTERNAL_DOMAIN}"
             done
         fi
     fi
