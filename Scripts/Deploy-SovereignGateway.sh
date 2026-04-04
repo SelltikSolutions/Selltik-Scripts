@@ -1,17 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v48.0-SOVEREIGN-OMNIVERSAL
+#  Version: v49.0-SOVEREIGN-OBLIVION
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Omniversal Hardening Fixes (The Final Absolute Truth):
-#  1. SEC-27: 644 Hemorrhage Cured. Hardened secret file permissions to 600, 
-#     blinding cryptographic material from all non-root host processes.
-#  2. NET-14: Open Resolver Cannon Cured. Bound DNS ports explicitly to the 
-#     internal TRAEFIK_LAN_IP to prevent public DNS amplification attacks.
-#  3. KRN-05: TUN Device Void Cured. Restored /dev/net/tun device mapping
-#     to guarantee WireGuard interface allocation and prevent crash-loops.
+#  Oblivion Hardening Fixes (The Final Absolute Truth):
+#  1. PRIVACY-03: DNS Split-Tunnel Blackhole Cured. Injected the 10.99.0.0/24 
+#     Docker subnet into the WgAllowedIps array to force internal DNS resolution.
+#  2. BOOT-11: Phantom Bind Kernel Panic Cured. Injected ip_nonlocal_bind=1 
+#     into the STIG sysctls, preventing Docker from crashing during host reboots.
+#  3. PROXY-07: IP Spoofing Rate-Limit Bypass Cured. Expanded Traefik's trustedIPs 
+#     to RFC1918 and proxy subnets, restoring Authelia's brute-force protections.
 #  Inherited Master Fixes:
+#  - SEC-27 (644 Hemorrhage), NET-14 (Open Resolver Cannon), KRN-05 (TUN Void)
 #  - ROUTE-20 (Localhost Blackhole), LOG-06 (Host Storage Exhaustion)
 #  - ORCH-13 (Supply Chain Stagnation), TLS-02 (ACME Void), BOOT-10 (Auth Deadlock)
 #  - PRIVACY-02 (Split-Tunnel Bleed), ENV-04 (Schrödinger's Domain)
@@ -139,7 +140,6 @@ if [ -f /etc/docker/daemon.json ]; then
     fi
 fi
 
-# ROUTE-20: Localhost Blackhole Cured. Dynamically mapping host topology via nmcli.
 HuntPhysicalNetwork() {
     if ! command -v nmcli &> /dev/null; then return; fi
     local ActivePhysConn=$(nmcli -t -f NAME,TYPE,STATE connection show --active | grep -E ':(802-3-ethernet|802-11-wireless):activated' | head -n 1 | cut -d: -f1 || true)
@@ -175,11 +175,12 @@ PrintMsg "240" "Anchoring chronometric infrastructure to UTC..."
 sudo timedatectl set-local-rtc 0 || true
 sudo timedatectl set-timezone UTC || true
 
-# KRN-04: STIG Scorched Earth Kernel Hardening
+# KRN-04 & BOOT-11: STIG Scorched Earth Kernel Hardening + Bind Race Condition Cure
 PrintMsg "240" "Forging STIG-compliant host kernel armor..."
 sudo tee /etc/sysctl.d/99-SovereignGateway.conf > /dev/null << 'EOF'
 net.ipv4.tcp_syncookies = 1
 net.ipv4.ip_forward = 1
+net.ipv4.ip_nonlocal_bind = 1
 net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.default.accept_redirects = 0
 net.ipv4.conf.all.secure_redirects = 0
@@ -234,7 +235,7 @@ ExecuteAnnihilation() {
         read -p "OBLITERATE EVERYTHING and restart fresh? (y/N): " input_conf || true
         if [[ "${input_conf:-}" =~ ^[Yy]$ ]]; then
             PrintMsg "196" "Executing tactical nuke..."
-            cd "$StackDir" && sudo $DockerBin compose down -v --remove-orphans > /dev/null 2>&1 || true
+            cd "$StackDir" && sudo $DockerBin compose -f "$ComposeFile" down -v --remove-orphans > /dev/null 2>&1 || true
             PrintMsg "214" "Mathematically shredding cryptographic master keys..."
             [ -d "${SecretsDir}" ] && sudo find "${SecretsDir}" -type f -exec shred -u {} \; || true
             sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound"
@@ -281,7 +282,6 @@ if [ "$Interactive" -eq 1 ]; then
     read -p "Internal Root Domain [$PrevDomain]: " input_domain; InternalDomain="${input_domain:-$PrevDomain}"
     read -p "Let's Encrypt Email [$PrevEmail]: " input_email; AcmeEmail="${input_email:-$PrevEmail}"
     read -p "Monolith LAN IP [$PrevLanIp]: " input_lan; TraefikLanIp="${input_lan:-$PrevLanIp}"
-    # ROUTE-20 Fallback: Never permit 127.0.0.1 to enter DNS records if dynamically discovered.
     TraefikLanIp="${TraefikLanIp:-127.0.0.1}"
     read -p "WireGuard Peer Count [$PrevWgPeers]: " input_peers; WgPeers="${input_peers:-$PrevWgPeers}"
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
@@ -289,9 +289,9 @@ if [ "$Interactive" -eq 1 ]; then
     
     read -p "Route ALL remote internet traffic through VPN? [Y/n]: " input_tunnel
     
-    # PRIVACY-02: Split-Tunnel Blackhole Cured. Dynamically injects internal routing blocks.
+    # PRIVACY-03: DNS Split-Tunnel Blackhole Cured. Internal Docker subnets natively forced over the VPN interface.
     if [[ "${input_tunnel:-Y}" =~ ^[Nn]$ ]]; then
-        WgAllowedIps="10.13.13.0/24"
+        WgAllowedIps="10.13.13.0/24,10.99.0.0/24"
         if [ -n "$PrevLanSubnet" ]; then
             WgAllowedIps="${WgAllowedIps},${PrevLanSubnet}"
         elif [ -n "$TraefikLanIp" ] && [ "$TraefikLanIp" != "127.0.0.1" ]; then
@@ -528,7 +528,6 @@ services:
     image: authelia/authelia:latest
     container_name: authelia
     networks: [proxy_network, auth_network]
-    # Excised user mapping to allow entrypoint to read blinded 600 secrets before dropping privileges natively
     volumes: [${ConfigDir}/Authelia:/config]
     secrets: [postgres_password, authelia_jwt_secret, authelia_session_secret, authelia_storage_key]
     environment:
@@ -570,7 +569,6 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.12 }
       proxy_network: {}
-    # NET-14: Binds exclusively to the trusted internal LAN IP, closing the 0.0.0.0 open resolver vulnerability
     ports:
       - "\${TRAEFIK_LAN_IP}:53:53/tcp"
       - "\${TRAEFIK_LAN_IP}:53:53/udp"
@@ -622,7 +620,6 @@ services:
     volumes:
       - /lib/modules:/lib/modules:ro
       - ${ConfigDir}/WireGuard:/config
-    # KRN-05: Restored necessary character device to instantiate network tunnel mappings
     devices:
       - /dev/net/tun:/dev/net/tun
     ports: ["0.0.0.0:\${WG_PORT}:\${WG_PORT}/udp"]
@@ -649,7 +646,8 @@ services:
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.websecure.address=:443"
-      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.99.0.0/24"
+      # PROXY-07: IP Spoofing Rate-Limit Bypass Cured. Trusts RFC1918 & proxy spaces.
+      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.98.0.0/24,10.99.0.0/24,192.168.0.0/16,172.16.0.0/12,10.0.0.0/8"
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme/acme.json"
@@ -661,7 +659,6 @@ services:
     restart: unless-stopped
 EOF
 
-# ORCH-13: Supply Chain Stagnation Cured. Restoring the Sovereign Updater daemon.
 sudo tee /etc/systemd/system/sovereign-updater.service > /dev/null << EOF
 [Unit]
 Description=Sovereign Gateway Weekly Updater
@@ -669,7 +666,7 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bash -c '${RootHintUtility} && cd ${StackDir} && ${DockerBin} compose pull && ${DockerBin} compose up -d && ${DockerBin} image prune -f && ${DockerBin} compose restart unbound_dns'
+ExecStart=/usr/bin/bash -c '${RootHintUtility} && cd ${StackDir} && ${DockerBin} compose -f ${ComposeFile} pull && ${DockerBin} compose -f ${ComposeFile} up -d && ${DockerBin} image prune -f && ${DockerBin} compose -f ${ComposeFile} restart unbound_dns'
 PrivateTmp=yes
 
 [Install]
@@ -735,7 +732,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now sovereign-watchdog.timer sovereign-updater.timer
 
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Sovereign Matrix..."; fi
-cd "$StackDir" && sudo $DockerBin compose up -d --force-recreate --remove-orphans
+cd "$StackDir" && sudo $DockerBin compose -f "$ComposeFile" up -d --force-recreate --remove-orphans
 
 AssimilateAlienContainers() {
     ProxyNetworkName="sovereign_gateway_proxy_network"
