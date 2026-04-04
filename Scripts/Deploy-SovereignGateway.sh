@@ -1,17 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v34.0-SOVEREIGN-OMNIPOTENCE
+#  Version: v35.0-SOVEREIGN-TERMINUS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Omnipotence Hardening Fixes (The True Absolute End):
-#  1. ORCH-07: Unbound Proxy Variable Cured. Explicitly declared the 
-#     ProxyNetworkName variable to prevent strict POSIX nounset bash aborts.
-#  2. PROXY-04: Parser Poisoning Cured. Relocated the assimilation manifest 
-#     to an inert /Manifests directory to prevent Traefik File Provider panics.
-#  3. UX-05 / ROUTE-14: Interpolation Blackhole Cured. Dynamically injects 
-#     TargetPort and InternalDomain into the pure Docker Compose labels format.
-#  Inherited Exarch/Pantheon/Elysium/Apotheosis/Monolith Master Fixes:
+#  Terminus Hardening Fixes (The True Absolute End):
+#  1. HEALTH-16: Missing Healthcheck Paradox Cured. Restored the native socket 
+#     proxy healthcheck and chained Traefik's depends_on constraint to it.
+#  2. ROUTE-15: Backtick Execution Void Cured. Strictly escaped the Traefik 
+#     host rule backticks (\\\`) so Bash writes literal characters instead of 
+#     executing phantom binaries during the assimilation sequence.
+#  3. UX-06: Regex Interpolation Collision Cured. Passed \$\$ through the Bash 
+#     heredoc to yield $$ in Compose, allowing Traefik to receive the literal $.
+#  Inherited Master Fixes:
+#  - ORCH-07 (Unbound Proxy Var), PROXY-04 (Parser Poisoning), UX-05 (Port Var)
 #  - NET-13 (VPN Sysctls), IAM-06 (Wildcard Preserved), DEPLOY-01 (CI/CD Safety)
 #  - S6-04 (Proxy Chokehold), HEALTH-15 (Drill Swap), NET-12 (Daemon Timeout)
 #  - NET-08 (Watchdog Sync), UX-04 (Regex Escape), SEC-25 (Naked Core), NET-09 (MTU)
@@ -110,7 +112,6 @@ CheckDependencies() {
         sudo systemctl enable --now docker > /dev/null 2>&1 || true
     fi
 
-    # DEP-01: Amputate legacy cron dependency to minimize attack surface
     if systemctl is-active --quiet cron; then sudo systemctl disable --now cron >/dev/null 2>&1 || true; fi
     sudo apt-get purge -y cron >/dev/null 2>&1 || true
 }
@@ -118,10 +119,8 @@ CheckDependencies() {
 DetectOsFamily
 CheckDependencies
 
-# Dynamically map absolute path for Docker to survive Systemd sanitization
 DockerBin=$(command -v docker || echo "/usr/bin/docker")
 
-# NET-12: Daemon Routing Timeout Cured. Purged global daemon DNS to allow native 127.0.0.11 routing.
 if [ -f /etc/docker/daemon.json ]; then
     if command -v jq &> /dev/null && grep -q "10.99.0.12" /etc/docker/daemon.json; then
         PrintMsg "214" "Purging legacy global DNS overrides from Docker daemon..."
@@ -201,7 +200,6 @@ if systemctl is-active --quiet chrony || systemctl is-active --quiet chronyd; th
     timeout 60 bash -c 'until chronyc tracking | grep -q "Leap status     : Normal"; do sleep 2; done' || PrintMsg "196" "WARNING: NTP sync timed out."
 fi
 
-# Capture Host UID for Container Privilege Dropping
 HostUid="${SUDO_UID:-1000}"
 HostGid="${SUDO_GID:-1000}"
 
@@ -290,7 +288,6 @@ users:
 EOF
 fi
 
-# Host-level directory ownership ensures containers drop privileges successfully
 sudo chown -R "$HostUid:$HostGid" "$ConfigDir/WireGuard" "$ConfigDir/Authelia"
 
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
@@ -351,7 +348,6 @@ EOF
     sudo sed -i "s/admin@.*/admin@${InternalDomain}/" "${ConfigDir}/Authelia/users_database.yml"
 fi
 
-# Export Persistence
 set -a; source "$EnvFile"; set +a
 
 RootHintUtility="${ScriptsDir}/Verify-RootHints.sh"
@@ -486,6 +482,13 @@ services:
     tmpfs:
       - /run
       - /tmp
+    # HEALTH-16: Missing Healthcheck Paradox Cured. Prevents a fatal Compose dependency abort.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2375/version || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     logging: *default-logging
     restart: unless-stopped
   
@@ -571,7 +574,8 @@ services:
       - "traefik.http.routers.pihole.entrypoints=websecure"
       - "traefik.http.routers.pihole.tls.certresolver=cloudflare"
       - "traefik.http.services.pihole.loadbalancer.server.port=80"
-      - "traefik.http.middlewares.pihole-redirect.redirectregex.regex=^https://pihole\.\${INTERNAL_DOMAIN}/\$"
+      # UX-06: Regex Interpolation Collision Cured. Compose correctly intercepts $$ and yields a literal $ to Traefik.
+      - "traefik.http.middlewares.pihole-redirect.redirectregex.regex=^https://pihole\.\${INTERNAL_DOMAIN}/\$\$"
       - "traefik.http.middlewares.pihole-redirect.redirectregex.replacement=https://pihole.\${INTERNAL_DOMAIN}/admin/"
       - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file,pihole-redirect"
       - "traefik.docker.network=sovereign_gateway_proxy_network"
@@ -627,6 +631,10 @@ services:
     cap_drop: ["ALL"]
     cap_add: ["NET_BIND_SERVICE"]
     security_opt: ["no-new-privileges:true"]
+    # HEALTH-16: Ensures Traefik doesn't boot until the Socket Proxy passes its healthcheck
+    depends_on:
+      docker_socket_proxy:
+        condition: service_healthy
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.traefik-dashboard.rule=Host(\`proxy.\${INTERNAL_DOMAIN}\`)"
@@ -682,7 +690,6 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# ORCH-07: ProxyNetworkName gracefully defined and injected to prevent Bash death.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
@@ -787,7 +794,7 @@ AssimilateAlienContainers() {
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
                 sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
                 
-                # PROXY-04 & UX-05 & ROUTE-14: Emits strictly evaluated compose labels to an inert text directory.
+                # ROUTE-15: Escaped backticks force bash to treat them as literal string boundaries.
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 # ALIEN_CONTAINER: $container
 # ------------------------------------------------------------------------------
@@ -796,7 +803,7 @@ AssimilateAlienContainers() {
 # ------------------------------------------------------------------------------
 labels:
   - "traefik.enable=true"
-  - "traefik.http.routers.${clean_name}.rule=Host(\`${clean_name}.${InternalDomain}\`)"
+  - "traefik.http.routers.${clean_name}.rule=Host(\\\`${clean_name}.${InternalDomain}\\\`)"
   - "traefik.http.routers.${clean_name}.entrypoints=websecure"
   - "traefik.http.routers.${clean_name}.tls.certresolver=cloudflare"
   - "traefik.http.routers.${clean_name}.middlewares=${mw_string}"
