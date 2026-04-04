@@ -1,18 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v37.0-SOVEREIGN-STELLAR
+#  Version: v38.0-SOVEREIGN-IMPERIUM
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Stellar Hardening Fixes (The Undisputed Absolute End):
-#  1. ORCH-08: Headless Environment Void Cured. Extracted the .env generation 
-#     out of the Interactive trap to guarantee POSIX variables initialize in CI/CD.
-#  2. IAM-07: Headless Identity Drift Cured. Moved Authelia domain sed mutations 
-#     to execute globally via exported env vars, anchoring the MFA core permanently.
-#  3. ROUTE-16: CamelCase Pointer Void Cured. Assimilation generators now rigidly 
-#     point to the uppercase \${INTERNAL_DOMAIN} to prevent nounset shell crashes.
+#  Imperium Hardening Fixes (The True Absolute End):
+#  1. VOL-01: Amnesiac Sinkhole Cured. Re-attached the Pi-Hole /etc volumes 
+#     to the physical host, guaranteeing persistence of blocklists across reboots.
+#  2. PROXY-05: Assimilation Blackhole Cured. Overhauled alien generation from 
+#     inert labels to pure Traefik File Provider YAML injected into the live watch dir.
+#  3. ORCH-09: Headless Null Trap Cured. Automated deployments now violently abort 
+#     with a STIG error if .env is not pre-seeded, protecting ACME / WG initialization.
 #  Inherited Master Fixes:
-#  - TRAEFIK-02 (Null CIDR Panic), WG-03 (Trailing Comma Death), S6-05 (SIGHUP Control)
+#  - ORCH-08 (Headless .env), IAM-07 (Global Authelia), ROUTE-16 (CamelCase Pointer)
+#  - TRAEFIK-02 (Null CIDR Panic), WG-03 (Trailing Comma), S6-05 (SIGHUP Control)
 #  - HEALTH-16 (Socket Checks), ROUTE-15 (Backtick Escapes), UX-06 (Regex \$)
 #  - ORCH-07 (Unbound Proxy Var), PROXY-04 (Parser Poisoning), UX-05 (Port Var)
 #  - NET-13 (VPN Sysctls), IAM-06 (Wildcard Preserved), DEPLOY-01 (CI/CD Safety)
@@ -40,7 +41,6 @@ ScriptsDir="${BaseDir}/Scripts"
 StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
-ManifestsDir="${ConfigDir}/Manifests"
 
 # Native Engine Discovery
 ComposeFile="${StackDir}/docker-compose.yml"
@@ -233,14 +233,14 @@ ExecuteAnnihilation() {
             cd "$StackDir" && sudo $DockerBin compose down -v --remove-orphans > /dev/null 2>&1 || true
             PrintMsg "214" "Mathematically shredding cryptographic master keys..."
             [ -d "${SecretsDir}" ] && sudo find "${SecretsDir}" -type f -exec shred -u {} \; || true
-            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound" "$ManifestsDir"
+            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound"
             PrintMsg "82" "✔ Earth scorched. Magnetic persistence neutralized."
         fi
     fi
 }
 ExecuteAnnihilation
 
-sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" "$ConfigDir/Unbound" "$ManifestsDir"
+sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" "$ConfigDir/Unbound"
 sudo chown -R 70:70 "$ConfigDir/Postgres"
 
 sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
@@ -330,7 +330,12 @@ if [ "$Interactive" -eq 1 ]; then
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
     [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && AcmeServerUrl="https://acme-v02.api.letsencrypt.org/directory" || AcmeServerUrl="https://acme-staging-v02.api.letsencrypt.org/directory"
 else
-    # ORCH-08: Headless Environment Void Cured. Unconditionally assigns variables from the fallback pipeline.
+    # ORCH-09: Headless Null Trap Cured. Enforces strict POSIX boundaries on missing cache variables.
+    if [ -z "${PrevEndpoint:-}" ] || [ -z "${PrevEmail:-}" ]; then
+        PrintMsg "196" "[FATAL] Headless deployment detected, but master .env cache is missing."
+        PrintMsg "196" "You must physically pre-seed .env with WG_ENDPOINT and ACME_EMAIL before executing non-interactively."
+        exit 1
+    fi
     WgEndpoint="${PrevEndpoint}"
     WgPort="${PrevPort:-51820}"
     InternalDomain="${PrevDomain:-sovereign.local}"
@@ -362,7 +367,6 @@ EOF
 
 set -a; source "$EnvFile"; set +a
 
-# IAM-07: Headless Identity Drift Cured. Explicitly executes utilizing the safely exported \${INTERNAL_DOMAIN}.
 if [ -n "${INTERNAL_DOMAIN:-}" ] && [ "${INTERNAL_DOMAIN}" != "sovereign.local" ]; then
     sudo sed -i "s/- domain: \"\*\..*/- domain: \"*.${INTERNAL_DOMAIN}\"/" "${ConfigDir}/Authelia/configuration.yml"
     sudo sed -i "s/- domain: \"[^\*].*/- domain: \"${INTERNAL_DOMAIN}\"/" "${ConfigDir}/Authelia/configuration.yml"
@@ -598,6 +602,10 @@ services:
       - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file,pihole-redirect"
       - "traefik.docker.network=sovereign_gateway_proxy_network"
     secrets: [pihole_pass]
+    # VOL-01: Amnesiac Sinkhole Cured. Re-attached persistent configuration volumes to the core.
+    volumes:
+      - ${ConfigDir}/PiHole/etc-pihole:/etc/pihole
+      - ${ConfigDir}/PiHole/etc-dnsmasq.d:/etc/dnsmasq.d
     environment:
       WEBPASSWORD_FILE: /run/secrets/pihole_pass
       PIHOLE_DNS_: 10.99.0.11#53
@@ -711,7 +719,7 @@ WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
 ProxyNetworkName="sovereign_gateway_proxy_network"
-for manifest in "${ManifestsDir}/"*_assimilation.txt; do
+for manifest in "${ConfigDir}/Traefik/Dynamic/"*_assimilation.yml; do
     [ -e "\$manifest" ] || continue
     alien=\$(grep "^# ALIEN_CONTAINER: " "\$manifest" | cut -d' ' -f3 || true)
     [ -z "\$alien" ] && continue
@@ -765,7 +773,7 @@ AssimilateAlienContainers() {
             local found_new=0
             for container in $foreign_containers; do
                 local clean_name=$(echo "$container" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
-                local manifest_file="${ManifestsDir}/${clean_name}_assimilation.txt"
+                local manifest_file="${ConfigDir}/Traefik/Dynamic/${clean_name}_assimilation.yml"
                 if [ -f "$manifest_file" ]; then
                     sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
                     continue
@@ -803,32 +811,31 @@ AssimilateAlienContainers() {
                 if [ -z "$TargetPort" ]; then continue; fi
                 local mw_string=""
                 case "$posture_choice" in
-                    1) mw_string="secure-headers@file,authelia@file" ;;
-                    2) mw_string="secure-headers@file,vpn-whitelist@file" ;;
-                    3) mw_string="secure-headers@file,traefik-auth@file" ;;
-                    4) mw_string="secure-headers@file" ;;
+                    1) mw_string="\"secure-headers@file\", \"authelia@file\"" ;;
+                    2) mw_string="\"secure-headers@file\", \"vpn-whitelist@file\"" ;;
+                    3) mw_string="\"secure-headers@file\", \"traefik-auth@file\"" ;;
+                    4) mw_string="\"secure-headers@file\"" ;;
                 esac
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
                 sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
                 
-                # ROUTE-16: CamelCase Pointer Void Cured. Replaced \${InternalDomain} with global \${INTERNAL_DOMAIN}
+                # PROXY-05: Assimilation Blackhole Cured. Injects pure Traefik YAML directly into the active routing parser.
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 # ALIEN_CONTAINER: $container
-# ------------------------------------------------------------------------------
-# INSTRUCTIONS: To permanently assimilate $container, append the following 
-# labels to its physical docker-compose.yml configuration file.
-# ------------------------------------------------------------------------------
-labels:
-  - "traefik.enable=true"
-  - "traefik.http.routers.${clean_name}.rule=Host(\\\`${clean_name}.${INTERNAL_DOMAIN}\\\`)"
-  - "traefik.http.routers.${clean_name}.entrypoints=websecure"
-  - "traefik.http.routers.${clean_name}.tls.certresolver=cloudflare"
-  - "traefik.http.routers.${clean_name}.middlewares=${mw_string}"
-  - "traefik.http.services.${clean_name}.loadbalancer.server.port=${TargetPort}"
-  - "traefik.docker.network=${ProxyNetworkName}"
+http:
+  routers:
+    ${clean_name}-router:
+      rule: "Host(\`${clean_name}.${INTERNAL_DOMAIN}\`)"
+      entryPoints: ["websecure"]
+      middlewares: [${mw_string}]
+      service: "${clean_name}-service"
+      tls: { certResolver: "cloudflare" }
+  services:
+    ${clean_name}-service:
+      loadBalancer:
+        servers: [{ url: "http://${container}:${TargetPort}" }]
 MANIFEST_EOF
                 PrintMsg "82" "✔ Assimilated: https://${clean_name}.${INTERNAL_DOMAIN}"
-                PrintMsg "226" "   -> Note: Hardcode logic saved to: $manifest_file"
             done
         fi
     fi
