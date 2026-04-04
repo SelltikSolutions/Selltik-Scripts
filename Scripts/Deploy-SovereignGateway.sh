@@ -1,17 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v53.0-SOVEREIGN-ECLIPSE
+#  Version: v55.0-SOVEREIGN-VANGUARD
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Eclipse Hardening Fixes (The Unbreakable Vault):
-#  1. VOL-02: Pi-Hole Database Lockout Cured. Enforced chown 999:999 on the host 
-#     directories to allow the unprivileged FTL daemon to write its databases.
-#  2. ROUTE-21: Physical Air-Gap Cured. Injected RFC1918 LAN subnets into the 
-#     vpn-whitelist middleware to permit local access without bouncing through VPN.
-#  3. LOG-07: Access Log Blackbox Cured. Mounted a dedicated JSON forensic log 
-#     volume and enabled Traefik's strict HTTP access logging.
+#  Vanguard Hardening Fixes (The Ultimate Absolute Truth):
+#  1. DB-01: Cryptographic Starvation Cured. Added dynamic ownership assignment 
+#     to WriteSecret, ensuring postgres_password is chown'd strictly to 70:70 
+#     so the DB engine can legally ingest it without kernel permission blocks.
+#  2. DNS-13: DNSSEC Time Bomb Cured. Re-injected the custom unbound entrypoint 
+#     to execute unbound-anchor and chown the keys volume prior to daemon boot.
+#  3. ORCH-17: Ghost Route Sprawl Cured. Upgraded the Watchdog with subtraction 
+#     logic to mathematically purge assimilation YAMLs for dead containers.
 #  Inherited Master Fixes:
+#  - VOL-02 (Database Lockout), ROUTE-21 (Air-Gap), LOG-07 (Access Logs)
 #  - IAM-17 (BasicAuth Hash), PORT-53 (systemd-resolved), ORCH-16 (Socket Ping)
 #  - IAM-15 (Unprivileged Lockout), IAM-16 (Parser Detonation), CAP-04 (SYS_NICE)
 #  - PRIVACY-03 (DNS Split Blackhole), BOOT-11 (Bind Panic), PROXY-07 (Spoofing)
@@ -168,16 +170,15 @@ HuntPhysicalNetwork() {
 }
 HuntPhysicalNetwork
 
-# PORT-53: systemd-resolved Collision Cured. Surgical decapitation of host stub listener.
+# PORT-53 & NET-16: systemd-resolved Collision & Immutable Resolv Brick Cured. 
 if systemctl is-active --quiet systemd-resolved; then
     PrintMsg "214" "Decapitating systemd-resolved to mathematically free Port 53..."
     sudo sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
     sudo sed -i 's/DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
     sudo systemctl restart systemd-resolved || true
-    sudo chattr -i /etc/resolv.conf 2>/dev/null || true
+    # Bypass the stub explicitly without locking the file immutably
     sudo rm -f /etc/resolv.conf
-    echo -e "nameserver 1.1.1.1\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf > /dev/null
-    sudo chattr +i /etc/resolv.conf || true
+    sudo ln -s /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null || true
 fi
 
 # AU-8: Enforce absolute temporal consistency for audit trails
@@ -264,12 +265,13 @@ sudo chown -R 999:999 "${ConfigDir}/PiHole"
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
 
-# SEC-07, SEC-27, & IAM-15: Bitwise shredding, strict 600 limits, and unprivileged ownership context.
+# DB-01: Cryptographic Starvation Cured. Dynamic ownership mapping injected.
 WriteSecret() {
-    local name=$1; local content=$2; local tmp_file="${SecretsDir}/${name}.tmp"
+    local name=$1; local content=$2; local owner=${3:-"$HostUid:$HostGid"}
+    local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
     sudo touch "${SecretsDir}/${name}"
-    sudo chown "$HostUid:$HostGid" "${SecretsDir}/${name}"
+    sudo chown "$owner" "${SecretsDir}/${name}"
     sudo chmod 600 "${SecretsDir}/${name}"
     sudo sh -c "cat '$tmp_file' > '${SecretsDir}/${name}'"
     sudo shred -u "$tmp_file"
@@ -286,7 +288,8 @@ else
     fi
 fi
 
-[ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 32)"
+# DB-01 Execution: Explicitly assign postgres_password to UID 70.
+[ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 32)" "70:70"
 [ ! -f "${SecretsDir}/authelia_jwt_secret" ] && WriteSecret "authelia_jwt_secret" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_session_secret" ] && WriteSecret "authelia_session_secret" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_storage_key" ] && WriteSecret "authelia_storage_key" "$(openssl rand -base64 32)"
@@ -322,6 +325,14 @@ else
     WgEndpoint="${PrevEndpoint}"; InternalDomain="${PrevDomain}"; AcmeEmail="${PrevEmail}"
     TraefikLanIp="${PrevLanIp:-127.0.0.1}"; WgPeers="${PrevWgPeers}"; AcmeServerUrl="${PrevAcme}"
     WgAllowedIps="${PrevAllowedIps}"
+fi
+
+# TLS-03: ACME State Lockout Cured. State-transition awareness added for CA pivots.
+if [ -n "${PrevAcme:-}" ] && [ "${PrevAcme}" != "${AcmeServerUrl}" ]; then
+    PrintMsg "196" "⚠️ ACME CA transition detected. Purging legacy acme.json state to prevent TLS lockout..."
+    sudo rm -f "${ConfigDir}/Traefik/acme.json"
+    sudo touch "${ConfigDir}/Traefik/acme.json"
+    sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 fi
 
 sudo tee "$EnvFile" > /dev/null << EOF
@@ -505,7 +516,6 @@ services:
     image: lscr.io/linuxserver/socket-proxy:latest
     container_name: docker_socket_proxy
     networks: [socket_network]
-    # ORCH-16: Socket Proxy Denial Cured. Restored PING=1 and INFO=1 for Traefik Healthchecks.
     environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, PING=1, INFO=1, S6_READ_ONLY_ROOT=1]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
     cap_drop: [ALL]
@@ -569,6 +579,8 @@ services:
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - unbound_keys:/opt/unbound/etc/unbound/keys:rw
+    # DNS-13: DNSSEC Time Bomb Cured. Entrypoint override ensures autonomous key generation and rotation.
+    entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE]
     healthcheck:
@@ -598,7 +610,6 @@ services:
     depends_on:
       unbound_dns: { condition: service_healthy }
     cap_drop: [ALL]
-    # CAP-04: FTL Real-Time Chokehold Cured. SYS_NICE restored for unprivileged priority mapping.
     cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, KILL, NET_BIND_SERVICE, SYS_NICE]
     labels:
       - "traefik.enable=true"
@@ -646,7 +657,6 @@ services:
     container_name: traefik_proxy
     networks: [socket_network, proxy_network]
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
-    # LOG-07: Access Log Blackbox Cured. Mounted the forensic JSON directory.
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
       - ${ConfigDir}/Traefik/acme.json:/etc/traefik/acme/acme.json:rw
@@ -705,6 +715,7 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+# ORCH-17: Ghost Route Sprawl Cured. Injected subtraction logic to purge dead container rules.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
@@ -716,6 +727,8 @@ for manifest in "${ConfigDir}/Traefik/Dynamic/"*_assimilation.yml; do
         if ! ${DockerBin} inspect "\$alien" --format '{{json .NetworkSettings.Networks}}' | grep -q "sovereign_gateway_proxy_network"; then
             ${DockerBin} network connect sovereign_gateway_proxy_network "\$alien" || true
         fi
+    else
+        rm -f "\$manifest"
     fi
 done
 EOF
@@ -799,10 +812,10 @@ AssimilateAlienContainers() {
                 
                 local mw_string=""
                 case "$posture_choice" in
-                    1) mw_string='"secure-headers@file", "authelia@file"' ;;
-                    2) mw_string='"secure-headers@file", "vpn-whitelist@file"' ;;
-                    3) mw_string='"secure-headers@file", "traefik-auth@file"' ;;
-                    4) mw_string='"secure-headers@file"' ;;
+                    1) mw_string='secure-headers@file,authelia@file' ;;
+                    2) mw_string='secure-headers@file,vpn-whitelist@file' ;;
+                    3) mw_string='secure-headers@file,traefik-auth@file' ;;
+                    4) mw_string='secure-headers@file' ;;
                 esac
                 
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
