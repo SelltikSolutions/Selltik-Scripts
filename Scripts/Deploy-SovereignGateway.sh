@@ -1,20 +1,21 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v31.0-SOVEREIGN-ELYSIUM
+#  Version: v32.0-SOVEREIGN-PANTHEON
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Elysium Hardening Fixes (The Absolute Zenith):
-#  1. S6-04: S6 Capability Chokehold Cured. Restored CHOWN, SETUID, and SETGID 
-#     to docker_socket_proxy, allowing s6-overlay to safely drop privileges.
-#  2. HEALTH-15: nslookup Trap Cured. Swapped the Unbound healthcheck binary 
-#     to 'drill', as Alpine distributions ruthlessly strip bind-tools.
-#  3. NET-12: Daemon Routing Timeout Cured. Amputated the global docker daemon 
-#     DNS override to stop isolated internal containers from blackholing.
+#  Pantheon Hardening Fixes (The Final Cut):
+#  1. NET-13: VPN Namespace Blackhole Cured. Explicitly mapped ip_forward and 
+#     src_valid_mark into the WireGuard sysctls to un-choke the internal routing.
+#  2. IAM-06: Wildcard Erasure Cured. Bounded the Authelia sed replacement 
+#     so it successfully mutates the domain without deleting the '*.'.
+#  3. DEPLOY-01: Headless Secret Crash Cured. CI/CD pipelines now gracefully 
+#     abort with a strict STIG error if executed without pre-seeding core secrets.
 #  Inherited Master Fixes:
+#  - S6-04 (Proxy Chokehold), HEALTH-15 (Drill Swap), NET-12 (Daemon Timeout)
 #  - NET-08 (Watchdog Sync), UX-04 (Regex Escape), SEC-25 (Naked Core), NET-09 (MTU)
-#  - S6-03 (Proxy Read-Only), KRN-02 (WG Module), NET-07 (Split-Tunnel), TLS-01 (ACME)
-#  - PROXY-03 (BasicAuth), SEC-24 (Edge Armor), IAM-05 (Argon2id), LOG-05 (Log Purge)
+#  - S6-03 (Proxy Read-Only), KRN-02 (WG Module), NET-07 (Split-Tunnel), TLS-01
+#  - PROXY-03 (BasicAuth), SEC-24 (Edge Armor), IAM-05 (Argon2id), LOG-05
 #  - IAM-03 (644 Secrets), NET-06 (Edge Segregation), IAM-04 (Session Cookies)
 #  - UX-03 (Unicode Phantom), S6-02 (Init Overrides), IAM-02 (Root Vault)
 #  - SYNTAX-03 (YAML Sed), S6-01 (SetUID), PROXY-02 (Tmpfs), DNS-15 (Unbound Caps)
@@ -306,11 +307,19 @@ WriteSecret() {
     sudo shred -u "$tmp_file"
 }
 
+# DEPLOY-01: Headless Secret Crash Cured. Fails closed with strict STIG abort on automated CI/CD runs.
 if [ "$Interactive" -eq 1 ]; then
     [ ! -f "${SecretsDir}/cf_api_token" ] && { read -s -p "Cloudflare DNS API Token: " cf_token; echo ""; WriteSecret "cf_api_token" "$cf_token"; }
     # SEC-23: Upgraded Traefik's BasicAuth to SHA-512 crypt hashing (-6)
     [ ! -f "${SecretsDir}/traefik_auth" ] && { read -s -p "Traefik BasicAuth Password: " TraefikPass; echo ""; WriteSecret "traefik_auth" "admin:$(openssl passwd -6 "$TraefikPass")"; }
+else
+    if [ ! -f "${SecretsDir}/cf_api_token" ] || [ ! -f "${SecretsDir}/traefik_auth" ]; then
+        PrintMsg "196" "[FATAL] Headless deployment detected, but master edge secrets are missing."
+        PrintMsg "196" "You must physically pre-seed ${SecretsDir}/cf_api_token and ${SecretsDir}/traefik_auth before executing non-interactively."
+        exit 1
+    fi
 fi
+
 [ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_jwt_secret" ] && WriteSecret "authelia_jwt_secret" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_session_secret" ] && WriteSecret "authelia_session_secret" "$(openssl rand -base64 32)"
@@ -340,9 +349,9 @@ HOST_GID=${HostGid}
 TZ=UTC
 EOF
 
-    # SYNTAX-03 & IAM-04: YAML Bounded Substitution matching strict array paths.
-    sudo sed -i "s/\*\.[^\"]*/\*\.${InternalDomain}/" "${ConfigDir}/Authelia/configuration.yml"
-    sudo sed -i "s/domain: .*/domain: \"${InternalDomain}\"/" "${ConfigDir}/Authelia/configuration.yml"
+    # IAM-06: Wildcard Erasure Cured. Explicit boundary targeting preserves the '*.'.
+    sudo sed -i "s/- domain: \"\*\..*/- domain: \"*.${InternalDomain}\"/" "${ConfigDir}/Authelia/configuration.yml"
+    sudo sed -i "s/- domain: \"[^\*].*/- domain: \"${InternalDomain}\"/" "${ConfigDir}/Authelia/configuration.yml"
     sudo sed -i "s|authelia_url: .*|authelia_url: \"https://auth.${InternalDomain}\"|" "${ConfigDir}/Authelia/configuration.yml"
     sudo sed -i "s/admin@.*/admin@${InternalDomain}/" "${ConfigDir}/Authelia/users_database.yml"
 fi
@@ -547,7 +556,6 @@ services:
     cap_drop: ["ALL"]
     cap_add: ["CHOWN", "SETGID", "SETUID", "NET_BIND_SERVICE"]
     security_opt: ["no-new-privileges:true"]
-    # HEALTH-15: nslookup Trap Cured. Explicitly enforcing the Alpine 'drill' binary.
     healthcheck:
       test: ["CMD-SHELL", "drill -p 53 internic.net @127.0.0.1 >/dev/null || exit 1"]
       interval: 10s
@@ -596,6 +604,10 @@ services:
       vpn_network: { ipv4_address: 10.99.0.10 }
     cap_drop: ["ALL"]
     cap_add: ["NET_ADMIN", "NET_RAW", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER"]
+    # NET-13: VPN Namespace Blackhole Cured. Kernel IP forwarding explicitly inherited.
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
     environment:
       PUID: "\${HOST_UID}"
       PGID: "\${HOST_GID}"
