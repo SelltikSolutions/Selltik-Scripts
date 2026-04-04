@@ -1,19 +1,20 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v29.0-SOVEREIGN-AEON
+#  Version: v30.0-SOVEREIGN-APOTHEOSIS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Aeon Hardening Fixes (The Absolute End):
-#  1. S6-03: S6 Read-Only Crash Cured. Injected S6_READ_ONLY_ROOT=1 into the 
-#     docker_socket_proxy environment to satisfy the s6-overlay v3 STIG init.
-#  2. KRN-02: WireGuard Module Race Cured. Actively probes and registers the 
-#     native wireguard kernel module before stack ignition to prevent VPN panics.
-#  3. NET-07: Split-Tunnel Blackhole Cured. Dynamically injects the host's LAN 
-#     subnet into WireGuard's routing table so roaming peers resolve local endpoints.
-#  4. TLS-01: ACME Rate-Limit Suicide Cured. Scorched Earth annihilation now 
-#     surgically preserves acme.json to prevent 7-day Let's Encrypt cryptographic bans.
+#  Apotheosis Hardening Fixes (The True Zenith):
+#  1. NET-08: Ephemeral Bridge Death Cured. Accelerated Watchdog timer to 
+#     *:0/5 to prevent 55-minute routing blackouts on alien container restarts.
+#  2. UX-04: Regex Blackhole Cured. Fixed Golang/YAML double-escaping 
+#     anomaly in Traefik labels to restore the Pi-Hole admin redirect.
+#  3. SEC-25: Naked Core Armored. Clamped auth_db and authelia with strict 
+#     cap_drop: [ALL] and no-new-privileges to seal the identity vault.
+#  4. NET-09: MTU Fragmentation Trap Cured. Explicitly synced Docker virtual 
+#     networks to MTU 1420 to prevent packet loss inside the WireGuard tunnel.
 #  Inherited Master Fixes:
+#  - S6-03 (Proxy Read-Only), KRN-02 (WG Module), NET-07 (Split-Tunnel), TLS-01
 #  - PROXY-03 (BasicAuth), SEC-24 (Edge Armor), IAM-05 (Argon2id), LOG-05 (Log Purge)
 #  - IAM-03 (644 Secrets), NET-06 (Edge Segregation), IAM-04 (Session Cookies)
 #  - UX-03 (Unicode Phantom), S6-02 (Init Overrides), IAM-02 (Root Vault)
@@ -448,15 +449,21 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "5"
 
+# NET-09: Explicit MTU declaration to prevent WireGuard fragmentation trap
 networks:
   vpn_network:
     name: sovereign_gateway_vpn_network
+    driver_opts: { com.docker.network.driver.mtu: 1420 }
     ipam: { config: [{ subnet: 10.99.0.0/24 }] }
   proxy_network:
     name: sovereign_gateway_proxy_network
+    driver_opts: { com.docker.network.driver.mtu: 1420 }
     ipam: { config: [{ subnet: 10.98.0.0/24 }] }
-  auth_network: { internal: true }
-  socket_network: { internal: true }
+  auth_network:
+    internal: true
+    driver_opts: { com.docker.network.driver.mtu: 1420 }
+  socket_network:
+    internal: true
 
 volumes:
   unbound_keys: {}
@@ -498,6 +505,10 @@ services:
       POSTGRES_DB: authelia
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     volumes: [${ConfigDir}/Postgres:/var/lib/postgresql/data]
+    # SEC-25: Naked Core Armored. Explicit dropping prevents root escalation.
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER"]
+    security_opt: ["no-new-privileges:true"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -d authelia -U authelia"]
       interval: 10s
@@ -521,6 +532,9 @@ services:
     depends_on:
       auth_db:
         condition: service_healthy
+    # SEC-25: Naked Core Armored. Identity datastore is locked.
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
     logging: *default-logging
     restart: unless-stopped
   
@@ -565,7 +579,8 @@ services:
       - "traefik.http.routers.pihole.entrypoints=websecure"
       - "traefik.http.routers.pihole.tls.certresolver=cloudflare"
       - "traefik.http.services.pihole.loadbalancer.server.port=80"
-      - "traefik.http.middlewares.pihole-redirect.redirectregex.regex=^https://pihole\.\${INTERNAL_DOMAIN}/\\$\\$"
+      # UX-04: Regex Blackhole Cured. Literal '$' is correctly mapped out of the heredoc.
+      - "traefik.http.middlewares.pihole-redirect.redirectregex.regex=^https://pihole\.\${INTERNAL_DOMAIN}/\$\$"
       - "traefik.http.middlewares.pihole-redirect.redirectregex.replacement=https://pihole.\${INTERNAL_DOMAIN}/admin/"
       - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file,pihole-redirect"
       - "traefik.docker.network=sovereign_gateway_proxy_network"
@@ -703,13 +718,14 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 EOF
 
+# NET-08: Ephemeral Bridge Death Cured. Accelerated interval to 5 minutes.
 sudo tee /etc/systemd/system/sovereign-watchdog.timer > /dev/null << EOF
 [Unit]
-Description=Hourly Timer for Sovereign Watchdog
+Description=5-Minute Timer for Sovereign Watchdog
 
 [Timer]
-OnCalendar=hourly
-RandomizedDelaySec=5m
+OnCalendar=*:0/5
+RandomizedDelaySec=30s
 Persistent=true
 
 [Install]
