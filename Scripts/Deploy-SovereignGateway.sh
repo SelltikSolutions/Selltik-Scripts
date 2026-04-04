@@ -1,17 +1,16 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v60.0-SOVEREIGN-APOTHEOSIS
+#  Version: v61.0-SOVEREIGN-PANTHEON
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Apotheosis Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-22: PascalCase Parser Detonation Cured. Injected explicit --config 
-#     flags into Authelia's entrypoint to map your aesthetic Configuration.yml.
-#  2. ORCH-19: Administrative Blackhole Cured. Dropped a silent symlink for 
-#     docker-compose.yml to restore native proxy management commands.
-#  3. NET-21: NetworkManager Betrayal Cured. Upgraded the DHCP override to 
-#     dns=none, mathematically barring the daemon from touching resolv.conf.
+#  Pantheon Hardening Fixes (The Final Absolute Truth):
+#  1. LOG-08: Access Log Hemorrhage Cured. Injected a strict logrotate constraint 
+#     to mathematically bound the physical Traefik logs via copytruncate and compression.
+#  2. DB-02: InitDB Dirty Void Cured. Explicitly declared PGDATA in auth_db to 
+#     force initialization in a sub-directory, bypassing host metadata conflicts.
 #  Inherited Master Fixes:
+#  - IAM-22 (PascalCase Parser), ORCH-19 (Admin Blackhole), NET-21 (NetworkManager)
 #  - IAM-21 (Argon2id Mutilation), KRN-06 (Strict RP_Filter), NET-19 (DHCP Resolv)
 #  - DNS-14 (Resolv Symlink Vacuum), TLS-04 (Null ACME), NTP-02 (Chrony Sync)
 #  - IAM-20 (Crypto Split-Brain), NET-18 (IPv6 RTNETLINK), ORCH-18 (Alien Purge)
@@ -137,7 +136,7 @@ if [ -f /etc/docker/daemon.json ]; then
     fi
 fi
 
-# ROUTE-20: Localhost Blackhole Cured. Dynamically mapping host topology.
+# ROUTE-20: Localhost Blackhole Cured. Dynamically mapping host topology via nmcli.
 HuntPhysicalNetwork() {
     if ! command -v nmcli &> /dev/null; then return; fi
     local ActivePhysConn=$(nmcli -t -f NAME,TYPE,STATE connection show --active | grep -E ':(802-3-ethernet|802-11-wireless):activated' | head -n 1 | cut -d: -f1 || true)
@@ -286,6 +285,24 @@ sudo chown "$HostUid:$HostGid" "${ConfigDir}/Authelia/notification.txt"
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
 
+# LOG-08: Access Log Hemorrhage Cured. Injecting strict bounds to protect root partition.
+if [ -d "/etc/logrotate.d" ]; then
+    PrintMsg "214" "Enforcing mathematical bounds on Traefik access logs via logrotate..."
+    sudo tee /etc/logrotate.d/sovereign-traefik > /dev/null << EOF
+${LogsDir}/Traefik/*.log {
+    daily
+    rotate 14
+    size 50M
+    missingok
+    compress
+    delaycompress
+    notifempty
+    copytruncate
+}
+EOF
+    sudo chmod 644 /etc/logrotate.d/sovereign-traefik
+fi
+
 # IAM-20 & DB-01: Cryptographic Split-Brain Cured. Extended WriteSecret to support explicit octal bridges.
 WriteSecret() {
     local name=$1; local content=$2; local owner=${3:-"$HostUid:$HostGid"}; local perms=${4:-600}
@@ -344,7 +361,6 @@ if [ "$Interactive" -eq 1 ]; then
             WgAllowedIps="${WgAllowedIps},${TraefikLanIp}/32"
         fi
     else
-        # NET-18: IPv6 RTNETLINK Panic Cured. Strict IPv4 routing compliance.
         WgAllowedIps="0.0.0.0/0"
     fi
 else
@@ -574,6 +590,8 @@ services:
       POSTGRES_USER: authelia
       POSTGRES_DB: authelia
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      # DB-02: InitDB Dirty Void Cured. PGDATA pushed to clean subdirectory.
+      PGDATA: /var/lib/postgresql/data/pgdata
     volumes: [${ConfigDir}/Postgres:/var/lib/postgresql/data]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID]
@@ -620,6 +638,7 @@ services:
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE]
+    # BOOT-12: Internet Dependency Deadlock Cured. Unbound probes its internal resolution space.
     healthcheck:
       test: ["CMD-SHELL", "drill -p 53 \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
       start_period: 30s
