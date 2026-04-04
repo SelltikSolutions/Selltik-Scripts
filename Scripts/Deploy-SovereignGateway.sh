@@ -1,21 +1,22 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v32.0-SOVEREIGN-PANTHEON
+#  Version: v33.0-SOVEREIGN-EXARCH
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Pantheon Hardening Fixes (The Final Cut):
-#  1. NET-13: VPN Namespace Blackhole Cured. Explicitly mapped ip_forward and 
-#     src_valid_mark into the WireGuard sysctls to un-choke the internal routing.
-#  2. IAM-06: Wildcard Erasure Cured. Bounded the Authelia sed replacement 
-#     so it successfully mutates the domain without deleting the '*.'.
-#  3. DEPLOY-01: Headless Secret Crash Cured. CI/CD pipelines now gracefully 
-#     abort with a strict STIG error if executed without pre-seeding core secrets.
-#  Inherited Master Fixes:
+#  Exarch Hardening Fixes (The True Absolute End):
+#  1. ROUTE-14: Interpolation Blackhole Cured. Un-escaped the domain variable 
+#     in the Traefik assimilation generator so Golang native routes match the host.
+#  2. WG-02: Peer Hardcode Cured. Replaced static 'PEERS: 3' with the dynamic 
+#     runtime \${WG_PEERS} environment variable to permit true fleet scalability.
+#  3. UI-02: Anti-Rebinding 403 Cured. Injected VIRTUAL_HOST into Pi-Hole's 
+#     environment block to whitelist the proxy domain against lighttpd's CSRF trap.
+#  Inherited Pantheon/Elysium/Apotheosis/Monolith/Singularity Master Fixes:
+#  - NET-13 (VPN Sysctls), IAM-06 (Wildcard Preserved), DEPLOY-01 (CI/CD Safety)
 #  - S6-04 (Proxy Chokehold), HEALTH-15 (Drill Swap), NET-12 (Daemon Timeout)
 #  - NET-08 (Watchdog Sync), UX-04 (Regex Escape), SEC-25 (Naked Core), NET-09 (MTU)
-#  - S6-03 (Proxy Read-Only), KRN-02 (WG Module), NET-07 (Split-Tunnel), TLS-01
-#  - PROXY-03 (BasicAuth), SEC-24 (Edge Armor), IAM-05 (Argon2id), LOG-05
+#  - S6-03 (Proxy Read-Only), KRN-02 (WG Module), NET-07 (Split-Tunnel), TLS-01 (ACME)
+#  - PROXY-03 (BasicAuth), SEC-24 (Edge Armor), IAM-05 (Argon2id), LOG-05 (Log Purge)
 #  - IAM-03 (644 Secrets), NET-06 (Edge Segregation), IAM-04 (Session Cookies)
 #  - UX-03 (Unicode Phantom), S6-02 (Init Overrides), IAM-02 (Root Vault)
 #  - SYNTAX-03 (YAML Sed), S6-01 (SetUID), PROXY-02 (Tmpfs), DNS-15 (Unbound Caps)
@@ -208,6 +209,7 @@ HostGid="${SUDO_GID:-1000}"
 
 PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevLanIp="${HUNTER_IP:-}"; PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
 PrevLanSubnet="${HUNTER_SUBNET:-192.168.1.0/24}"
+PrevWgPeers="3"
 if [ -f "$EnvFile" ]; then
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" | cut -d= -f2 || echo "")
     PrevDomain=$(grep "^INTERNAL_DOMAIN=" "$EnvFile" | cut -d= -f2 || echo "")
@@ -219,6 +221,8 @@ if [ -f "$EnvFile" ]; then
     [ -n "$env_acme" ] && PrevAcme="$env_acme"
     env_subnet=$(grep "^WG_LAN_SUBNET=" "$EnvFile" | cut -d= -f2 || echo "")
     [ -n "$env_subnet" ] && PrevLanSubnet="$env_subnet"
+    env_peers=$(grep "^WG_PEERS=" "$EnvFile" | cut -d= -f2 || echo "")
+    [ -n "$env_peers" ] && PrevWgPeers="$env_peers"
 fi
 
 # SEC-20 & TLS-01: TOCTOU Teardown Sealed & ACME Vault Protection
@@ -310,7 +314,6 @@ WriteSecret() {
 # DEPLOY-01: Headless Secret Crash Cured. Fails closed with strict STIG abort on automated CI/CD runs.
 if [ "$Interactive" -eq 1 ]; then
     [ ! -f "${SecretsDir}/cf_api_token" ] && { read -s -p "Cloudflare DNS API Token: " cf_token; echo ""; WriteSecret "cf_api_token" "$cf_token"; }
-    # SEC-23: Upgraded Traefik's BasicAuth to SHA-512 crypt hashing (-6)
     [ ! -f "${SecretsDir}/traefik_auth" ] && { read -s -p "Traefik BasicAuth Password: " TraefikPass; echo ""; WriteSecret "traefik_auth" "admin:$(openssl passwd -6 "$TraefikPass")"; }
 else
     if [ ! -f "${SecretsDir}/cf_api_token" ] || [ ! -f "${SecretsDir}/traefik_auth" ]; then
@@ -332,6 +335,7 @@ if [ "$Interactive" -eq 1 ]; then
     read -p "Internal Root Domain [$PrevDomain]: " input_domain; InternalDomain="${input_domain:-$PrevDomain}"
     read -p "Let's Encrypt Email [$PrevEmail]: " input_email; AcmeEmail="${input_email:-$PrevEmail}"
     read -p "Monolith LAN IP [$PrevLanIp]: " input_lan; TraefikLanIp="${input_lan:-$PrevLanIp}"
+    read -p "WireGuard Peer Count [$PrevWgPeers]: " input_peers; WgPeers="${input_peers:-$PrevWgPeers}"
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
     [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && AcmeServerUrl="https://acme-v02.api.letsencrypt.org/directory" || AcmeServerUrl="https://acme-staging-v02.api.letsencrypt.org/directory"
     
@@ -341,7 +345,7 @@ INTERNAL_DOMAIN=${InternalDomain}
 ACME_EMAIL=${AcmeEmail}
 ACME_SERVER_URL=${AcmeServerUrl}
 WG_PORT=${WgPort}
-WG_PEERS=3
+WG_PEERS=${WgPeers}
 TRAEFIK_LAN_IP=${TraefikLanIp}
 WG_LAN_SUBNET=${PrevLanSubnet}
 HOST_UID=${HostUid}
@@ -489,7 +493,6 @@ services:
     networks: [socket_network]
     environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, S6_READ_ONLY_ROOT=1]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
-    # S6-04: S6 Capability Chokehold Released. S6-overlay safely sets UID/GID.
     cap_drop: ["ALL"]
     cap_add: ["CHOWN", "SETUID", "SETGID"]
     security_opt: ["no-new-privileges:true"]
@@ -582,7 +585,7 @@ services:
       - "traefik.http.routers.pihole.entrypoints=websecure"
       - "traefik.http.routers.pihole.tls.certresolver=cloudflare"
       - "traefik.http.services.pihole.loadbalancer.server.port=80"
-      - "traefik.http.middlewares.pihole-redirect.redirectregex.regex=^https://pihole\.\${INTERNAL_DOMAIN}/\$\$"
+      - "traefik.http.middlewares.pihole-redirect.redirectregex.regex=^https://pihole\.\${INTERNAL_DOMAIN}/\$"
       - "traefik.http.middlewares.pihole-redirect.redirectregex.replacement=https://pihole.\${INTERNAL_DOMAIN}/admin/"
       - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file,pihole-redirect"
       - "traefik.docker.network=sovereign_gateway_proxy_network"
@@ -591,6 +594,8 @@ services:
       WEBPASSWORD_FILE: /run/secrets/pihole_pass
       PIHOLE_DNS_: 10.99.0.11#53
       DNSMASQ_LISTENING: all
+      # UI-02: Anti-Rebinding 403 Cured. Explicit whitelist injected into lighttpd.
+      VIRTUAL_HOST: pihole.\${INTERNAL_DOMAIN}
     depends_on:
       unbound_dns:
         condition: service_healthy
@@ -613,7 +618,8 @@ services:
       PGID: "\${HOST_GID}"
       SERVERURL: \${WG_ENDPOINT}
       SERVERPORT: \${WG_PORT}
-      PEERS: 3
+      # WG-02: Peer Hardcode Cured. Resolves dynamic configuration variable via .env.
+      PEERS: \${WG_PEERS}
       PEERDNS: 10.99.0.12
       INTERNAL_SUBNET: "10.13.13.0/24,\${WG_LAN_SUBNET}"
     volumes:
@@ -794,12 +800,14 @@ AssimilateAlienContainers() {
                 esac
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
                 sudo $DockerBin network connect sovereign_gateway_proxy_network "$container" >/dev/null 2>&1 || true
+                
+                # ROUTE-14: Interpolation Blackhole Cured. Un-escaped the runtime variable to allow bash parsing.
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 # ALIEN_CONTAINER: $container
 http:
   routers:
     ${clean_name}-router:
-      rule: "Host(\`${clean_name}.\${INTERNAL_DOMAIN}\`)"
+      rule: "Host(\`${clean_name}.${INTERNAL_DOMAIN}\`)"
       entryPoints: ["websecure"]
       middlewares: [${mw_string}]
       service: "${clean_name}-service"
