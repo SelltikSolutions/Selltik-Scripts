@@ -1,15 +1,16 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v59.0-SOVEREIGN-ZENITH
+#  Version: v60.0-SOVEREIGN-APOTHEOSIS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Zenith Hardening Fixes (The Final Absolute Truth):
-#  1. NET-20: Dead Symlink Paradox Cured. Replaced volatile tmpfs resolv.conf 
-#     symlinks with a hard physical file, preventing a guaranteed host network 
-#     brick upon reboot.
-#  2. BOOT-12: Internet Dependency Deadlock Cured. Rewrote Unbound healthcheck 
-#     to query internal zones, decoupling local DNS survival from ISP uptime.
+#  Apotheosis Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-22: PascalCase Parser Detonation Cured. Injected explicit --config 
+#     flags into Authelia's entrypoint to map your aesthetic Configuration.yml.
+#  2. ORCH-19: Administrative Blackhole Cured. Dropped a silent symlink for 
+#     docker-compose.yml to restore native proxy management commands.
+#  3. NET-21: NetworkManager Betrayal Cured. Upgraded the DHCP override to 
+#     dns=none, mathematically barring the daemon from touching resolv.conf.
 #  Inherited Master Fixes:
 #  - IAM-21 (Argon2id Mutilation), KRN-06 (Strict RP_Filter), NET-19 (DHCP Resolv)
 #  - DNS-14 (Resolv Symlink Vacuum), TLS-04 (Null ACME), NTP-02 (Chrony Sync)
@@ -51,10 +52,7 @@ TrapHandler() {
     if [ $exit_code -ne 0 ]; then
         echo -e "\n[FATAL] Script aborted at line $BASH_LINENO. System state inconsistent."
     fi
-    # Cleanup volatile GPG and Root Hint residue
-    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" \
-          "${ConfigDir}/Unbound/icann.pgp" 2>/dev/null || true
-    # Release atomic execution lock
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/icann.pgp" 2>/dev/null || true
     [ -f "$LockFile" ] && rm -f "$LockFile"
     exit "$exit_code"
 }
@@ -68,8 +66,7 @@ flock -n 200 || { echo "[FATAL] Another deployment instance is running."; exit 1
 Interactive=$([ -t 0 ] && echo 1 || echo 0)
 
 PrintMsg() {
-    local color=$1
-    local msg=$2
+    local color=$1; local msg=$2
     if command -v gum &> /dev/null; then
         gum style --foreground "$color" "$msg"
     else
@@ -140,7 +137,7 @@ if [ -f /etc/docker/daemon.json ]; then
     fi
 fi
 
-# ROUTE-20: Localhost Blackhole Cured. Dynamically mapping host topology via nmcli.
+# ROUTE-20: Localhost Blackhole Cured. Dynamically mapping host topology.
 HuntPhysicalNetwork() {
     if ! command -v nmcli &> /dev/null; then return; fi
     local ActivePhysConn=$(nmcli -t -f NAME,TYPE,STATE connection show --active | grep -E ':(802-3-ethernet|802-11-wireless):activated' | head -n 1 | cut -d: -f1 || true)
@@ -179,23 +176,22 @@ if systemctl is-active --quiet systemd-resolved; then
     sudo systemctl stop systemd-resolved || true
     sudo systemctl disable systemd-resolved || true
     
-    # NET-20: Dead Symlink Paradox Cured. Hard write to disk.
     sudo rm -f /etc/resolv.conf
     PrintMsg "196" "⚠️ Writing physical fallback DNS resolving matrix..."
     echo -e "nameserver 1.1.1.1\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf > /dev/null
 fi
 
-# NET-19: DHCP Resolv Time Bomb Cured. Gagging NetworkManager from touching resolv.conf.
+# NET-21: NetworkManager Betrayal Cured. Complete isolation via dns=none.
 if command -v NetworkManager &> /dev/null && [ -d "/etc/NetworkManager/conf.d" ]; then
     PrintMsg "214" "Locking NetworkManager DNS state to prevent DHCP lease overwrites..."
     sudo tee /etc/NetworkManager/conf.d/99-sovereign-dns.conf > /dev/null << 'EOF'
 [main]
-dns=default
+dns=none
 EOF
     sudo systemctl restart NetworkManager || true
 fi
 
-# AU-8 & NTP-02: Enforce absolute temporal consistency and sync Debian daemons.
+# AU-8 & NTP-02: Enforce absolute temporal consistency.
 PrintMsg "240" "Anchoring chronometric infrastructure to UTC..."
 sudo timedatectl set-local-rtc 0 || true
 sudo timedatectl set-timezone UTC || true
@@ -207,7 +203,7 @@ elif systemctl is-active --quiet systemd-timesyncd; then
     sudo systemctl restart systemd-timesyncd || true
 fi
 
-# KRN-04 & KRN-06: STIG Scorched Earth Kernel Hardening + RP_Filter Asymmetrical Downgrade
+# KRN-04 & KRN-06: STIG Scorched Earth Kernel Hardening + RP_Filter Asymmetrical Downgrade (Value: 2)
 PrintMsg "240" "Forging STIG-compliant host kernel armor..."
 sudo tee /etc/sysctl.d/99-SovereignGateway.conf > /dev/null << 'EOF'
 net.ipv4.tcp_syncookies = 1
@@ -239,7 +235,6 @@ fi
 HostUid="${SUDO_UID:-1000}"
 HostGid="${SUDO_GID:-1000}"
 
-# NET-18: IPv6 RTNETLINK Panic Cured. Default fallback removed.
 PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevLanIp="${HUNTER_IP:-}"; PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
 PrevLanSubnet="${HUNTER_SUBNET:-}"; PrevWgPeers="3"; PrevAllowedIps="0.0.0.0/0"
 
@@ -283,6 +278,10 @@ sudo mkdir -p "$StackDir" "$LogsDir/Traefik" "$ScriptsDir" "${ConfigDir}/Autheli
 sudo chown -R 70:70 "${ConfigDir}/Postgres"
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard" "${ConfigDir}/Authelia" "${LogsDir}/Traefik"
 sudo chown -R 999:999 "${ConfigDir}/PiHole"
+
+# Prevent authelia from crashing trying to touch an inexistent file.
+sudo touch "${ConfigDir}/Authelia/notification.txt"
+sudo chown "$HostUid:$HostGid" "${ConfigDir}/Authelia/notification.txt"
 
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
@@ -383,7 +382,10 @@ EOF
 
 set -a; source "$EnvFile"; set +a
 
-# ENV-04, IAM-09, & IAM-16: Nested modern attributes in cookies block to stop schema validator detonation.
+# ORCH-19: Administrative Blackhole Cured. Symlink ensures native Docker tools function despite PascalCase aesthetics.
+sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
+
+# ENV-04 & IAM-16: Nested modern attributes in cookies block to stop schema validator detonation.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -587,6 +589,8 @@ services:
     networks: [proxy_network, auth_network]
     user: "\${HOST_UID:-1000}:\${HOST_GID:-1000}"
     volumes: [${ConfigDir}/Authelia:/config]
+    # IAM-22: PascalCase Parser Detonation Cured. Instructing binary to read non-compliant filename.
+    command: ["--config", "/config/Configuration.yml"]
     secrets: [postgres_password, authelia_jwt_secret, authelia_session_secret, authelia_storage_key]
     environment:
       AUTHELIA_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret
@@ -616,7 +620,6 @@ services:
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE]
-    # BOOT-12: Internet Dependency Deadlock Cured. Unbound probes its internal resolution space.
     healthcheck:
       test: ["CMD-SHELL", "drill -p 53 \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
       start_period: 30s
@@ -749,7 +752,6 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# ORCH-18: Ephemeral Alien Purge Cured. Included -a flag to observe sleeping/stopped containers.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
