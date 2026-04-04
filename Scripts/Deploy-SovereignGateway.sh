@@ -1,17 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v38.0-SOVEREIGN-IMPERIUM
+#  Version: v39.0-SOVEREIGN-CHRONOS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Imperium Hardening Fixes (The True Absolute End):
-#  1. VOL-01: Amnesiac Sinkhole Cured. Re-attached the Pi-Hole /etc volumes 
-#     to the physical host, guaranteeing persistence of blocklists across reboots.
-#  2. PROXY-05: Assimilation Blackhole Cured. Overhauled alien generation from 
-#     inert labels to pure Traefik File Provider YAML injected into the live watch dir.
-#  3. ORCH-09: Headless Null Trap Cured. Automated deployments now violently abort 
-#     with a STIG error if .env is not pre-seeded, protecting ACME / WG initialization.
+#  Chronos Hardening Fixes (The Final Mathematical Truth):
+#  1. WG-04: iproute2 Subnet Panic Cured. Reverted INTERNAL_SUBNET to single 
+#     CIDR and pushed the comma-separated split-tunnel array into ALLOWEDIPS.
+#  2. KRN-03: Userspace Phantom Cured. The script now fails closed with a STIG 
+#     abort if the native wireguard kernel module is physically absent.
+#  3. ROUTE-17: Backslash Residue Cured. Escaped heredoc backticks exactly once 
+#     to emit pure File Provider YAML, stopping Bash from executing phantom binaries.
 #  Inherited Master Fixes:
+#  - VOL-01 (Pi-Hole Persistence), PROXY-05 (File Provider YAML), ORCH-09 (.env STIG)
 #  - ORCH-08 (Headless .env), IAM-07 (Global Authelia), ROUTE-16 (CamelCase Pointer)
 #  - TRAEFIK-02 (Null CIDR Panic), WG-03 (Trailing Comma), S6-05 (SIGHUP Control)
 #  - HEALTH-16 (Socket Checks), ROUTE-15 (Backtick Escapes), UX-06 (Regex \$)
@@ -175,7 +176,10 @@ PrintMsg "240" "Forging STIG-compliant host kernel armor and resolving VPN modul
 if sudo modprobe wireguard 2>/dev/null; then
     echo "wireguard" | sudo tee /etc/modules-load.d/wireguard.conf > /dev/null
 else
-    PrintMsg "196" "WARNING: Native WireGuard kernel module missing. VPN container will attempt userspace fallback."
+    # KRN-03: Userspace Phantom Cured. Fails closed with an exit 1 STIG abort.
+    PrintMsg "196" "[FATAL] Native WireGuard kernel module missing. Userspace fallback is deprecated."
+    PrintMsg "196" "Your host kernel is physically incompatible. Aborting deployment."
+    exit 1
 fi
 
 sudo tee /etc/sysctl.d/99-SovereignNode.conf > /dev/null << 'EOF'
@@ -330,7 +334,6 @@ if [ "$Interactive" -eq 1 ]; then
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
     [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && AcmeServerUrl="https://acme-v02.api.letsencrypt.org/directory" || AcmeServerUrl="https://acme-staging-v02.api.letsencrypt.org/directory"
 else
-    # ORCH-09: Headless Null Trap Cured. Enforces strict POSIX boundaries on missing cache variables.
     if [ -z "${PrevEndpoint:-}" ] || [ -z "${PrevEmail:-}" ]; then
         PrintMsg "196" "[FATAL] Headless deployment detected, but master .env cache is missing."
         PrintMsg "196" "You must physically pre-seed .env with WG_ENDPOINT and ACME_EMAIL before executing non-interactively."
@@ -602,7 +605,6 @@ services:
       - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file,pihole-redirect"
       - "traefik.docker.network=sovereign_gateway_proxy_network"
     secrets: [pihole_pass]
-    # VOL-01: Amnesiac Sinkhole Cured. Re-attached persistent configuration volumes to the core.
     volumes:
       - ${ConfigDir}/PiHole/etc-pihole:/etc/pihole
       - ${ConfigDir}/PiHole/etc-dnsmasq.d:/etc/dnsmasq.d
@@ -634,7 +636,9 @@ services:
       SERVERPORT: \${WG_PORT}
       PEERS: \${WG_PEERS}
       PEERDNS: 10.99.0.12
-      INTERNAL_SUBNET: "\${WG_ALLOWED_IPS}"
+      # WG-04: iproute2 Subnet Panic Cured. Reverted INTERNAL_SUBNET to native single CIDR.
+      INTERNAL_SUBNET: "10.13.13.0/24"
+      ALLOWEDIPS: "\${WG_ALLOWED_IPS}"
     volumes:
       - /lib/modules:/lib/modules:ro
       - ${ConfigDir}/WireGuard:/config
@@ -811,15 +815,15 @@ AssimilateAlienContainers() {
                 if [ -z "$TargetPort" ]; then continue; fi
                 local mw_string=""
                 case "$posture_choice" in
-                    1) mw_string="\"secure-headers@file\", \"authelia@file\"" ;;
-                    2) mw_string="\"secure-headers@file\", \"vpn-whitelist@file\"" ;;
-                    3) mw_string="\"secure-headers@file\", \"traefik-auth@file\"" ;;
-                    4) mw_string="\"secure-headers@file\"" ;;
+                    1) mw_string="\"secure-headers\", \"authelia\"" ;;
+                    2) mw_string="\"secure-headers\", \"vpn-whitelist\"" ;;
+                    3) mw_string="\"secure-headers\", \"traefik-auth\"" ;;
+                    4) mw_string="\"secure-headers\"" ;;
                 esac
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
                 sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
                 
-                # PROXY-05: Assimilation Blackhole Cured. Injects pure Traefik YAML directly into the active routing parser.
+                # ROUTE-17: Backslash Residue Cured. Exact single-escaped backticks map seamlessly to File Provider.
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 # ALIEN_CONTAINER: $container
 http:
@@ -829,11 +833,13 @@ http:
       entryPoints: ["websecure"]
       middlewares: [${mw_string}]
       service: "${clean_name}-service"
-      tls: { certResolver: "cloudflare" }
+      tls:
+        certResolver: "cloudflare"
   services:
     ${clean_name}-service:
       loadBalancer:
-        servers: [{ url: "http://${container}:${TargetPort}" }]
+        servers:
+          - url: "http://${container}:${TargetPort}"
 MANIFEST_EOF
                 PrintMsg "82" "✔ Assimilated: https://${clean_name}.${INTERNAL_DOMAIN}"
             done
