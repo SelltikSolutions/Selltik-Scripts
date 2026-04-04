@@ -1,18 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v55.0-SOVEREIGN-VANGUARD
+#  Version: v56.0-SOVEREIGN-OBLITERATOR
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Vanguard Hardening Fixes (The Ultimate Absolute Truth):
-#  1. DB-01: Cryptographic Starvation Cured. Added dynamic ownership assignment 
-#     to WriteSecret, ensuring postgres_password is chown'd strictly to 70:70 
-#     so the DB engine can legally ingest it without kernel permission blocks.
-#  2. DNS-13: DNSSEC Time Bomb Cured. Re-injected the custom unbound entrypoint 
-#     to execute unbound-anchor and chown the keys volume prior to daemon boot.
-#  3. ORCH-17: Ghost Route Sprawl Cured. Upgraded the Watchdog with subtraction 
-#     logic to mathematically purge assimilation YAMLs for dead containers.
+#  Obliterator Hardening Fixes (The Ultimate Convergence):
+#  1. IAM-20: Cryptographic Split-Brain Cured. Bridged postgres_password ownership 
+#     to 70:$HostGid with 640 permissions, granting the Authelia bouncer read access.
+#  2. NET-18: IPv6 RTNETLINK Panic Cured. Amputated ::/0 from the AllowedIPs array 
+#     to prevent wg-quick crash-loops on host kernels with disabled IPv6 stacks.
+#  3. ORCH-18: Ephemeral Alien Purge Cured. Appended the -a flag to the Watchdog's 
+#     docker ps query, preserving routing manifests for stopped/sleeping containers.
 #  Inherited Master Fixes:
+#  - NET-16 (Immutable Resolv), TLS-03 (ACME Lockout), ROUTE-22 (YAML Detonation)
+#  - DB-01 (Crypto Starvation), DNS-13 (DNSSEC Bomb), ORCH-17 (Ghost Route Sprawl)
 #  - VOL-02 (Database Lockout), ROUTE-21 (Air-Gap), LOG-07 (Access Logs)
 #  - IAM-17 (BasicAuth Hash), PORT-53 (systemd-resolved), ORCH-16 (Socket Ping)
 #  - IAM-15 (Unprivileged Lockout), IAM-16 (Parser Detonation), CAP-04 (SYS_NICE)
@@ -218,8 +219,9 @@ fi
 HostUid="${SUDO_UID:-1000}"
 HostGid="${SUDO_GID:-1000}"
 
+# NET-18: IPv6 RTNETLINK Panic Cured. Default fallback removed.
 PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevLanIp="${HUNTER_IP:-}"; PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
-PrevLanSubnet="${HUNTER_SUBNET:-}"; PrevWgPeers="3"; PrevAllowedIps="0.0.0.0/0, ::/0"
+PrevLanSubnet="${HUNTER_SUBNET:-}"; PrevWgPeers="3"; PrevAllowedIps="0.0.0.0/0"
 
 if [ -f "$EnvFile" ]; then
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" | cut -d= -f2 || echo "")
@@ -265,14 +267,14 @@ sudo chown -R 999:999 "${ConfigDir}/PiHole"
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
 
-# DB-01: Cryptographic Starvation Cured. Dynamic ownership mapping injected.
+# IAM-20 & DB-01: Cryptographic Split-Brain Cured. Extended WriteSecret to support explicit octal bridges.
 WriteSecret() {
-    local name=$1; local content=$2; local owner=${3:-"$HostUid:$HostGid"}
+    local name=$1; local content=$2; local owner=${3:-"$HostUid:$HostGid"}; local perms=${4:-600}
     local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
     sudo touch "${SecretsDir}/${name}"
     sudo chown "$owner" "${SecretsDir}/${name}"
-    sudo chmod 600 "${SecretsDir}/${name}"
+    sudo chmod "$perms" "${SecretsDir}/${name}"
     sudo sh -c "cat '$tmp_file' > '${SecretsDir}/${name}'"
     sudo shred -u "$tmp_file"
 }
@@ -288,8 +290,8 @@ else
     fi
 fi
 
-# DB-01 Execution: Explicitly assign postgres_password to UID 70.
-[ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 32)" "70:70"
+# IAM-20 Execution: Assign postgres_password strictly to 70:$HostGid with 640 permissions for bridging.
+[ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 32)" "70:$HostGid" "640"
 [ ! -f "${SecretsDir}/authelia_jwt_secret" ] && WriteSecret "authelia_jwt_secret" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_session_secret" ] && WriteSecret "authelia_session_secret" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_storage_key" ] && WriteSecret "authelia_storage_key" "$(openssl rand -base64 32)"
@@ -315,7 +317,8 @@ if [ "$Interactive" -eq 1 ]; then
             WgAllowedIps="${WgAllowedIps},${TraefikLanIp}/32"
         fi
     else
-        WgAllowedIps="0.0.0.0/0, ::/0"
+        # NET-18: IPv6 RTNETLINK Panic Cured. Strict IPv4 routing compliance.
+        WgAllowedIps="0.0.0.0/0"
     fi
 else
     if [ -z "${PrevEndpoint:-}" ] || [ -z "${PrevEmail:-}" ]; then
@@ -579,7 +582,6 @@ services:
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - unbound_keys:/opt/unbound/etc/unbound/keys:rw
-    # DNS-13: DNSSEC Time Bomb Cured. Entrypoint override ensures autonomous key generation and rotation.
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE]
@@ -715,7 +717,7 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# ORCH-17: Ghost Route Sprawl Cured. Injected subtraction logic to purge dead container rules.
+# ORCH-18: Ephemeral Alien Purge Cured. Included -a flag to observe sleeping/stopped containers.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
@@ -723,9 +725,11 @@ for manifest in "${ConfigDir}/Traefik/Dynamic/"*_assimilation.yml; do
     [ -e "\$manifest" ] || continue
     alien=\$(grep "^# ALIEN_CONTAINER: " "\$manifest" | cut -d' ' -f3 || true)
     [ -z "\$alien" ] && continue
-    if ${DockerBin} ps --format '{{.Names}}' | grep -q "^\${alien}\$"; then
-        if ! ${DockerBin} inspect "\$alien" --format '{{json .NetworkSettings.Networks}}' | grep -q "sovereign_gateway_proxy_network"; then
-            ${DockerBin} network connect sovereign_gateway_proxy_network "\$alien" || true
+    if ${DockerBin} ps -a --format '{{.Names}}' | grep -q "^\${alien}\$"; then
+        if ${DockerBin} ps --format '{{.Names}}' | grep -q "^\${alien}\$"; then
+            if ! ${DockerBin} inspect "\$alien" --format '{{json .NetworkSettings.Networks}}' | grep -q "sovereign_gateway_proxy_network"; then
+                ${DockerBin} network connect sovereign_gateway_proxy_network "\$alien" || true
+            fi
         fi
     else
         rm -f "\$manifest"
