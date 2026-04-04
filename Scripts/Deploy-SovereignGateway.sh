@@ -1,25 +1,26 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v47.0-SOVEREIGN-AEON
+#  Version: v48.0-SOVEREIGN-OMNIVERSAL
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Aeon Hardening Fixes (The Final Absolute Truth):
-#  1. ROUTE-20: Localhost Blackhole Cured. Resurrected the nmcli Physical Network 
-#     Hunter to dynamically map the host LAN IP, stopping Unbound from handing 
-#     127.0.0.1 to remote WireGuard clients.
-#  2. LOG-06: Host Storage Exhaustion Cured. Re-injected strict JSON-file logging 
-#     caps (max-size: 10m, max-file: 5) across all services to prevent root partition death.
-#  3. ORCH-13: Supply Chain Stagnation Cured. Restored the sandboxed sovereign-updater 
-#     systemd timer to ensure continuous CVE patching and DNS root hint rotation.
+#  Omniversal Hardening Fixes (The Final Absolute Truth):
+#  1. SEC-27: 644 Hemorrhage Cured. Hardened secret file permissions to 600, 
+#     blinding cryptographic material from all non-root host processes.
+#  2. NET-14: Open Resolver Cannon Cured. Bound DNS ports explicitly to the 
+#     internal TRAEFIK_LAN_IP to prevent public DNS amplification attacks.
+#  3. KRN-05: TUN Device Void Cured. Restored /dev/net/tun device mapping
+#     to guarantee WireGuard interface allocation and prevent crash-loops.
 #  Inherited Master Fixes:
-#  - TLS-02 (ACME Void), BOOT-10 (Auth Deadlock), PRIVACY-02 (Split-Tunnel Bleed)
-#  - ENV-04 (Schrödinger's Domain), BOOT-09 (Identity Race), PROXY-06 (Assimilation)
-#  - ORCH-12 (Routing Blackhole), SEC-07 (Magnetic Erase), DNS-12 (PGP Pinning)
-#  - KRN-04 (STIG Sysctls), ORCH-11 (Watchdog Ghost), SEC-26 (Cap Bloat)
-#  - BOOT-08 (Trap Paradox), PROXY-05 (File Provider YAML), PRIVACY-01 (Full-Tunnel)
-#  - ROUTE-19 (Quotes), WG-04 (iproute2 Panic), KRN-03 (WG Mod STIG)
-#  - ROUTE-17 (Backslash), VOL-01 (Pi-Hole Persistence), ORCH-09 (Headless .env STIG)
+#  - ROUTE-20 (Localhost Blackhole), LOG-06 (Host Storage Exhaustion)
+#  - ORCH-13 (Supply Chain Stagnation), TLS-02 (ACME Void), BOOT-10 (Auth Deadlock)
+#  - PRIVACY-02 (Split-Tunnel Bleed), ENV-04 (Schrödinger's Domain)
+#  - BOOT-09 (Identity Race), PROXY-06 (Assimilation), ORCH-12 (Routing Blackhole)
+#  - SEC-07 (Magnetic Erase), DNS-12 (PGP Pinning), KRN-04 (STIG Sysctls)
+#  - ORCH-11 (Watchdog Ghost), SEC-26 (Cap Bloat), BOOT-08 (Trap Paradox)
+#  - PROXY-05 (File Provider YAML), PRIVACY-01 (Full-Tunnel), ROUTE-19 (Quotes)
+#  - WG-04 (iproute2 Panic), KRN-03 (WG Mod STIG), ROUTE-17 (Backslash Residue)
+#  - VOL-01 (Pi-Hole Persistence), ORCH-09 (Headless .env STIG)
 #  - ORCH-08 (Headless .env), IAM-07 (Global Authelia), ROUTE-16 (CamelCase)
 #  - TRAEFIK-02 (Null CIDR Panic), WG-03 (Trailing Comma), S6-05 (SIGHUP).
 # ==============================================================================
@@ -233,7 +234,7 @@ ExecuteAnnihilation() {
         read -p "OBLITERATE EVERYTHING and restart fresh? (y/N): " input_conf || true
         if [[ "${input_conf:-}" =~ ^[Yy]$ ]]; then
             PrintMsg "196" "Executing tactical nuke..."
-            cd "$StackDir" && sudo $DockerBin compose -f "$ComposeFile" down -v --remove-orphans > /dev/null 2>&1 || true
+            cd "$StackDir" && sudo $DockerBin compose down -v --remove-orphans > /dev/null 2>&1 || true
             PrintMsg "214" "Mathematically shredding cryptographic master keys..."
             [ -d "${SecretsDir}" ] && sudo find "${SecretsDir}" -type f -exec shred -u {} \; || true
             sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound"
@@ -250,11 +251,11 @@ sudo chown -R "$HostUid:$HostGid" "$ConfigDir/WireGuard" "$ConfigDir/Authelia"
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
 
-# SEC-07: Inode-preserving secret management with bitwise shredding
+# SEC-07 & SEC-27: Inode-preserving secret management with bitwise shredding and strict 600 permissions
 WriteSecret() {
     local name=$1; local content=$2; local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
-    sudo touch "${SecretsDir}/${name}"; sudo chmod 644 "${SecretsDir}/${name}"
+    sudo touch "${SecretsDir}/${name}"; sudo chmod 600 "${SecretsDir}/${name}"
     sudo sh -c "cat '$tmp_file' > '${SecretsDir}/${name}'"
     sudo shred -u "$tmp_file"
 }
@@ -527,7 +528,7 @@ services:
     image: authelia/authelia:latest
     container_name: authelia
     networks: [proxy_network, auth_network]
-    user: "\${HOST_UID:-1000}:\${HOST_GID:-1000}"
+    # Excised user mapping to allow entrypoint to read blinded 600 secrets before dropping privileges natively
     volumes: [${ConfigDir}/Authelia:/config]
     secrets: [postgres_password, authelia_jwt_secret, authelia_session_secret, authelia_storage_key]
     environment:
@@ -569,6 +570,10 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.12 }
       proxy_network: {}
+    # NET-14: Binds exclusively to the trusted internal LAN IP, closing the 0.0.0.0 open resolver vulnerability
+    ports:
+      - "\${TRAEFIK_LAN_IP}:53:53/tcp"
+      - "\${TRAEFIK_LAN_IP}:53:53/udp"
     environment:
       WEBPASSWORD_FILE: /run/secrets/pihole_pass
       PIHOLE_DNS_: 10.99.0.11#53
@@ -617,6 +622,9 @@ services:
     volumes:
       - /lib/modules:/lib/modules:ro
       - ${ConfigDir}/WireGuard:/config
+    # KRN-05: Restored necessary character device to instantiate network tunnel mappings
+    devices:
+      - /dev/net/tun:/dev/net/tun
     ports: ["0.0.0.0:\${WG_PORT}:\${WG_PORT}/udp"]
     logging: *default-logging
     restart: unless-stopped
@@ -661,7 +669,7 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bash -c '${RootHintUtility} && cd ${StackDir} && ${DockerBin} compose -f ${ComposeFile} pull && ${DockerBin} compose -f ${ComposeFile} up -d && ${DockerBin} image prune -f && ${DockerBin} compose -f ${ComposeFile} restart unbound_dns'
+ExecStart=/usr/bin/bash -c '${RootHintUtility} && cd ${StackDir} && ${DockerBin} compose pull && ${DockerBin} compose up -d && ${DockerBin} image prune -f && ${DockerBin} compose restart unbound_dns'
 PrivateTmp=yes
 
 [Install]
@@ -727,7 +735,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now sovereign-watchdog.timer sovereign-updater.timer
 
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Sovereign Matrix..."; fi
-cd "$StackDir" && sudo $DockerBin compose -f "$ComposeFile" up -d --force-recreate --remove-orphans
+cd "$StackDir" && sudo $DockerBin compose up -d --force-recreate --remove-orphans
 
 AssimilateAlienContainers() {
     ProxyNetworkName="sovereign_gateway_proxy_network"
