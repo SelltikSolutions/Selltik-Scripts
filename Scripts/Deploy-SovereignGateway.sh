@@ -1,30 +1,26 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v45.0-SOVEREIGN-AEGIS
+#  Version: v46.0-SOVEREIGN-PHALANX
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Aegis Hardening Fixes (The Final Absolute Truth):
-#  1. ENV-04: Schrödinger's Domain Cured. Shifted Authelia config generation 
-#     below the .env source line to inject \${INTERNAL_DOMAIN} natively, entirely 
-#     eradicating the fragile regex sed replacements.
-#  2. BOOT-09: Identity Boot Race Cured. Re-injected Authelia's native healthcheck 
-#     and chained Traefik to wait for it, stopping 502s during initial ignition.
-#  3. PROXY-06: Assimilation Lobotomy Cured. Restored the interactive port/posture 
-#     intelligence to the alien container ingestion loop.
-#  4. ORCH-12: Routing Blackhole Cured. The script now physically bridges the 
-#     alien container to the proxy network BEFORE Traefik ingests the live YAML.
+#  Phalanx Hardening Fixes (The Ultimate Vanguard):
+#  1. TLS-02: Ephemeral ACME Void Cured. Explicitly mapped the acme.json 
+#     volume bind and command argument to /etc/traefik/acme/acme.json to 
+#     prevent Let's Encrypt rate-limiting via certificate vaporization.
+#  2. BOOT-10: Authelia Healthcheck Deadlock Cured. Replaced the non-existent 
+#     binary command with a native wget API ping, resolving the Traefik dependency race.
+#  3. PRIVACY-02: Split-Tunnel Blackhole Cured. Dynamically re-injected the 
+#     physical LAN subnet into WgAllowedIps to prevent internal DNS bleed.
 #  Inherited Master Fixes:
-#  - SEC-07 (Magnetic Erase), DNS-12 (PGP Pinning), KRN-04 (STIG Sysctls)
-#  - ORCH-11 (Watchdog Ghost), SEC-26 (Cap Bloat), BOOT-08 (Trap Paradox)
-#  - PROXY-05 (File Provider YAML), PRIVACY-01 (Full-Tunnel), ROUTE-19 (Quotes)
-#  - WG-04 (iproute2 Panic), KRN-03 (WG Mod STIG), ROUTE-17 (Backslash Residue)
-#  - VOL-01 (Pi-Hole Persistence), ORCH-09 (Headless .env STIG)
+#  - ENV-04 (Schrödinger's Domain), BOOT-09 (Identity Race), PROXY-06 (Assimilation)
+#  - ORCH-12 (Routing Blackhole), SEC-07 (Magnetic Erase), DNS-12 (PGP Pinning)
+#  - KRN-04 (STIG Sysctls), ORCH-11 (Watchdog Ghost), SEC-26 (Cap Bloat)
+#  - BOOT-08 (Trap Paradox), PROXY-05 (File Provider YAML), PRIVACY-01 (Full-Tunnel)
+#  - ROUTE-19 (Quotes), WG-04 (iproute2 Panic), KRN-03 (WG Mod STIG)
+#  - ROUTE-17 (Backslash), VOL-01 (Pi-Hole Persistence), ORCH-09 (Headless .env STIG)
 #  - ORCH-08 (Headless .env), IAM-07 (Global Authelia), ROUTE-16 (CamelCase)
-#  - TRAEFIK-02 (Null CIDR Panic), WG-03 (Trailing Comma), S6-05 (SIGHUP)
-#  - HEALTH-16 (Socket Checks), ROUTE-15 (Backtick), UX-06 (Regex \$)
-#  - ORCH-07 (Unbound Proxy Var), PROXY-04 (Parser Poison), UX-05 (Port Var)
-#  - NET-13 (VPN Sysctls), IAM-06 (Wildcard Preserved), DEPLOY-01 (CI/CD Safety).
+#  - TRAEFIK-02 (Null CIDR Panic), WG-03 (Trailing Comma), S6-05 (SIGHUP).
 # ==============================================================================
 
 set -euo pipefail
@@ -254,12 +250,20 @@ if [ "$Interactive" -eq 1 ]; then
     read -p "Monolith LAN IP: " input_lan; TraefikLanIp="${input_lan:-127.0.0.1}"
     read -p "WireGuard Peer Count [$PrevWgPeers]: " input_peers; WgPeers="${input_peers:-$PrevWgPeers}"
     read -p "Route ALL remote internet traffic through VPN? [Y/n]: " input_tunnel
+    
+    # PRIVACY-02: Split-Tunnel Blackhole Cured. Dynamically injects internal routing blocks.
     if [[ "${input_tunnel:-Y}" =~ ^[Nn]$ ]]; then
         WgAllowedIps="10.13.13.0/24"
+        if [ -n "$PrevLanSubnet" ]; then
+            WgAllowedIps="${WgAllowedIps},${PrevLanSubnet}"
+        elif [ -n "$TraefikLanIp" ] && [ "$TraefikLanIp" != "127.0.0.1" ]; then
+            WgAllowedIps="${WgAllowedIps},${TraefikLanIp}/32"
+        fi
     else
         WgAllowedIps="0.0.0.0/0, ::/0"
     fi
 else
+    # ORCH-09: Headless Null Trap Cured.
     if [ -z "${PrevEndpoint:-}" ] || [ -z "${PrevEmail:-}" ]; then
         PrintMsg "196" "[FATAL] Headless deployment detected, but master .env cache is missing."
         exit 1
@@ -488,9 +492,9 @@ services:
     depends_on:
       auth_db: { condition: service_healthy }
     cap_drop: [ALL]
-    # BOOT-09: Identity Boot Race Cured. Traefik must wait for Authelia to be healthy.
+    # BOOT-10: Authelia Deadlock Cured. API ping utilizing native wget over non-existent binary command.
     healthcheck:
-      test: ["CMD", "authelia", "healthcheck"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9091/api/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -573,9 +577,10 @@ services:
     container_name: traefik_proxy
     networks: [socket_network, proxy_network]
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
+    # TLS-02: Ephemeral ACME Void Cured. Explicit mount and target to /etc/traefik/acme/acme.json
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
-      - ${ConfigDir}/Traefik/acme.json:/acme.json:rw
+      - ${ConfigDir}/Traefik/acme.json:/etc/traefik/acme/acme.json:rw
     secrets: [cf_api_token, traefik_auth]
     environment: [CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token]
     # BOOT-09: Race condition killed. Traefik awaits both proxy socket AND Identity Provider.
@@ -592,7 +597,7 @@ services:
       - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.99.0.0/24"
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
-      - "--certificatesresolvers.cloudflare.acme.storage=/acme.json"
+      - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme/acme.json"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
@@ -667,7 +672,6 @@ AssimilateAlienContainers() {
                     found_new=1
                 fi
                 echo ""
-                # PROXY-06: Lobotomy Cured. Interactive routing logic meticulously restored.
                 PrintMsg "214" "Select ingress posture for unassimilated container [$container]:"
                 local posture_choice=""
                 if command -v gum &> /dev/null; then
@@ -702,7 +706,6 @@ AssimilateAlienContainers() {
                 esac
                 
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
-                # ORCH-12: Routing Blackhole Cured. Asynchronous docker bridge executed BEFORE YAML parsing.
                 sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
                 
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
