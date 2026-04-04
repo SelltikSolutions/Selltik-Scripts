@@ -1,17 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v56.0-SOVEREIGN-OBLITERATOR
+#  Version: v57.0-SOVEREIGN-APEX
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Obliterator Hardening Fixes (The Ultimate Convergence):
-#  1. IAM-20: Cryptographic Split-Brain Cured. Bridged postgres_password ownership 
-#     to 70:$HostGid with 640 permissions, granting the Authelia bouncer read access.
-#  2. NET-18: IPv6 RTNETLINK Panic Cured. Amputated ::/0 from the AllowedIPs array 
-#     to prevent wg-quick crash-loops on host kernels with disabled IPv6 stacks.
-#  3. ORCH-18: Ephemeral Alien Purge Cured. Appended the -a flag to the Watchdog's 
-#     docker ps query, preserving routing manifests for stopped/sleeping containers.
+#  Apex Hardening Fixes (The Final Absolute Truth):
+#  1. DNS-14: Resolv Symlink Vacuum Cured. Injected validation logic prior to 
+#     resolv.conf symlinking; falls back to static 1.1.1.1 if upstream is empty.
+#  2. TLS-04: Null ACME Detonation Cured. Implemented strict interactive loops 
+#     to mathematically prohibit null variables entering the Let's Encrypt schema.
+#  3. NTP-02: Chrony Service Disconnect Cured. Expanded systemctl logic to natively 
+#     detect and restart Debian's 'chrony' daemon to prevent cryptographic time drift.
 #  Inherited Master Fixes:
+#  - IAM-20 (Crypto Split-Brain), NET-18 (IPv6 RTNETLINK), ORCH-18 (Alien Purge)
 #  - NET-16 (Immutable Resolv), TLS-03 (ACME Lockout), ROUTE-22 (YAML Detonation)
 #  - DB-01 (Crypto Starvation), DNS-13 (DNSSEC Bomb), ORCH-17 (Ghost Route Sprawl)
 #  - VOL-02 (Database Lockout), ROUTE-21 (Air-Gap), LOG-07 (Access Logs)
@@ -171,21 +172,34 @@ HuntPhysicalNetwork() {
 }
 HuntPhysicalNetwork
 
-# PORT-53 & NET-16: systemd-resolved Collision & Immutable Resolv Brick Cured. 
+# PORT-53, NET-16 & DNS-14: Decapitates systemd-resolved and safely maps upstream DNS.
 if systemctl is-active --quiet systemd-resolved; then
     PrintMsg "214" "Decapitating systemd-resolved to mathematically free Port 53..."
     sudo sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
     sudo sed -i 's/DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
     sudo systemctl restart systemd-resolved || true
-    # Bypass the stub explicitly without locking the file immutably
+    
     sudo rm -f /etc/resolv.conf
-    sudo ln -s /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null || true
+    # DNS-14: Prevent the Resolv Vacuum if upstream is missing
+    if [ -s /run/systemd/resolve/resolv.conf ] && grep -q "^nameserver" /run/systemd/resolve/resolv.conf; then
+        sudo ln -s /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null || true
+    else
+        PrintMsg "196" "⚠️ Upstream DNS void detected. Injecting static Cloudflare resolution..."
+        echo -e "nameserver 1.1.1.1\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf > /dev/null
+    fi
 fi
 
-# AU-8: Enforce absolute temporal consistency for audit trails
+# AU-8 & NTP-02: Enforce absolute temporal consistency and sync Debian daemons.
 PrintMsg "240" "Anchoring chronometric infrastructure to UTC..."
 sudo timedatectl set-local-rtc 0 || true
 sudo timedatectl set-timezone UTC || true
+if systemctl is-active --quiet chrony; then
+    sudo systemctl restart chrony || true
+elif systemctl is-active --quiet chronyd; then
+    sudo systemctl restart chronyd || true
+elif systemctl is-active --quiet systemd-timesyncd; then
+    sudo systemctl restart systemd-timesyncd || true
+fi
 
 # KRN-04 & BOOT-11: STIG Scorched Earth Kernel Hardening + Bind Race Condition Cure
 PrintMsg "240" "Forging STIG-compliant host kernel armor..."
@@ -219,7 +233,6 @@ fi
 HostUid="${SUDO_UID:-1000}"
 HostGid="${SUDO_GID:-1000}"
 
-# NET-18: IPv6 RTNETLINK Panic Cured. Default fallback removed.
 PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevLanIp="${HUNTER_IP:-}"; PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
 PrevLanSubnet="${HUNTER_SUBNET:-}"; PrevWgPeers="3"; PrevAllowedIps="0.0.0.0/0"
 
@@ -300,7 +313,15 @@ fi
 if [ "$Interactive" -eq 1 ]; then
     read -p "WireGuard Public Endpoint [$PrevEndpoint]: " input_endpoint; WgEndpoint="${input_endpoint:-$PrevEndpoint}"
     read -p "Internal Root Domain [$PrevDomain]: " input_domain; InternalDomain="${input_domain:-$PrevDomain}"
-    read -p "Let's Encrypt Email [$PrevEmail]: " input_email; AcmeEmail="${input_email:-$PrevEmail}"
+    
+    # TLS-04: Null ACME Detonation Cured. Loop enforces valid data extraction.
+    while true; do
+        read -p "Let's Encrypt Email [$PrevEmail]: " input_email
+        AcmeEmail="${input_email:-$PrevEmail}"
+        if [ -n "$AcmeEmail" ]; then break; fi
+        PrintMsg "196" "[FATAL] ACME schema requires a valid email. Null values are prohibited."
+    done
+
     read -p "Monolith LAN IP [$PrevLanIp]: " input_lan; TraefikLanIp="${input_lan:-$PrevLanIp}"
     TraefikLanIp="${TraefikLanIp:-127.0.0.1}"
     read -p "WireGuard Peer Count [$PrevWgPeers]: " input_peers; WgPeers="${input_peers:-$PrevWgPeers}"
