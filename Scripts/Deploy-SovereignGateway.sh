@@ -1,20 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v30.0-SOVEREIGN-APOTHEOSIS
+#  Version: v31.0-SOVEREIGN-ELYSIUM
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Apotheosis Hardening Fixes (The True Zenith):
-#  1. NET-08: Ephemeral Bridge Death Cured. Accelerated Watchdog timer to 
-#     *:0/5 to prevent 55-minute routing blackouts on alien container restarts.
-#  2. UX-04: Regex Blackhole Cured. Fixed Golang/YAML double-escaping 
-#     anomaly in Traefik labels to restore the Pi-Hole admin redirect.
-#  3. SEC-25: Naked Core Armored. Clamped auth_db and authelia with strict 
-#     cap_drop: [ALL] and no-new-privileges to seal the identity vault.
-#  4. NET-09: MTU Fragmentation Trap Cured. Explicitly synced Docker virtual 
-#     networks to MTU 1420 to prevent packet loss inside the WireGuard tunnel.
+#  Elysium Hardening Fixes (The Absolute Zenith):
+#  1. S6-04: S6 Capability Chokehold Cured. Restored CHOWN, SETUID, and SETGID 
+#     to docker_socket_proxy, allowing s6-overlay to safely drop privileges.
+#  2. HEALTH-15: nslookup Trap Cured. Swapped the Unbound healthcheck binary 
+#     to 'drill', as Alpine distributions ruthlessly strip bind-tools.
+#  3. NET-12: Daemon Routing Timeout Cured. Amputated the global docker daemon 
+#     DNS override to stop isolated internal containers from blackholing.
 #  Inherited Master Fixes:
-#  - S6-03 (Proxy Read-Only), KRN-02 (WG Module), NET-07 (Split-Tunnel), TLS-01
+#  - NET-08 (Watchdog Sync), UX-04 (Regex Escape), SEC-25 (Naked Core), NET-09 (MTU)
+#  - S6-03 (Proxy Read-Only), KRN-02 (WG Module), NET-07 (Split-Tunnel), TLS-01 (ACME)
 #  - PROXY-03 (BasicAuth), SEC-24 (Edge Armor), IAM-05 (Argon2id), LOG-05 (Log Purge)
 #  - IAM-03 (644 Secrets), NET-06 (Edge Segregation), IAM-04 (Session Cookies)
 #  - UX-03 (Unicode Phantom), S6-02 (Init Overrides), IAM-02 (Root Vault)
@@ -119,15 +118,11 @@ CheckDependencies
 # Dynamically map absolute path for Docker to survive Systemd sanitization
 DockerBin=$(command -v docker || echo "/usr/bin/docker")
 
-# NET-04: Global Docker Daemon DNS Override
-PrintMsg "240" "Enforcing internal container DNS resolution..."
-sudo mkdir -p /etc/docker
-if [ ! -f /etc/docker/daemon.json ]; then
-    echo '{"dns": ["10.99.0.12", "1.1.1.1"]}' | sudo tee /etc/docker/daemon.json > /dev/null
-    sudo systemctl restart docker || true
-else
-    if command -v jq &> /dev/null && ! grep -q "10.99.0.12" /etc/docker/daemon.json; then
-        jq '.dns = ["10.99.0.12", "1.1.1.1"]' /etc/docker/daemon.json > /tmp/daemon.json && sudo mv /tmp/daemon.json /etc/docker/daemon.json
+# NET-12: Daemon Routing Timeout Cured. Purged global daemon DNS to allow native 127.0.0.11 routing.
+if [ -f /etc/docker/daemon.json ]; then
+    if command -v jq &> /dev/null && grep -q "10.99.0.12" /etc/docker/daemon.json; then
+        PrintMsg "214" "Purging legacy global DNS overrides from Docker daemon..."
+        jq 'del(.dns)' /etc/docker/daemon.json > /tmp/daemon.json && sudo mv /tmp/daemon.json /etc/docker/daemon.json
         sudo systemctl restart docker || true
     fi
 fi
@@ -483,10 +478,11 @@ services:
     image: lscr.io/linuxserver/socket-proxy:latest
     container_name: docker_socket_proxy
     networks: [socket_network]
-    # S6-03: S6 Read-Only Crash Cured. Allows HAProxy to survive the STIG lockdown.
     environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, S6_READ_ONLY_ROOT=1]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
+    # S6-04: S6 Capability Chokehold Released. S6-overlay safely sets UID/GID.
     cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "SETUID", "SETGID"]
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs:
@@ -505,7 +501,6 @@ services:
       POSTGRES_DB: authelia
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     volumes: [${ConfigDir}/Postgres:/var/lib/postgresql/data]
-    # SEC-25: Naked Core Armored. Explicit dropping prevents root escalation.
     cap_drop: ["ALL"]
     cap_add: ["CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER"]
     security_opt: ["no-new-privileges:true"]
@@ -532,7 +527,6 @@ services:
     depends_on:
       auth_db:
         condition: service_healthy
-    # SEC-25: Naked Core Armored. Identity datastore is locked.
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     logging: *default-logging
@@ -553,8 +547,9 @@ services:
     cap_drop: ["ALL"]
     cap_add: ["CHOWN", "SETGID", "SETUID", "NET_BIND_SERVICE"]
     security_opt: ["no-new-privileges:true"]
+    # HEALTH-15: nslookup Trap Cured. Explicitly enforcing the Alpine 'drill' binary.
     healthcheck:
-      test: ["CMD-SHELL", "nslookup \${INTERNAL_DOMAIN} 127.0.0.1 >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "drill -p 53 internic.net @127.0.0.1 >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -579,7 +574,6 @@ services:
       - "traefik.http.routers.pihole.entrypoints=websecure"
       - "traefik.http.routers.pihole.tls.certresolver=cloudflare"
       - "traefik.http.services.pihole.loadbalancer.server.port=80"
-      # UX-04: Regex Blackhole Cured. Literal '$' is correctly mapped out of the heredoc.
       - "traefik.http.middlewares.pihole-redirect.redirectregex.regex=^https://pihole\.\${INTERNAL_DOMAIN}/\$\$"
       - "traefik.http.middlewares.pihole-redirect.redirectregex.replacement=https://pihole.\${INTERNAL_DOMAIN}/admin/"
       - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file,pihole-redirect"
@@ -609,7 +603,6 @@ services:
       SERVERPORT: \${WG_PORT}
       PEERS: 3
       PEERDNS: 10.99.0.12
-      # NET-07: Split-Tunnel Cured. Dynamically injects local physical LAN subnet.
       INTERNAL_SUBNET: "10.13.13.0/24,\${WG_LAN_SUBNET}"
     volumes:
       - /lib/modules:/lib/modules:ro
@@ -718,7 +711,6 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 EOF
 
-# NET-08: Ephemeral Bridge Death Cured. Accelerated interval to 5 minutes.
 sudo tee /etc/systemd/system/sovereign-watchdog.timer > /dev/null << EOF
 [Unit]
 Description=5-Minute Timer for Sovereign Watchdog
