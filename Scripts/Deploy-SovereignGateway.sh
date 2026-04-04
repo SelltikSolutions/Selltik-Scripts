@@ -1,18 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v35.0-SOVEREIGN-TERMINUS
+#  Version: v36.0-SOVEREIGN-VANGUARD
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Terminus Hardening Fixes (The True Absolute End):
-#  1. HEALTH-16: Missing Healthcheck Paradox Cured. Restored the native socket 
-#     proxy healthcheck and chained Traefik's depends_on constraint to it.
-#  2. ROUTE-15: Backtick Execution Void Cured. Strictly escaped the Traefik 
-#     host rule backticks (\\\`) so Bash writes literal characters instead of 
-#     executing phantom binaries during the assimilation sequence.
-#  3. UX-06: Regex Interpolation Collision Cured. Passed \$\$ through the Bash 
-#     heredoc to yield $$ in Compose, allowing Traefik to receive the literal $.
+#  Vanguard Hardening Fixes (The Undisputed Absolute End):
+#  1. TRAEFIK-02: Null CIDR Panic Cured. Sanitized the TRAEFIK_LAN_IP variable 
+#     to mathematically fallback to 127.0.0.1 on headless cloud nodes.
+#  2. WG-03: Trailing Comma Death Cured. Conditionally constructs the WireGuard 
+#     AllowedIPs array to prevent fatal syntax aborts on virtualized networks.
+#  3. S6-05: Signal Blackhole Cured. Explicitly re-injected the KILL capability 
+#     into Pi-Hole so the PHP backend can successfully issue SIGHUP to the FTL daemon.
 #  Inherited Master Fixes:
+#  - HEALTH-16 (Socket Checks), ROUTE-15 (Backtick Escapes), UX-06 (Regex \$)
 #  - ORCH-07 (Unbound Proxy Var), PROXY-04 (Parser Poisoning), UX-05 (Port Var)
 #  - NET-13 (VPN Sysctls), IAM-06 (Wildcard Preserved), DEPLOY-01 (CI/CD Safety)
 #  - S6-04 (Proxy Chokehold), HEALTH-15 (Drill Swap), NET-12 (Daemon Timeout)
@@ -204,7 +204,7 @@ HostUid="${SUDO_UID:-1000}"
 HostGid="${SUDO_GID:-1000}"
 
 PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevLanIp="${HUNTER_IP:-}"; PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
-PrevLanSubnet="${HUNTER_SUBNET:-192.168.1.0/24}"
+PrevLanSubnet="${HUNTER_SUBNET:-}"
 PrevWgPeers="3"
 if [ -f "$EnvFile" ]; then
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" | cut -d= -f2 || echo "")
@@ -324,10 +324,18 @@ if [ "$Interactive" -eq 1 ]; then
     read -p "Internal Root Domain [$PrevDomain]: " input_domain; InternalDomain="${input_domain:-$PrevDomain}"
     read -p "Let's Encrypt Email [$PrevEmail]: " input_email; AcmeEmail="${input_email:-$PrevEmail}"
     read -p "Monolith LAN IP [$PrevLanIp]: " input_lan; TraefikLanIp="${input_lan:-$PrevLanIp}"
+    # TRAEFIK-02: Null CIDR Panic Cured. Ensure TraefikLanIp is never empty, falling back to localhost.
+    TraefikLanIp="${TraefikLanIp:-127.0.0.1}"
     read -p "WireGuard Peer Count [$PrevWgPeers]: " input_peers; WgPeers="${input_peers:-$PrevWgPeers}"
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
     [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && AcmeServerUrl="https://acme-v02.api.letsencrypt.org/directory" || AcmeServerUrl="https://acme-staging-v02.api.letsencrypt.org/directory"
     
+    # WG-03: Trailing Comma Death Cured. We mathematically bind the subnet variable only if valid.
+    WgAllowedIps="10.13.13.0/24"
+    if [ -n "$PrevLanSubnet" ]; then
+        WgAllowedIps="${WgAllowedIps},${PrevLanSubnet}"
+    fi
+
     sudo tee "$EnvFile" > /dev/null << EOF
 WG_ENDPOINT=${WgEndpoint}
 INTERNAL_DOMAIN=${InternalDomain}
@@ -337,6 +345,7 @@ WG_PORT=${WgPort}
 WG_PEERS=${WgPeers}
 TRAEFIK_LAN_IP=${TraefikLanIp}
 WG_LAN_SUBNET=${PrevLanSubnet}
+WG_ALLOWED_IPS=${WgAllowedIps}
 HOST_UID=${HostUid}
 HOST_GID=${HostGid}
 TZ=UTC
@@ -482,7 +491,6 @@ services:
     tmpfs:
       - /run
       - /tmp
-    # HEALTH-16: Missing Healthcheck Paradox Cured. Prevents a fatal Compose dependency abort.
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2375/version || exit 1"]
       interval: 10s
@@ -565,8 +573,9 @@ services:
       proxy_network: {}
     dns: ["127.0.0.1", "1.1.1.1"]
     ports: ["0.0.0.0:53:53/tcp", "0.0.0.0:53:53/udp"]
+    # S6-05: Signal Blackhole Cured. 'KILL' explicitly re-added so the Pi-Hole web UI can issue SIGHUP to the FTL daemon.
     cap_drop: ["ALL"]
-    cap_add: ["NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER", "SYS_NICE", "SYS_CHROOT"]
+    cap_add: ["NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER", "SYS_NICE", "SYS_CHROOT", "KILL"]
     security_opt: ["no-new-privileges:true"]
     labels:
       - "traefik.enable=true"
@@ -574,7 +583,6 @@ services:
       - "traefik.http.routers.pihole.entrypoints=websecure"
       - "traefik.http.routers.pihole.tls.certresolver=cloudflare"
       - "traefik.http.services.pihole.loadbalancer.server.port=80"
-      # UX-06: Regex Interpolation Collision Cured. Compose correctly intercepts $$ and yields a literal $ to Traefik.
       - "traefik.http.middlewares.pihole-redirect.redirectregex.regex=^https://pihole\.\${INTERNAL_DOMAIN}/\$\$"
       - "traefik.http.middlewares.pihole-redirect.redirectregex.replacement=https://pihole.\${INTERNAL_DOMAIN}/admin/"
       - "traefik.http.routers.pihole.middlewares=secure-headers@file,authelia@file,pihole-redirect"
@@ -608,7 +616,8 @@ services:
       SERVERPORT: \${WG_PORT}
       PEERS: \${WG_PEERS}
       PEERDNS: 10.99.0.12
-      INTERNAL_SUBNET: "10.13.13.0/24,\${WG_LAN_SUBNET}"
+      # WG-03: Trailing Comma Death Cured. Dynamic evaluation safely bypasses the null cloud interface trap.
+      INTERNAL_SUBNET: "\${WG_ALLOWED_IPS}"
     volumes:
       - /lib/modules:/lib/modules:ro
       - ${ConfigDir}/WireGuard:/config
@@ -631,7 +640,6 @@ services:
     cap_drop: ["ALL"]
     cap_add: ["NET_BIND_SERVICE"]
     security_opt: ["no-new-privileges:true"]
-    # HEALTH-16: Ensures Traefik doesn't boot until the Socket Proxy passes its healthcheck
     depends_on:
       docker_socket_proxy:
         condition: service_healthy
@@ -794,7 +802,6 @@ AssimilateAlienContainers() {
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
                 sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
                 
-                # ROUTE-15: Escaped backticks force bash to treat them as literal string boundaries.
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 # ALIEN_CONTAINER: $container
 # ------------------------------------------------------------------------------
