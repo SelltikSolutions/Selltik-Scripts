@@ -1,17 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v36.0-SOVEREIGN-VANGUARD
+#  Version: v37.0-SOVEREIGN-STELLAR
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Vanguard Hardening Fixes (The Undisputed Absolute End):
-#  1. TRAEFIK-02: Null CIDR Panic Cured. Sanitized the TRAEFIK_LAN_IP variable 
-#     to mathematically fallback to 127.0.0.1 on headless cloud nodes.
-#  2. WG-03: Trailing Comma Death Cured. Conditionally constructs the WireGuard 
-#     AllowedIPs array to prevent fatal syntax aborts on virtualized networks.
-#  3. S6-05: Signal Blackhole Cured. Explicitly re-injected the KILL capability 
-#     into Pi-Hole so the PHP backend can successfully issue SIGHUP to the FTL daemon.
+#  Stellar Hardening Fixes (The Undisputed Absolute End):
+#  1. ORCH-08: Headless Environment Void Cured. Extracted the .env generation 
+#     out of the Interactive trap to guarantee POSIX variables initialize in CI/CD.
+#  2. IAM-07: Headless Identity Drift Cured. Moved Authelia domain sed mutations 
+#     to execute globally via exported env vars, anchoring the MFA core permanently.
+#  3. ROUTE-16: CamelCase Pointer Void Cured. Assimilation generators now rigidly 
+#     point to the uppercase \${INTERNAL_DOMAIN} to prevent nounset shell crashes.
 #  Inherited Master Fixes:
+#  - TRAEFIK-02 (Null CIDR Panic), WG-03 (Trailing Comma Death), S6-05 (SIGHUP Control)
 #  - HEALTH-16 (Socket Checks), ROUTE-15 (Backtick Escapes), UX-06 (Regex \$)
 #  - ORCH-07 (Unbound Proxy Var), PROXY-04 (Parser Poisoning), UX-05 (Port Var)
 #  - NET-13 (VPN Sysctls), IAM-06 (Wildcard Preserved), DEPLOY-01 (CI/CD Safety)
@@ -324,19 +325,27 @@ if [ "$Interactive" -eq 1 ]; then
     read -p "Internal Root Domain [$PrevDomain]: " input_domain; InternalDomain="${input_domain:-$PrevDomain}"
     read -p "Let's Encrypt Email [$PrevEmail]: " input_email; AcmeEmail="${input_email:-$PrevEmail}"
     read -p "Monolith LAN IP [$PrevLanIp]: " input_lan; TraefikLanIp="${input_lan:-$PrevLanIp}"
-    # TRAEFIK-02: Null CIDR Panic Cured. Ensure TraefikLanIp is never empty, falling back to localhost.
     TraefikLanIp="${TraefikLanIp:-127.0.0.1}"
     read -p "WireGuard Peer Count [$PrevWgPeers]: " input_peers; WgPeers="${input_peers:-$PrevWgPeers}"
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
     [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && AcmeServerUrl="https://acme-v02.api.letsencrypt.org/directory" || AcmeServerUrl="https://acme-staging-v02.api.letsencrypt.org/directory"
-    
-    # WG-03: Trailing Comma Death Cured. We mathematically bind the subnet variable only if valid.
-    WgAllowedIps="10.13.13.0/24"
-    if [ -n "$PrevLanSubnet" ]; then
-        WgAllowedIps="${WgAllowedIps},${PrevLanSubnet}"
-    fi
+else
+    # ORCH-08: Headless Environment Void Cured. Unconditionally assigns variables from the fallback pipeline.
+    WgEndpoint="${PrevEndpoint}"
+    WgPort="${PrevPort:-51820}"
+    InternalDomain="${PrevDomain:-sovereign.local}"
+    AcmeEmail="${PrevEmail}"
+    TraefikLanIp="${PrevLanIp:-127.0.0.1}"
+    WgPeers="${PrevWgPeers:-3}"
+    AcmeServerUrl="${PrevAcme:-https://acme-staging-v02.api.letsencrypt.org/directory}"
+fi
 
-    sudo tee "$EnvFile" > /dev/null << EOF
+WgAllowedIps="10.13.13.0/24"
+if [ -n "$PrevLanSubnet" ]; then
+    WgAllowedIps="${WgAllowedIps},${PrevLanSubnet}"
+fi
+
+sudo tee "$EnvFile" > /dev/null << EOF
 WG_ENDPOINT=${WgEndpoint}
 INTERNAL_DOMAIN=${InternalDomain}
 ACME_EMAIL=${AcmeEmail}
@@ -351,13 +360,15 @@ HOST_GID=${HostGid}
 TZ=UTC
 EOF
 
-    sudo sed -i "s/- domain: \"\*\..*/- domain: \"*.${InternalDomain}\"/" "${ConfigDir}/Authelia/configuration.yml"
-    sudo sed -i "s/- domain: \"[^\*].*/- domain: \"${InternalDomain}\"/" "${ConfigDir}/Authelia/configuration.yml"
-    sudo sed -i "s|authelia_url: .*|authelia_url: \"https://auth.${InternalDomain}\"|" "${ConfigDir}/Authelia/configuration.yml"
-    sudo sed -i "s/admin@.*/admin@${InternalDomain}/" "${ConfigDir}/Authelia/users_database.yml"
-fi
-
 set -a; source "$EnvFile"; set +a
+
+# IAM-07: Headless Identity Drift Cured. Explicitly executes utilizing the safely exported \${INTERNAL_DOMAIN}.
+if [ -n "${INTERNAL_DOMAIN:-}" ] && [ "${INTERNAL_DOMAIN}" != "sovereign.local" ]; then
+    sudo sed -i "s/- domain: \"\*\..*/- domain: \"*.${INTERNAL_DOMAIN}\"/" "${ConfigDir}/Authelia/configuration.yml"
+    sudo sed -i "s/- domain: \"[^\*].*/- domain: \"${INTERNAL_DOMAIN}\"/" "${ConfigDir}/Authelia/configuration.yml"
+    sudo sed -i "s|authelia_url: .*|authelia_url: \"https://auth.${INTERNAL_DOMAIN}\"|" "${ConfigDir}/Authelia/configuration.yml"
+    sudo sed -i "s/admin@.*/admin@${INTERNAL_DOMAIN}/" "${ConfigDir}/Authelia/users_database.yml"
+fi
 
 RootHintUtility="${ScriptsDir}/Verify-RootHints.sh"
 sudo tee "$RootHintUtility" > /dev/null << 'EOF'
@@ -573,7 +584,6 @@ services:
       proxy_network: {}
     dns: ["127.0.0.1", "1.1.1.1"]
     ports: ["0.0.0.0:53:53/tcp", "0.0.0.0:53:53/udp"]
-    # S6-05: Signal Blackhole Cured. 'KILL' explicitly re-added so the Pi-Hole web UI can issue SIGHUP to the FTL daemon.
     cap_drop: ["ALL"]
     cap_add: ["NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER", "SYS_NICE", "SYS_CHROOT", "KILL"]
     security_opt: ["no-new-privileges:true"]
@@ -616,7 +626,6 @@ services:
       SERVERPORT: \${WG_PORT}
       PEERS: \${WG_PEERS}
       PEERDNS: 10.99.0.12
-      # WG-03: Trailing Comma Death Cured. Dynamic evaluation safely bypasses the null cloud interface trap.
       INTERNAL_SUBNET: "\${WG_ALLOWED_IPS}"
     volumes:
       - /lib/modules:/lib/modules:ro
@@ -802,6 +811,7 @@ AssimilateAlienContainers() {
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
                 sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
                 
+                # ROUTE-16: CamelCase Pointer Void Cured. Replaced \${InternalDomain} with global \${INTERNAL_DOMAIN}
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 # ALIEN_CONTAINER: $container
 # ------------------------------------------------------------------------------
@@ -810,14 +820,14 @@ AssimilateAlienContainers() {
 # ------------------------------------------------------------------------------
 labels:
   - "traefik.enable=true"
-  - "traefik.http.routers.${clean_name}.rule=Host(\\\`${clean_name}.${InternalDomain}\\\`)"
+  - "traefik.http.routers.${clean_name}.rule=Host(\\\`${clean_name}.${INTERNAL_DOMAIN}\\\`)"
   - "traefik.http.routers.${clean_name}.entrypoints=websecure"
   - "traefik.http.routers.${clean_name}.tls.certresolver=cloudflare"
   - "traefik.http.routers.${clean_name}.middlewares=${mw_string}"
   - "traefik.http.services.${clean_name}.loadbalancer.server.port=${TargetPort}"
   - "traefik.docker.network=${ProxyNetworkName}"
 MANIFEST_EOF
-                PrintMsg "82" "✔ Assimilated: https://${clean_name}.${InternalDomain}"
+                PrintMsg "82" "✔ Assimilated: https://${clean_name}.${INTERNAL_DOMAIN}"
                 PrintMsg "226" "   -> Note: Hardcode logic saved to: $manifest_file"
             done
         fi
