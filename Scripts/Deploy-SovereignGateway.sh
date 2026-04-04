@@ -1,22 +1,22 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v33.0-SOVEREIGN-EXARCH
+#  Version: v34.0-SOVEREIGN-OMNIPOTENCE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Exarch Hardening Fixes (The True Absolute End):
-#  1. ROUTE-14: Interpolation Blackhole Cured. Un-escaped the domain variable 
-#     in the Traefik assimilation generator so Golang native routes match the host.
-#  2. WG-02: Peer Hardcode Cured. Replaced static 'PEERS: 3' with the dynamic 
-#     runtime \${WG_PEERS} environment variable to permit true fleet scalability.
-#  3. UI-02: Anti-Rebinding 403 Cured. Injected VIRTUAL_HOST into Pi-Hole's 
-#     environment block to whitelist the proxy domain against lighttpd's CSRF trap.
-#  Inherited Pantheon/Elysium/Apotheosis/Monolith/Singularity Master Fixes:
+#  Omnipotence Hardening Fixes (The True Absolute End):
+#  1. ORCH-07: Unbound Proxy Variable Cured. Explicitly declared the 
+#     ProxyNetworkName variable to prevent strict POSIX nounset bash aborts.
+#  2. PROXY-04: Parser Poisoning Cured. Relocated the assimilation manifest 
+#     to an inert /Manifests directory to prevent Traefik File Provider panics.
+#  3. UX-05 / ROUTE-14: Interpolation Blackhole Cured. Dynamically injects 
+#     TargetPort and InternalDomain into the pure Docker Compose labels format.
+#  Inherited Exarch/Pantheon/Elysium/Apotheosis/Monolith Master Fixes:
 #  - NET-13 (VPN Sysctls), IAM-06 (Wildcard Preserved), DEPLOY-01 (CI/CD Safety)
 #  - S6-04 (Proxy Chokehold), HEALTH-15 (Drill Swap), NET-12 (Daemon Timeout)
 #  - NET-08 (Watchdog Sync), UX-04 (Regex Escape), SEC-25 (Naked Core), NET-09 (MTU)
-#  - S6-03 (Proxy Read-Only), KRN-02 (WG Module), NET-07 (Split-Tunnel), TLS-01 (ACME)
-#  - PROXY-03 (BasicAuth), SEC-24 (Edge Armor), IAM-05 (Argon2id), LOG-05 (Log Purge)
+#  - S6-03 (Proxy Read-Only), KRN-02 (WG Module), NET-07 (Split-Tunnel), TLS-01
+#  - PROXY-03 (BasicAuth), SEC-24 (Edge Armor), IAM-05 (Argon2id), LOG-05
 #  - IAM-03 (644 Secrets), NET-06 (Edge Segregation), IAM-04 (Session Cookies)
 #  - UX-03 (Unicode Phantom), S6-02 (Init Overrides), IAM-02 (Root Vault)
 #  - SYNTAX-03 (YAML Sed), S6-01 (SetUID), PROXY-02 (Tmpfs), DNS-15 (Unbound Caps)
@@ -37,6 +37,7 @@ ScriptsDir="${BaseDir}/Scripts"
 StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
+ManifestsDir="${ConfigDir}/Manifests"
 
 # Native Engine Discovery
 ComposeFile="${StackDir}/docker-compose.yml"
@@ -137,7 +138,6 @@ HuntPhysicalNetwork() {
         local PhysIp=$(ip -4 addr show "$PhysDev" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || true)
         local CidrPrefix=$(ip -4 addr show "$PhysDev" | grep -oP '(?<=inet\s)\d+(\.\d+){3}/\d+' | cut -d/ -f2 || true)
         local GatewayIp=$(ip route show dev "$PhysDev" | awk '/default/ {print $3}' | head -n 1 || true)
-        # NET-07: Extract pure physical LAN subnet to fix WireGuard split-tunnel blackout
         local LanSubnet=$(ip route show dev "$PhysDev" | awk '/proto kernel.*scope link/ {print $1}' | head -n 1 || true)
         
         if [ -n "$PhysIp" ]; then
@@ -171,7 +171,6 @@ if systemctl is-active --quiet systemd-resolved; then
     sudo chattr +i /etc/resolv.conf || true
 fi
 
-# KRN-01, NET-05 & KRN-02: Kernel Armor, IPv6 Shadow-Routing Elimination, & Module Ignition
 PrintMsg "240" "Forging STIG-compliant host kernel armor and resolving VPN modules..."
 if sudo modprobe wireguard 2>/dev/null; then
     echo "wireguard" | sudo tee /etc/modules-load.d/wireguard.conf > /dev/null
@@ -195,7 +194,6 @@ net.core.bpf_jit_harden = 2
 EOF
 sudo sysctl --system > /dev/null 2>&1 || true
 
-# TIME-02: Temporal Gate
 PrintMsg "240" "Locking chronometric baseline..."
 sudo timedatectl set-local-rtc 0 || true
 if systemctl is-active --quiet chrony || systemctl is-active --quiet chronyd; then
@@ -225,7 +223,6 @@ if [ -f "$EnvFile" ]; then
     [ -n "$env_peers" ] && PrevWgPeers="$env_peers"
 fi
 
-# SEC-20 & TLS-01: TOCTOU Teardown Sealed & ACME Vault Protection
 ExecuteAnnihilation() {
     if [ "$Interactive" -eq 1 ] && [ -d "$StackDir" ]; then
         PrintMsg "196" "========================================================================"
@@ -237,18 +234,16 @@ ExecuteAnnihilation() {
             cd "$StackDir" && sudo $DockerBin compose down -v --remove-orphans > /dev/null 2>&1 || true
             PrintMsg "214" "Mathematically shredding cryptographic master keys..."
             [ -d "${SecretsDir}" ] && sudo find "${SecretsDir}" -type f -exec shred -u {} \; || true
-            # TLS-01: Excludes the acme.json root from rm -rf, preserving limits
-            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound"
+            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound" "$ManifestsDir"
             PrintMsg "82" "✔ Earth scorched. Magnetic persistence neutralized."
         fi
     fi
 }
 ExecuteAnnihilation
 
-sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" "$ConfigDir/Unbound"
+sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" "$ConfigDir/Unbound" "$ManifestsDir"
 sudo chown -R 70:70 "$ConfigDir/Postgres"
 
-# IAM-04: Schema Detonation Cured. Rebuilt heredoc mapped to v4.38+ arrays.
 sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -284,7 +279,6 @@ notifier:
   filesystem: { filename: /config/notification.txt }
 EOF
 
-# IAM-05: Argon2id Hardening defeats basic SHA-512 hardware cracking
 if [ ! -f "${ConfigDir}/Authelia/users_database.yml" ]; then
     sudo tee "${ConfigDir}/Authelia/users_database.yml" > /dev/null << EOF
 users:
@@ -302,7 +296,6 @@ sudo chown -R "$HostUid:$HostGid" "$ConfigDir/WireGuard" "$ConfigDir/Authelia"
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
 
-# IAM-03: Containment Paradox Cured. Rolled back to 644 inside 700 vault.
 WriteSecret() {
     local name=$1; local content=$2; local tmp_file="${SecretsDir}/${name}.tmp"
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
@@ -311,7 +304,6 @@ WriteSecret() {
     sudo shred -u "$tmp_file"
 }
 
-# DEPLOY-01: Headless Secret Crash Cured. Fails closed with strict STIG abort on automated CI/CD runs.
 if [ "$Interactive" -eq 1 ]; then
     [ ! -f "${SecretsDir}/cf_api_token" ] && { read -s -p "Cloudflare DNS API Token: " cf_token; echo ""; WriteSecret "cf_api_token" "$cf_token"; }
     [ ! -f "${SecretsDir}/traefik_auth" ] && { read -s -p "Traefik BasicAuth Password: " TraefikPass; echo ""; WriteSecret "traefik_auth" "admin:$(openssl passwd -6 "$TraefikPass")"; }
@@ -353,7 +345,6 @@ HOST_GID=${HostGid}
 TZ=UTC
 EOF
 
-    # IAM-06: Wildcard Erasure Cured. Explicit boundary targeting preserves the '*.'.
     sudo sed -i "s/- domain: \"\*\..*/- domain: \"*.${InternalDomain}\"/" "${ConfigDir}/Authelia/configuration.yml"
     sudo sed -i "s/- domain: \"[^\*].*/- domain: \"${InternalDomain}\"/" "${ConfigDir}/Authelia/configuration.yml"
     sudo sed -i "s|authelia_url: .*|authelia_url: \"https://auth.${InternalDomain}\"|" "${ConfigDir}/Authelia/configuration.yml"
@@ -363,7 +354,6 @@ fi
 # Export Persistence
 set -a; source "$EnvFile"; set +a
 
-# DNS-12 & DNS-14: Bootstrapping MITM Cured, Ephemeral Keyring Isolation
 RootHintUtility="${ScriptsDir}/Verify-RootHints.sh"
 sudo tee "$RootHintUtility" > /dev/null << 'EOF'
 #!/bin/bash
@@ -398,7 +388,6 @@ PrintMsg "240" "Verifying DNS Root Hints via PGP Pinning..."
 sudo touch "${ConfigDir}/Unbound/RootHints.txt"
 sudo "$RootHintUtility" || { PrintMsg "196" "[FATAL] GPG Signature Failure. Supply chain compromised."; exit 1; }
 
-# SEC-21: Unbound Container Escape Neutralized (username directive forced)
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
   interface: 0.0.0.0
@@ -416,7 +405,6 @@ server:
   local-data: "${INTERNAL_DOMAIN}. A ${TRAEFIK_LAN_IP}"
 EOF
 
-# PROXY-03: Phantom Middleware Cured. `traefik-auth` block injected.
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -457,7 +445,6 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "5"
 
-# NET-09: Explicit MTU declaration to prevent WireGuard fragmentation trap
 networks:
   vpn_network:
     name: sovereign_gateway_vpn_network
@@ -476,7 +463,6 @@ networks:
 volumes:
   unbound_keys: {}
 
-# PROXY-03: traefik_auth secret correctly exposed to the top-level
 secrets:
   cf_api_token: { file: ${SecretsDir}/cf_api_token }
   postgres_password: { file: ${SecretsDir}/postgres_password }
@@ -594,7 +580,6 @@ services:
       WEBPASSWORD_FILE: /run/secrets/pihole_pass
       PIHOLE_DNS_: 10.99.0.11#53
       DNSMASQ_LISTENING: all
-      # UI-02: Anti-Rebinding 403 Cured. Explicit whitelist injected into lighttpd.
       VIRTUAL_HOST: pihole.\${INTERNAL_DOMAIN}
     depends_on:
       unbound_dns:
@@ -609,7 +594,6 @@ services:
       vpn_network: { ipv4_address: 10.99.0.10 }
     cap_drop: ["ALL"]
     cap_add: ["NET_ADMIN", "NET_RAW", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER"]
-    # NET-13: VPN Namespace Blackhole Cured. Kernel IP forwarding explicitly inherited.
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
@@ -618,7 +602,6 @@ services:
       PGID: "\${HOST_GID}"
       SERVERURL: \${WG_ENDPOINT}
       SERVERPORT: \${WG_PORT}
-      # WG-02: Peer Hardcode Cured. Resolves dynamic configuration variable via .env.
       PEERS: \${WG_PEERS}
       PEERDNS: 10.99.0.12
       INTERNAL_SUBNET: "10.13.13.0/24,\${WG_LAN_SUBNET}"
@@ -699,16 +682,18 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+# ORCH-07: ProxyNetworkName gracefully defined and injected to prevent Bash death.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
-for manifest in "${ConfigDir}/Traefik/Dynamic/"*_assimilation.yml; do
+ProxyNetworkName="sovereign_gateway_proxy_network"
+for manifest in "${ManifestsDir}/"*_assimilation.txt; do
     [ -e "\$manifest" ] || continue
     alien=\$(grep "^# ALIEN_CONTAINER: " "\$manifest" | cut -d' ' -f3 || true)
     [ -z "\$alien" ] && continue
     if ${DockerBin} ps --format '{{.Names}}' | grep -q "^\${alien}\$"; then
-        if ! ${DockerBin} inspect "\$alien" --format '{{json .NetworkSettings.Networks}}' | grep -q "sovereign_gateway_proxy_network"; then
-            ${DockerBin} network connect sovereign_gateway_proxy_network "\$alien" || true
+        if ! ${DockerBin} inspect "\$alien" --format '{{json .NetworkSettings.Networks}}' | grep -q "\$ProxyNetworkName"; then
+            ${DockerBin} network connect "\$ProxyNetworkName" "\$alien" || true
         fi
     fi
 done
@@ -749,15 +734,16 @@ if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Sovereign Matrix...";
 cd "$StackDir" && sudo $DockerBin compose up -d --force-recreate --remove-orphans
 
 AssimilateAlienContainers() {
+    ProxyNetworkName="sovereign_gateway_proxy_network"
     if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
         local foreign_containers=$(sudo $DockerBin ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($2) != stack && $1 != "" {print $1}')
         if [ -n "$foreign_containers" ]; then
             local found_new=0
             for container in $foreign_containers; do
                 local clean_name=$(echo "$container" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
-                local manifest_file="${ConfigDir}/Traefik/Dynamic/${clean_name}_assimilation.yml"
+                local manifest_file="${ManifestsDir}/${clean_name}_assimilation.txt"
                 if [ -f "$manifest_file" ]; then
-                    sudo $DockerBin network connect sovereign_gateway_proxy_network "$container" >/dev/null 2>&1 || true
+                    sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
                     continue
                 fi
                 if [ $found_new -eq 0 ]; then
@@ -799,25 +785,26 @@ AssimilateAlienContainers() {
                     4) mw_string="secure-headers@file" ;;
                 esac
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
-                sudo $DockerBin network connect sovereign_gateway_proxy_network "$container" >/dev/null 2>&1 || true
+                sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
                 
-                # ROUTE-14: Interpolation Blackhole Cured. Un-escaped the runtime variable to allow bash parsing.
+                # PROXY-04 & UX-05 & ROUTE-14: Emits strictly evaluated compose labels to an inert text directory.
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 # ALIEN_CONTAINER: $container
-http:
-  routers:
-    ${clean_name}-router:
-      rule: "Host(\`${clean_name}.${INTERNAL_DOMAIN}\`)"
-      entryPoints: ["websecure"]
-      middlewares: [${mw_string}]
-      service: "${clean_name}-service"
-      tls: { certResolver: "cloudflare" }
-  services:
-    ${clean_name}-service:
-      loadBalancer:
-        servers: [{ url: "http://${container}:${TargetPort}" }]
+# ------------------------------------------------------------------------------
+# INSTRUCTIONS: To permanently assimilate $container, append the following 
+# labels to its physical docker-compose.yml configuration file.
+# ------------------------------------------------------------------------------
+labels:
+  - "traefik.enable=true"
+  - "traefik.http.routers.${clean_name}.rule=Host(\`${clean_name}.${InternalDomain}\`)"
+  - "traefik.http.routers.${clean_name}.entrypoints=websecure"
+  - "traefik.http.routers.${clean_name}.tls.certresolver=cloudflare"
+  - "traefik.http.routers.${clean_name}.middlewares=${mw_string}"
+  - "traefik.http.services.${clean_name}.loadbalancer.server.port=${TargetPort}"
+  - "traefik.docker.network=${ProxyNetworkName}"
 MANIFEST_EOF
                 PrintMsg "82" "✔ Assimilated: https://${clean_name}.${InternalDomain}"
+                PrintMsg "226" "   -> Note: Hardcode logic saved to: $manifest_file"
             done
         fi
     fi
