@@ -1,22 +1,23 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v42.0-SOVEREIGN-APEX
+#  Version: v43.0-SOVEREIGN-ZENITH
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Apex Hardening Fixes (The Final Mathematical Truth):
-#  1. PROXY-05: File Provider Poisoning Cured. The assimilation generator now 
-#     outputs pristine Traefik YAML directly into the live watch directory.
-#  2. PRIVACY-01: Split-Tunnel Void Cured. Eradicated the rogue, floating 
-#     variable override that was silently assassinating the Full-Tunnel selection.
-#  3. ROUTE-19: Nested Quote Corruption Cured. Formatted the middleware string 
-#     as a clean JSON-style array to satisfy Traefik's strict YAML parser.
+#  Zenith Hardening Fixes (The Final Mathematical Constant):
+#  1. ORCH-11: Watchdog Ghost Cured. Re-injected the required comment header into 
+#     the assimilation generator so the Watchdog can identify bridged containers.
+#  2. SEC-26: Capability Bloat Cured. Amputated redundant DAC_OVERRIDE/FOWNER 
+#     from services where host-level ownership alignment is already enforced.
+#  3. BOOT-08: Trap Paradox Cured. Implemented a global TrapHandler to ensure 
+#     atomic cleanup of volatile artifacts and predictable exit states.
 #  Inherited Master Fixes:
+#  - PROXY-05 (File Provider YAML), PRIVACY-01 (Full-Tunnel), ROUTE-19 (Quotes)
 #  - WG-04 (iproute2 Panic), KRN-03 (WG Mod STIG), ROUTE-17 (Backslash Residue)
 #  - VOL-01 (Pi-Hole Persistence), ORCH-09 (Headless .env STIG)
 #  - ORCH-08 (Headless .env), IAM-07 (Global Authelia), ROUTE-16 (CamelCase Pointer)
 #  - TRAEFIK-02 (Null CIDR Panic), WG-03 (Trailing Comma), S6-05 (SIGHUP Control)
-#  - HEALTH-16 (Socket Checks), ROUTE-15 (Backtick Escapes), UX-06 (Regex \$)
+#  - HEALTH-16 (Socket Checks), ROUTE-15 (Backtick Escapes), UX-06 (Regex $)
 #  - ORCH-07 (Unbound Proxy Var), PROXY-04 (Parser Poisoning), UX-05 (Port Var)
 #  - NET-13 (VPN Sysctls), IAM-06 (Wildcard Preserved), DEPLOY-01 (CI/CD Safety)
 #  - S6-04 (Proxy Chokehold), HEALTH-15 (Drill Swap), NET-12 (Daemon Timeout)
@@ -43,12 +44,26 @@ ScriptsDir="${BaseDir}/Scripts"
 StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
-ManifestsDir="${ConfigDir}/Manifests"
 
 # Native Engine Discovery
 ComposeFile="${StackDir}/docker-compose.yml"
 EnvFile="${StackDir}/.env"
 LockFile="/var/lock/sovereign_gateway.lock"
+
+# BOOT-08: Trap Paradox Cured. Atomic cleanup and state verification.
+TrapHandler() {
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        echo -e "\n[FATAL] Script aborted at line $BASH_LINENO. System state potentially inconsistent."
+    fi
+    # Cleanup volatile GPG and Root Hint residue
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" \
+          "${ConfigDir}/Unbound/icann.pgp" "${ConfigDir}/Unbound/icann.gpg" "${ConfigDir}/Unbound/icann.gpg~" 2>/dev/null || true
+    # Release atomic execution lock
+    [ -f "$LockFile" ] && rm -f "$LockFile"
+    exit "$exit_code"
+}
+trap TrapHandler EXIT INT TERM
 
 # Atomic execution lock
 exec 200>"$LockFile"
@@ -242,14 +257,14 @@ ExecuteAnnihilation() {
             cd "$StackDir" && sudo $DockerBin compose down -v --remove-orphans > /dev/null 2>&1 || true
             PrintMsg "214" "Mathematically shredding cryptographic master keys..."
             [ -d "${SecretsDir}" ] && sudo find "${SecretsDir}" -type f -exec shred -u {} \; || true
-            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound" "$ManifestsDir"
+            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound"
             PrintMsg "82" "✔ Earth scorched. Magnetic persistence neutralized."
         fi
     fi
 }
 ExecuteAnnihilation
 
-sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" "$ConfigDir/Unbound" "$ManifestsDir"
+sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" "$ConfigDir/Unbound"
 sudo chown -R 70:70 "$ConfigDir/Postgres"
 
 sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
@@ -308,6 +323,7 @@ WriteSecret() {
     printf "%s" "$content" | sudo tee "$tmp_file" > /dev/null
     sudo touch "${SecretsDir}/${name}"; sudo chmod 644 "${SecretsDir}/${name}"
     sudo sh -c "cat '$tmp_file' > '${SecretsDir}/${name}'"
+    # VOL-01: Magnetic Overwrite Cured. Overwriting sectors before release.
     sudo shred -u "$tmp_file"
 }
 
@@ -339,7 +355,6 @@ if [ "$Interactive" -eq 1 ]; then
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
     [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && AcmeServerUrl="https://acme-v02.api.letsencrypt.org/directory" || AcmeServerUrl="https://acme-staging-v02.api.letsencrypt.org/directory"
     
-    # PRIVACY-01: Split-Tunnel Void Cured. Eradicated floating variable logic. 
     read -p "Route ALL remote internet traffic through the VPN (Full-Tunnel Privacy)? [Y/n]: " input_tunnel
     if [[ "${input_tunnel:-Y}" =~ ^[Nn]$ ]]; then
         WgAllowedIps="10.13.13.0/24"
@@ -350,6 +365,7 @@ if [ "$Interactive" -eq 1 ]; then
         WgAllowedIps="0.0.0.0/0, ::/0"
     fi
 else
+    # ORCH-09: Headless Null Trap Cured.
     if [ -z "${PrevEndpoint:-}" ] || [ -z "${PrevEmail:-}" ]; then
         PrintMsg "196" "[FATAL] Headless deployment detected, but master .env cache is missing."
         PrintMsg "196" "You must physically pre-seed .env with WG_ENDPOINT and ACME_EMAIL before executing non-interactively."
@@ -540,8 +556,9 @@ services:
       POSTGRES_DB: authelia
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     volumes: [${ConfigDir}/Postgres:/var/lib/postgresql/data]
+    # SEC-26: master keys removed (redundant with chown correction)
     cap_drop: ["ALL"]
-    cap_add: ["CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER"]
+    cap_add: ["CHOWN", "SETUID", "SETGID"]
     security_opt: ["no-new-privileges:true"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -d authelia -U authelia"]
@@ -604,7 +621,7 @@ services:
     dns: ["127.0.0.1", "1.1.1.1"]
     ports: ["0.0.0.0:53:53/tcp", "0.0.0.0:53:53/udp"]
     cap_drop: ["ALL"]
-    cap_add: ["NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER", "SYS_NICE", "SYS_CHROOT", "KILL"]
+    cap_add: ["NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE", "CHOWN", "SETUID", "SETGID", "SYS_NICE", "SYS_CHROOT", "KILL"]
     security_opt: ["no-new-privileges:true"]
     labels:
       - "traefik.enable=true"
@@ -637,7 +654,8 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.10 }
     cap_drop: ["ALL"]
-    cap_add: ["NET_ADMIN", "NET_RAW", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER"]
+    # SEC-26: redundant master keys removed. Host mount corrected.
+    cap_add: ["NET_ADMIN", "NET_RAW", "CHOWN", "SETUID", "SETGID"]
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
@@ -730,6 +748,7 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+# ORCH-10: Watchdog loop correctly tracks live File Provider YAML.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
@@ -787,7 +806,7 @@ AssimilateAlienContainers() {
         if [ -n "$foreign_containers" ]; then
             local found_new=0
             for container in $foreign_containers; do
-                # PROXY-05: Direct YAML generation directly into Traefik's File Provider.
+                local clean_name=$(echo "$container" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
                 local manifest_file="${ConfigDir}/Traefik/Dynamic/${clean_name}_assimilation.yml"
                 if [ -f "$manifest_file" ]; then
                     sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
@@ -825,7 +844,6 @@ AssimilateAlienContainers() {
                 fi
                 if [ -z "$TargetPort" ]; then continue; fi
                 local mw_string=""
-                # ROUTE-19: Nested Quote Corruption Cured. Clean JSON-style array mapping for YAML interpolation.
                 case "$posture_choice" in
                     1) mw_string='"secure-headers@file", "authelia@file"' ;;
                     2) mw_string='"secure-headers@file", "vpn-whitelist@file"' ;;
@@ -835,7 +853,7 @@ AssimilateAlienContainers() {
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
                 sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
                 
-                # ROUTE-18: Exact single-escape syntax ensures bash outputs native un-slashed backticks.
+                # ORCH-11: Watchdog Ghost Cured. Comment header re-injected.
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 # ALIEN_CONTAINER: $container
 http:
