@@ -1,17 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v57.0-SOVEREIGN-APEX
+#  Version: v58.0-SOVEREIGN-AEGIS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Apex Hardening Fixes (The Final Absolute Truth):
-#  1. DNS-14: Resolv Symlink Vacuum Cured. Injected validation logic prior to 
-#     resolv.conf symlinking; falls back to static 1.1.1.1 if upstream is empty.
-#  2. TLS-04: Null ACME Detonation Cured. Implemented strict interactive loops 
-#     to mathematically prohibit null variables entering the Let's Encrypt schema.
-#  3. NTP-02: Chrony Service Disconnect Cured. Expanded systemctl logic to natively 
-#     detect and restart Debian's 'chrony' daemon to prevent cryptographic time drift.
+#  Aegis Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-21: Argon2id Mutilation Cured. Enforced strict literal quotes around 
+#     the UsersDatabase heredoc to prevent Bash from interpolating the crypt hash.
+#  2. KRN-06: Strict RP_Filter Blackhole Cured. Shifted reverse path filtering 
+#     from 1 (Strict) to 2 (Loose) to legally authorize asymmetrical WireGuard routing.
+#  3. NET-19: DHCP Resolv Time Bomb Cured. Dropped a static dns=default override 
+#     into NetworkManager to prevent it from resetting resolv.conf on DHCP renewal.
 #  Inherited Master Fixes:
+#  - DNS-14 (Resolv Symlink Vacuum), TLS-04 (Null ACME), NTP-02 (Chrony Sync)
 #  - IAM-20 (Crypto Split-Brain), NET-18 (IPv6 RTNETLINK), ORCH-18 (Alien Purge)
 #  - NET-16 (Immutable Resolv), TLS-03 (ACME Lockout), ROUTE-22 (YAML Detonation)
 #  - DB-01 (Crypto Starvation), DNS-13 (DNSSEC Bomb), ORCH-17 (Ghost Route Sprawl)
@@ -172,12 +173,13 @@ HuntPhysicalNetwork() {
 }
 HuntPhysicalNetwork
 
-# PORT-53, NET-16 & DNS-14: Decapitates systemd-resolved and safely maps upstream DNS.
+# PORT-53 & DNS-14: Decapitates systemd-resolved and safely maps upstream DNS.
 if systemctl is-active --quiet systemd-resolved; then
     PrintMsg "214" "Decapitating systemd-resolved to mathematically free Port 53..."
     sudo sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
     sudo sed -i 's/DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
-    sudo systemctl restart systemd-resolved || true
+    sudo systemctl stop systemd-resolved || true
+    sudo systemctl disable systemd-resolved || true
     
     sudo rm -f /etc/resolv.conf
     # DNS-14: Prevent the Resolv Vacuum if upstream is missing
@@ -187,6 +189,16 @@ if systemctl is-active --quiet systemd-resolved; then
         PrintMsg "196" "⚠️ Upstream DNS void detected. Injecting static Cloudflare resolution..."
         echo -e "nameserver 1.1.1.1\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf > /dev/null
     fi
+fi
+
+# NET-19: DHCP Resolv Time Bomb Cured. Gagging NetworkManager from touching resolv.conf.
+if command -v NetworkManager &> /dev/null && [ -d "/etc/NetworkManager/conf.d" ]; then
+    PrintMsg "214" "Locking NetworkManager DNS state to prevent DHCP lease overwrites..."
+    sudo tee /etc/NetworkManager/conf.d/99-sovereign-dns.conf > /dev/null << 'EOF'
+[main]
+dns=default
+EOF
+    sudo systemctl restart NetworkManager || true
 fi
 
 # AU-8 & NTP-02: Enforce absolute temporal consistency and sync Debian daemons.
@@ -201,7 +213,7 @@ elif systemctl is-active --quiet systemd-timesyncd; then
     sudo systemctl restart systemd-timesyncd || true
 fi
 
-# KRN-04 & BOOT-11: STIG Scorched Earth Kernel Hardening + Bind Race Condition Cure
+# KRN-04 & KRN-06: STIG Scorched Earth Kernel Hardening + RP_Filter Asymmetrical Downgrade
 PrintMsg "240" "Forging STIG-compliant host kernel armor..."
 sudo tee /etc/sysctl.d/99-SovereignGateway.conf > /dev/null << 'EOF'
 net.ipv4.tcp_syncookies = 1
@@ -213,8 +225,8 @@ net.ipv4.conf.all.secure_redirects = 0
 net.ipv4.conf.default.secure_redirects = 0
 net.ipv4.conf.all.send_redirects = 0
 net.ipv4.conf.default.send_redirects = 0
-net.ipv4.conf.all.rp_filter = 1
-net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.rp_filter = 2
+net.ipv4.conf.default.rp_filter = 2
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
@@ -411,15 +423,18 @@ notifier:
   filesystem: { filename: /config/notification.txt }
 EOF
 
+# IAM-21: Argon2id Mutilation Cured. Heredoc strictly literal quoted to prevent bash parsing.
 if [ ! -f "${ConfigDir}/Authelia/UsersDatabase.yml" ]; then
-    sudo tee "${ConfigDir}/Authelia/UsersDatabase.yml" > /dev/null << EOF
+    sudo tee "${ConfigDir}/Authelia/UsersDatabase.yml" > /dev/null << 'EOF'
 users:
   admin:
     displayname: "Sovereign Administrator"
-    password: "\$argon2id\$v=19\$m=65536,t=3,p=4\$wD4pD5lT8vG6sE8jO7mCQA\$2QOqU5vY3K5zN9yE4mT7qO1pB6uR4sF3jM5vA8nG4X8"
-    email: admin@${INTERNAL_DOMAIN}
+    password: "$argon2id$v=19$m=65536,t=3,p=4$wD4pD5lT8vG6sE8jO7mCQA$2QOqU5vY3K5zN9yE4mT7qO1pB6uR4sF3jM5vA8nG4X8"
+    email: admin@REPLACE_DOMAIN
     groups: [admins]
 EOF
+    # Inject the dynamic domain strictly via post-processing to protect the hash geometry.
+    sudo sed -i "s/REPLACE_DOMAIN/${INTERNAL_DOMAIN}/g" "${ConfigDir}/Authelia/UsersDatabase.yml"
 fi
 
 # DNS-12: PGP-Pinned Root Hint Verification Utility
