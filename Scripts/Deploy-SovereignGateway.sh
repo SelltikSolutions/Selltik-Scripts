@@ -1,20 +1,21 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v28.0-SOVEREIGN-OBSIDIAN
+#  Version: v29.0-SOVEREIGN-AEON
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Obsidian Hardening Fixes (The Eternal Seal):
-#  1. PROXY-03: Phantom Middleware Cured. Explicitly defined 'traefik-auth' in 
-#     DynamicRules.yml and mapped the top-level secret into the Traefik container.
-#  2. SEC-24: Naked Edge Router Armored. Traefik and Pi-Hole restricted with 
-#     cap_drop: [ALL] and tight security_opt directives to seal kernel escapes.
-#  3. IAM-05: Deprecated Hash Modernized. Replaced the legacy SHA-512 default 
-#     admin hash with a mathematically valid Argon2id block to defeat ASICs.
-#  4. LOG-05: Ghost Sweeper Purged. Amputated the host-level logrotate cron 
-#     block, deferring entirely to Docker's native json-file engine.
-#  Inherited Monolith/Singularity/Epilogue/Terminus Master Fixes:
-#  - IAM-03 (644 Secrets), NET-06 (Edge Segmentation), IAM-04 (Session Cookies)
+#  Aeon Hardening Fixes (The Absolute End):
+#  1. S6-03: S6 Read-Only Crash Cured. Injected S6_READ_ONLY_ROOT=1 into the 
+#     docker_socket_proxy environment to satisfy the s6-overlay v3 STIG init.
+#  2. KRN-02: WireGuard Module Race Cured. Actively probes and registers the 
+#     native wireguard kernel module before stack ignition to prevent VPN panics.
+#  3. NET-07: Split-Tunnel Blackhole Cured. Dynamically injects the host's LAN 
+#     subnet into WireGuard's routing table so roaming peers resolve local endpoints.
+#  4. TLS-01: ACME Rate-Limit Suicide Cured. Scorched Earth annihilation now 
+#     surgically preserves acme.json to prevent 7-day Let's Encrypt cryptographic bans.
+#  Inherited Master Fixes:
+#  - PROXY-03 (BasicAuth), SEC-24 (Edge Armor), IAM-05 (Argon2id), LOG-05 (Log Purge)
+#  - IAM-03 (644 Secrets), NET-06 (Edge Segregation), IAM-04 (Session Cookies)
 #  - UX-03 (Unicode Phantom), S6-02 (Init Overrides), IAM-02 (Root Vault)
 #  - SYNTAX-03 (YAML Sed), S6-01 (SetUID), PROXY-02 (Tmpfs), DNS-15 (Unbound Caps)
 #  - SEC-22 (Proxy Armor), SEC-23 (SHA-512 Auth), DNS-14 (Ephemeral Keyring)
@@ -138,8 +139,12 @@ HuntPhysicalNetwork() {
         local PhysIp=$(ip -4 addr show "$PhysDev" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || true)
         local CidrPrefix=$(ip -4 addr show "$PhysDev" | grep -oP '(?<=inet\s)\d+(\.\d+){3}/\d+' | cut -d/ -f2 || true)
         local GatewayIp=$(ip route show dev "$PhysDev" | awk '/default/ {print $3}' | head -n 1 || true)
+        # NET-07: Extract pure physical LAN subnet to fix WireGuard split-tunnel blackout
+        local LanSubnet=$(ip route show dev "$PhysDev" | awk '/proto kernel.*scope link/ {print $1}' | head -n 1 || true)
+        
         if [ -n "$PhysIp" ]; then
             export HUNTER_IP="$PhysIp"
+            export HUNTER_SUBNET="${LanSubnet:-}"
             local CurrentMethod=$(nmcli -t -f ipv4.method connection show "$ActivePhysConn" | cut -d: -f2 || true)
             if [ "$Interactive" -eq 1 ] && [ "$CurrentMethod" == "auto" ]; then
                 echo ""
@@ -168,8 +173,14 @@ if systemctl is-active --quiet systemd-resolved; then
     sudo chattr +i /etc/resolv.conf || true
 fi
 
-# KRN-01 & NET-05: Kernel Armor and IPv6 Shadow-Routing Elimination
-PrintMsg "240" "Forging STIG-compliant host kernel armor..."
+# KRN-01, NET-05 & KRN-02: Kernel Armor, IPv6 Shadow-Routing Elimination, & Module Ignition
+PrintMsg "240" "Forging STIG-compliant host kernel armor and resolving VPN modules..."
+if sudo modprobe wireguard 2>/dev/null; then
+    echo "wireguard" | sudo tee /etc/modules-load.d/wireguard.conf > /dev/null
+else
+    PrintMsg "196" "WARNING: Native WireGuard kernel module missing. VPN container will attempt userspace fallback."
+fi
+
 sudo tee /etc/sysctl.d/99-SovereignNode.conf > /dev/null << 'EOF'
 net.ipv4.tcp_syncookies = 1
 net.ipv4.ip_forward = 1
@@ -199,6 +210,7 @@ HostUid="${SUDO_UID:-1000}"
 HostGid="${SUDO_GID:-1000}"
 
 PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevLanIp="${HUNTER_IP:-}"; PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
+PrevLanSubnet="${HUNTER_SUBNET:-192.168.1.0/24}"
 if [ -f "$EnvFile" ]; then
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" | cut -d= -f2 || echo "")
     PrevDomain=$(grep "^INTERNAL_DOMAIN=" "$EnvFile" | cut -d= -f2 || echo "")
@@ -208,9 +220,11 @@ if [ -f "$EnvFile" ]; then
     [ -n "$env_lan" ] && PrevLanIp="$env_lan"
     env_acme=$(grep "^ACME_SERVER_URL=" "$EnvFile" | cut -d= -f2 || echo "")
     [ -n "$env_acme" ] && PrevAcme="$env_acme"
+    env_subnet=$(grep "^WG_LAN_SUBNET=" "$EnvFile" | cut -d= -f2 || echo "")
+    [ -n "$env_subnet" ] && PrevLanSubnet="$env_subnet"
 fi
 
-# SEC-20: TOCTOU Teardown Sealed
+# SEC-20 & TLS-01: TOCTOU Teardown Sealed & ACME Vault Protection
 ExecuteAnnihilation() {
     if [ "$Interactive" -eq 1 ] && [ -d "$StackDir" ]; then
         PrintMsg "196" "========================================================================"
@@ -222,7 +236,8 @@ ExecuteAnnihilation() {
             cd "$StackDir" && sudo $DockerBin compose down -v --remove-orphans > /dev/null 2>&1 || true
             PrintMsg "214" "Mathematically shredding cryptographic master keys..."
             [ -d "${SecretsDir}" ] && sudo find "${SecretsDir}" -type f -exec shred -u {} \; || true
-            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound"
+            # TLS-01: Excludes the acme.json root from rm -rf, preserving limits
+            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound"
             PrintMsg "82" "✔ Earth scorched. Magnetic persistence neutralized."
         fi
     fi
@@ -323,6 +338,7 @@ ACME_SERVER_URL=${AcmeServerUrl}
 WG_PORT=${WgPort}
 WG_PEERS=3
 TRAEFIK_LAN_IP=${TraefikLanIp}
+WG_LAN_SUBNET=${PrevLanSubnet}
 HOST_UID=${HostUid}
 HOST_GID=${HostGid}
 TZ=UTC
@@ -373,6 +389,7 @@ PrintMsg "240" "Verifying DNS Root Hints via PGP Pinning..."
 sudo touch "${ConfigDir}/Unbound/RootHints.txt"
 sudo "$RootHintUtility" || { PrintMsg "196" "[FATAL] GPG Signature Failure. Supply chain compromised."; exit 1; }
 
+# SEC-21: Unbound Container Escape Neutralized (username directive forced)
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
   interface: 0.0.0.0
@@ -459,7 +476,8 @@ services:
     image: lscr.io/linuxserver/socket-proxy:latest
     container_name: docker_socket_proxy
     networks: [socket_network]
-    environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1]
+    # S6-03: S6 Read-Only Crash Cured. Allows HAProxy to survive the STIG lockdown.
+    environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, S6_READ_ONLY_ROOT=1]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
@@ -538,7 +556,6 @@ services:
       proxy_network: {}
     dns: ["127.0.0.1", "1.1.1.1"]
     ports: ["0.0.0.0:53:53/tcp", "0.0.0.0:53:53/udp"]
-    # SEC-24: Naked Edge Router Armored (Pi-Hole STIG bindings)
     cap_drop: ["ALL"]
     cap_add: ["NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER", "SYS_NICE", "SYS_CHROOT"]
     security_opt: ["no-new-privileges:true"]
@@ -577,7 +594,8 @@ services:
       SERVERPORT: \${WG_PORT}
       PEERS: 3
       PEERDNS: 10.99.0.12
-      INTERNAL_SUBNET: 10.13.13.0/24
+      # NET-07: Split-Tunnel Cured. Dynamically injects local physical LAN subnet.
+      INTERNAL_SUBNET: "10.13.13.0/24,\${WG_LAN_SUBNET}"
     volumes:
       - /lib/modules:/lib/modules:ro
       - ${ConfigDir}/WireGuard:/config
@@ -597,7 +615,6 @@ services:
     secrets: [cf_api_token, traefik_auth]
     environment:
       CF_DNS_API_TOKEN_FILE: /run/secrets/cf_api_token
-    # SEC-24: Naked Edge Router Armored (Traefik STIG bindings)
     cap_drop: ["ALL"]
     cap_add: ["NET_BIND_SERVICE"]
     security_opt: ["no-new-privileges:true"]
