@@ -1,17 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v49.0-SOVEREIGN-OBLIVION
+#  Version: v50.0-SOVEREIGN-TERMINUS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Oblivion Hardening Fixes (The Final Absolute Truth):
-#  1. PRIVACY-03: DNS Split-Tunnel Blackhole Cured. Injected the 10.99.0.0/24 
-#     Docker subnet into the WgAllowedIps array to force internal DNS resolution.
-#  2. BOOT-11: Phantom Bind Kernel Panic Cured. Injected ip_nonlocal_bind=1 
-#     into the STIG sysctls, preventing Docker from crashing during host reboots.
-#  3. PROXY-07: IP Spoofing Rate-Limit Bypass Cured. Expanded Traefik's trustedIPs 
-#     to RFC1918 and proxy subnets, restoring Authelia's brute-force protections.
+#  Terminus Hardening Fixes (The Ultimate Absolute Truth):
+#  1. IAM-09: Double-Secret Detonation Cured. Excised the secret_file directive 
+#     from the Authelia YAML to allow the environment variable sole injection rights, 
+#     preventing a fatal configuration overlap and container crash-loop.
+#  2. NET-15: Pi-Hole Bind Death Cured. Restored NET_BIND_SERVICE to the Pi-Hole 
+#     capabilities array, allowing the unprivileged daemon to legally bind port 53.
+#  3. ORCH-14: Socket Blindness Cured. Re-injected EVENTS=1 into the socket proxy 
+#     so Traefik can dynamically read network state changes for alien assimilation.
 #  Inherited Master Fixes:
+#  - PRIVACY-03 (DNS Split Blackhole), BOOT-11 (Bind Panic), PROXY-07 (Spoofing)
 #  - SEC-27 (644 Hemorrhage), NET-14 (Open Resolver Cannon), KRN-05 (TUN Void)
 #  - ROUTE-20 (Localhost Blackhole), LOG-06 (Host Storage Exhaustion)
 #  - ORCH-13 (Supply Chain Stagnation), TLS-02 (ACME Void), BOOT-10 (Auth Deadlock)
@@ -140,6 +142,7 @@ if [ -f /etc/docker/daemon.json ]; then
     fi
 fi
 
+# ROUTE-20: Localhost Blackhole Cured. Dynamically mapping host topology via nmcli.
 HuntPhysicalNetwork() {
     if ! command -v nmcli &> /dev/null; then return; fi
     local ActivePhysConn=$(nmcli -t -f NAME,TYPE,STATE connection show --active | grep -E ':(802-3-ethernet|802-11-wireless):activated' | head -n 1 | cut -d: -f1 || true)
@@ -329,7 +332,8 @@ EOF
 # Export persistence for native variable mapping
 set -a; source "$EnvFile"; set +a
 
-# ENV-04: Schrödinger's Domain Cured. Writes pure configuration using live exported $INTERNAL_DOMAIN
+# ENV-04 & IAM-09: Schrödinger's Domain Cured. Double-Secret Detonation Cured.
+# Removed secret_file under session to defer completely to environment variable injection.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -351,7 +355,6 @@ access_control:
       policy: two_factor
 session:
   name: authelia_session
-  secret_file: /run/secrets/authelia_session_secret
   expiration: 3600
   inactivity: 300
   cookies:
@@ -493,7 +496,8 @@ services:
     image: lscr.io/linuxserver/socket-proxy:latest
     container_name: docker_socket_proxy
     networks: [socket_network]
-    environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, S6_READ_ONLY_ROOT=1]
+    # ORCH-14: Socket Blindness Cured. Re-injected EVENTS=1 for Traefik API vision.
+    environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, S6_READ_ONLY_ROOT=1]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID]
@@ -584,7 +588,8 @@ services:
     depends_on:
       unbound_dns: { condition: service_healthy }
     cap_drop: [ALL]
-    cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, KILL]
+    # NET-15: Pi-Hole Bind Death Cured. Granted NET_BIND_SERVICE to unprivileged daemon.
+    cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, KILL, NET_BIND_SERVICE]
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)"
@@ -646,7 +651,6 @@ services:
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.websecure.address=:443"
-      # PROXY-07: IP Spoofing Rate-Limit Bypass Cured. Trusts RFC1918 & proxy spaces.
       - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.98.0.0/24,10.99.0.0/24,192.168.0.0/16,172.16.0.0/12,10.0.0.0/8"
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
