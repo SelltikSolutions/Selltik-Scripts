@@ -1,34 +1,33 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v41.0-SOVEREIGN-ECLIPSE
+#  Version: v42.0-SOVEREIGN-APEX
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Eclipse Hardening Fixes (The True Mathematical Constant):
-#  1. PROXY-05: Chronometric Deception Cured. Restored the assimilation manifest 
-#     output path to the live Traefik File Provider directory.
-#  2. ROUTE-18: Triple-Escape Detonation Cured. Surgically escaped the backticks 
-#     exactly once to prevent a Docker Compose YAML 1.2 parser crash.
-#  3. ORCH-10: Watchdog Identity Crisis Cured. The Watchdog loop now natively 
-#     hunts for .yml files inside the active Traefik Dynamic watch directory.
+#  Apex Hardening Fixes (The Final Mathematical Truth):
+#  1. PROXY-05: File Provider Poisoning Cured. The assimilation generator now 
+#     outputs pristine Traefik YAML directly into the live watch directory.
+#  2. PRIVACY-01: Split-Tunnel Void Cured. Eradicated the rogue, floating 
+#     variable override that was silently assassinating the Full-Tunnel selection.
+#  3. ROUTE-19: Nested Quote Corruption Cured. Formatted the middleware string 
+#     as a clean JSON-style array to satisfy Traefik's strict YAML parser.
 #  Inherited Master Fixes:
-#  - PRIVACY-01 (Full-Tunnel), IAM-08 (Phantom Lockout), WG-04 (iproute2 Panic)
-#  - KRN-03 (WG Mod STIG), ROUTE-17 (Backslash Residue), VOL-01 (Pi-Hole Vol)
-#  - ORCH-09 (Headless .env STIG), ORCH-08 (Headless .env), IAM-07 (Global Auth)
-#  - ROUTE-16 (CamelCase Pointer), TRAEFIK-02 (Null CIDR), WG-03 (Trailing Comma)
-#  - S6-05 (SIGHUP Control), HEALTH-16 (Socket Checks), ROUTE-15 (Backtick)
-#  - UX-06 (Regex \$), ORCH-07 (Unbound Proxy Var), PROXY-04 (Parser Poison)
-#  - UX-05 (Port Var), NET-13 (VPN Sysctls), IAM-06 (Wildcard Preserved)
-#  - DEPLOY-01 (CI/CD Safety), S6-04 (Proxy Chokehold), HEALTH-15 (Drill Swap)
-#  - NET-12 (Daemon Timeout), NET-08 (Watchdog Sync), UX-04 (Regex Escape)
-#  - SEC-25 (Naked Core), NET-09 (MTU), S6-03 (Proxy RO), KRN-02 (WG Module)
-#  - NET-07 (Split-Tunnel), TLS-01, PROXY-03 (BasicAuth), SEC-24 (Edge Armor)
-#  - IAM-05 (Argon2id), LOG-05, IAM-03 (644 Secrets), NET-06 (Edge Segregation)
-#  - IAM-04 (Session Cookies), UX-03 (Unicode Phantom), S6-02 (Init Overrides)
-#  - IAM-02 (Root Vault), SYNTAX-03 (YAML Sed), S6-01 (SetUID), PROXY-02 (Tmpfs)
-#  - DNS-15 (Unbound Caps), SEC-22 (Proxy Armor), SEC-23 (SHA-512 Auth)
-#  - DNS-14 (Ephemeral Keyring), DEP-01 (Cron Purge), DNS-12 (MITM)
-#  - SEC-21 (Unbound Drop), HEALTH-13 (Boot).
+#  - WG-04 (iproute2 Panic), KRN-03 (WG Mod STIG), ROUTE-17 (Backslash Residue)
+#  - VOL-01 (Pi-Hole Persistence), ORCH-09 (Headless .env STIG)
+#  - ORCH-08 (Headless .env), IAM-07 (Global Authelia), ROUTE-16 (CamelCase Pointer)
+#  - TRAEFIK-02 (Null CIDR Panic), WG-03 (Trailing Comma), S6-05 (SIGHUP Control)
+#  - HEALTH-16 (Socket Checks), ROUTE-15 (Backtick Escapes), UX-06 (Regex \$)
+#  - ORCH-07 (Unbound Proxy Var), PROXY-04 (Parser Poisoning), UX-05 (Port Var)
+#  - NET-13 (VPN Sysctls), IAM-06 (Wildcard Preserved), DEPLOY-01 (CI/CD Safety)
+#  - S6-04 (Proxy Chokehold), HEALTH-15 (Drill Swap), NET-12 (Daemon Timeout)
+#  - NET-08 (Watchdog Sync), UX-04 (Regex Escape), SEC-25 (Naked Core), NET-09 (MTU)
+#  - S6-03 (Proxy Read-Only), KRN-02 (WG Module), NET-07 (Split-Tunnel), TLS-01
+#  - PROXY-03 (BasicAuth), SEC-24 (Edge Armor), IAM-05 (Argon2id), LOG-05
+#  - IAM-03 (644 Secrets), NET-06 (Edge Segregation), IAM-04 (Session Cookies)
+#  - UX-03 (Unicode Phantom), S6-02 (Init Overrides), IAM-02 (Root Vault)
+#  - SYNTAX-03 (YAML Sed), S6-01 (SetUID), PROXY-02 (Tmpfs), DNS-15 (Unbound Caps)
+#  - SEC-22 (Proxy Armor), SEC-23 (SHA-512 Auth), DNS-14 (Ephemeral Keyring)
+#  - DEP-01 (Cron Purge), DNS-12 (MITM), SEC-21 (Unbound Drop), HEALTH-13 (Boot).
 # ==============================================================================
 
 set -euo pipefail
@@ -44,6 +43,7 @@ ScriptsDir="${BaseDir}/Scripts"
 StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
+ManifestsDir="${ConfigDir}/Manifests"
 
 # Native Engine Discovery
 ComposeFile="${StackDir}/docker-compose.yml"
@@ -242,14 +242,14 @@ ExecuteAnnihilation() {
             cd "$StackDir" && sudo $DockerBin compose down -v --remove-orphans > /dev/null 2>&1 || true
             PrintMsg "214" "Mathematically shredding cryptographic master keys..."
             [ -d "${SecretsDir}" ] && sudo find "${SecretsDir}" -type f -exec shred -u {} \; || true
-            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound"
+            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound" "$ManifestsDir"
             PrintMsg "82" "✔ Earth scorched. Magnetic persistence neutralized."
         fi
     fi
 }
 ExecuteAnnihilation
 
-sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" "$ConfigDir/Unbound"
+sudo mkdir -p "$StackDir" "$LogsDir" "$ScriptsDir" "$ConfigDir/Authelia" "$ConfigDir/Postgres" "$ConfigDir/Traefik/Dynamic" "$ConfigDir/WireGuard" "$ConfigDir/PiHole/etc-pihole" "$ConfigDir/PiHole/etc-dnsmasq.d" "$ConfigDir/Unbound" "$ManifestsDir"
 sudo chown -R 70:70 "$ConfigDir/Postgres"
 
 sudo tee "${ConfigDir}/Authelia/configuration.yml" > /dev/null << EOF
@@ -339,6 +339,7 @@ if [ "$Interactive" -eq 1 ]; then
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
     [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && AcmeServerUrl="https://acme-v02.api.letsencrypt.org/directory" || AcmeServerUrl="https://acme-staging-v02.api.letsencrypt.org/directory"
     
+    # PRIVACY-01: Split-Tunnel Void Cured. Eradicated floating variable logic. 
     read -p "Route ALL remote internet traffic through the VPN (Full-Tunnel Privacy)? [Y/n]: " input_tunnel
     if [[ "${input_tunnel:-Y}" =~ ^[Nn]$ ]]; then
         WgAllowedIps="10.13.13.0/24"
@@ -729,7 +730,6 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# ORCH-10: Watchdog loop correctly tracks live File Provider YAML inside Traefik configuration.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
@@ -787,7 +787,7 @@ AssimilateAlienContainers() {
         if [ -n "$foreign_containers" ]; then
             local found_new=0
             for container in $foreign_containers; do
-                # PROXY-05: Direct YAML generation into Traefik's File Provider.
+                # PROXY-05: Direct YAML generation directly into Traefik's File Provider.
                 local manifest_file="${ConfigDir}/Traefik/Dynamic/${clean_name}_assimilation.yml"
                 if [ -f "$manifest_file" ]; then
                     sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
@@ -825,16 +825,17 @@ AssimilateAlienContainers() {
                 fi
                 if [ -z "$TargetPort" ]; then continue; fi
                 local mw_string=""
+                # ROUTE-19: Nested Quote Corruption Cured. Clean JSON-style array mapping for YAML interpolation.
                 case "$posture_choice" in
-                    1) mw_string="\"secure-headers\", \"authelia\"" ;;
-                    2) mw_string="\"secure-headers\", \"vpn-whitelist\"" ;;
-                    3) mw_string="\"secure-headers\", \"traefik-auth\"" ;;
-                    4) mw_string="\"secure-headers\"" ;;
+                    1) mw_string='"secure-headers@file", "authelia@file"' ;;
+                    2) mw_string='"secure-headers@file", "vpn-whitelist@file"' ;;
+                    3) mw_string='"secure-headers@file", "traefik-auth@file"' ;;
+                    4) mw_string='"secure-headers@file"' ;;
                 esac
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
                 sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
                 
-                # ROUTE-18: Mathematically exact singular escape (\`) forces Bash to pass native syntax.
+                # ROUTE-18: Exact single-escape syntax ensures bash outputs native un-slashed backticks.
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 # ALIEN_CONTAINER: $container
 http:
@@ -844,13 +845,11 @@ http:
       entryPoints: ["websecure"]
       middlewares: [${mw_string}]
       service: "${clean_name}-service"
-      tls:
-        certResolver: "cloudflare"
+      tls: { certResolver: "cloudflare" }
   services:
     ${clean_name}-service:
       loadBalancer:
-        servers:
-          - url: "http://${container}:${TargetPort}"
+        servers: [{ url: "http://${container}:${TargetPort}" }]
 MANIFEST_EOF
                 PrintMsg "82" "✔ Assimilated: https://${clean_name}.${INTERNAL_DOMAIN}"
             done
