@@ -1,16 +1,15 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v83.0-SOVEREIGN-VANGUARD
+#  Version: v84.0-SOVEREIGN-ECLIPSE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Vanguard Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-52: ForwardAuth Redirection Void Cured. Explicitly injected the 
-#     authelia_url query parameter into the Traefik middleware to prevent 
-#     mathematical infinite redirect loops during authentication challenges.
-#  2. LOG-14: Ghost Log Artifact Cured. Surgically amputated the phantom access.log 
-#     touch command from the root directory to maintain absolute filesystem hygiene.
+#  Eclipse Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-53: Open-Redirect Singularity Cured. Eradicated deprecated query 
+#     parameters and explicitly injected 'external_url' into the Authelia root 
+#     server matrix, shattering the infinite HTTP 302 redirect loop.
 #  Inherited Master Fixes:
+#  - IAM-52 (ForwardAuth Redirection), LOG-14 (Ghost Log Artifact)
 #  - IAM-46 (Session Array Detonation), NET-31 (CRLF Poisoning)
 #  - IAM-41 (Unmarshaler Detonation), CONFIG-02 (PreDown Parasites)
 #  - BOOT-16 (S6 Init Paradox), IAM-38 (Deprecated Authz Endpoint)
@@ -485,12 +484,13 @@ set -a; source "$EnvFile"; set +a
 # ORCH-19: Administrative Blackhole Cured. Symlink ensures native Docker tools function despite PascalCase aesthetics.
 sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
 
-# IAM-36 & IAM-41 & IAM-46: Immutable Ledger, Unmarshaler Detonation, & Session Array Detonation Cured.
-# Flattened the session block schema entirely to conform to strict v4.38+ YAML generation.
+# IAM-36 & IAM-41 & IAM-46 & IAM-53: Immutable Ledger, Unmarshaler Detonation, Session Array, & Open-Redirect Singularity Cured.
+# Explicit external_url mathematically shatters the redirect infinite loop.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
   port: 9091
+  external_url: "https://auth.${InternalDomain}"
 storage:
   postgres:
     host: auth_db
@@ -586,7 +586,7 @@ server:
 EOF
 
 # SEC-29: Physical Air-Gap Breach Cured. Ruthlessly amputated RFC1918 space from the whitelist middleware.
-# IAM-38 & IAM-52: Deprecated Authz Endpoint & Redirection Void Cured. Injected ?authelia_url= to shatter the infinite proxy loop.
+# IAM-38 & IAM-52 & IAM-53: Deprecated Authz Endpoint & Redirection Singularity Cured. Clean modernized verification target.
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -601,7 +601,7 @@ http:
         sourceRange: ["10.13.13.0/24", "127.0.0.1/32"]
     authelia:
       forwardAuth:
-        address: "http://authelia:9091/api/authz/forward-auth?authelia_url=https://auth.${InternalDomain}/"
+        address: "http://authelia:9091/api/authz/forward-auth"
         trustForwardHeader: true
         authResponseHeaders: ["Remote-User", "Remote-Groups", "Remote-Name", "Remote-Email"]
     traefik-auth:
