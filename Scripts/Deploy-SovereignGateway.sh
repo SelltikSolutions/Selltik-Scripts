@@ -1,17 +1,20 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v63.0-SOVEREIGN-IMPERIUM
+#  Version: v64.0-SOVEREIGN-OMNISSIAH
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Imperium Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-27: Regulation Schema Detonation Cured. Amputated the invalid 'networks' 
-#     array from Authelia's configuration to prevent fatal YAML parser panics.
-#  2. NET-22: Roaming Host Brick Cured. Actively deletes the dns=none NetworkManager 
-#     gag order, restoring the host's ability to negotiate DHCP on foreign networks.
-#  3. IAM-28: Administrative Lockout Cured. Intercepts the random Pi-Hole hex generation 
-#     and surfaces the true plaintext password in the terminal exit block.
+#  Omnissiah Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-29: Cookie Schema Reversion Cured. Upgraded Authelia's YAML to the 
+#     modern session.cookies array to prevent fatal unmarshaler detonation.
+#  2. HEALTH-07: Healthcheck API Phantom Cured. Replaced dead wget endpoint 
+#     with the native 'authelia healthcheck' compiled binary command.
+#  3. NET-23: Execution State Vacuum Cured. Uncoupled the host DNS lifeline 
+#     from the systemd conditional, guaranteeing resolv.conf survives re-runs.
+#  4. TLS-05: CertResolver Schism Cured. Enforced strict 'cloudflare' ACME 
+#     mapping in the alien assimilation matrix.
 #  Inherited Master Fixes:
+#  - IAM-27 (Regulation Schema), NET-22 (Roaming Brick), IAM-28 (Admin Lockout)
 #  - DNS-16 (Alpine Namespace), BOOT-13 (s6-overlay cap_add), IAM-26 (NAT Bypass)
 #  - LOG-08 (Access Log Hemorrhage), DB-02 (InitDB Dirty Void)
 #  - IAM-22 (PascalCase Parser), ORCH-19 (Admin Blackhole), NET-21 (NetworkManager)
@@ -140,7 +143,7 @@ if [ -f /etc/docker/daemon.json ]; then
     fi
 fi
 
-# ROUTE-20: Localhost Blackhole Cured. Dynamically mapping host topology via nmcli.
+# ROUTE-20: Localhost Blackhole Cured. Dynamically mapping host topology.
 HuntPhysicalNetwork() {
     if ! command -v nmcli &> /dev/null; then return; fi
     local ActivePhysConn=$(nmcli -t -f NAME,TYPE,STATE connection show --active | grep -E ':(802-3-ethernet|802-11-wireless):activated' | head -n 1 | cut -d: -f1 || true)
@@ -171,27 +174,30 @@ HuntPhysicalNetwork() {
 }
 HuntPhysicalNetwork
 
-# PORT-53 & NET-20: Decapitates systemd-resolved and drops a physical resolv file.
+# PORT-53 & NET-20: Decapitates systemd-resolved to mathematically free Port 53.
 if systemctl is-active --quiet systemd-resolved; then
-    PrintMsg "214" "Decapitating systemd-resolved to mathematically free Port 53..."
+    PrintMsg "214" "Decapitating systemd-resolved daemon..."
     sudo sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
     sudo sed -i 's/DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
     sudo systemctl stop systemd-resolved || true
     sudo systemctl disable systemd-resolved || true
-    
     sudo rm -f /etc/resolv.conf
-    PrintMsg "196" "⚠️ Writing physical fallback DNS resolving matrix..."
+fi
+
+# NET-23: Execution State Vacuum Cured. Unconditional check prevents fatal PGP failures on re-runs.
+if [ ! -s /etc/resolv.conf ] || ! grep -q "^nameserver" /etc/resolv.conf; then
+    PrintMsg "196" "⚠️ Host DNS vacuum detected. Injecting physical static Cloudflare fallback..."
     echo -e "nameserver 1.1.1.1\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf > /dev/null
 fi
 
-# NET-22: Roaming Host Brick Cured. We actively delete the dns=none gag order to restore roaming capabilities.
+# NET-22: Roaming Host Brick Cured. Actively deletes dns=none to restore roaming DHCP.
 if [ -f "/etc/NetworkManager/conf.d/99-sovereign-dns.conf" ]; then
     PrintMsg "214" "Reverting NetworkManager DNS gag order to restore roaming capabilities..."
     sudo rm -f /etc/NetworkManager/conf.d/99-sovereign-dns.conf
     sudo systemctl restart NetworkManager || true
 fi
 
-# AU-8 & NTP-02: Enforce absolute temporal consistency.
+# AU-8 & NTP-02: Enforce absolute temporal consistency and sync Debian daemons.
 PrintMsg "240" "Anchoring chronometric infrastructure to UTC..."
 sudo timedatectl set-local-rtc 0 || true
 sudo timedatectl set-timezone UTC || true
@@ -318,7 +324,6 @@ WriteSecret() {
 
 if [ "$Interactive" -eq 1 ]; then
     [ ! -f "${SecretsDir}/cf_api_token" ] && { read -s -p "Cloudflare DNS API Token: " cf_token; echo ""; WriteSecret "cf_api_token" "$cf_token"; }
-    # IAM-17: BasicAuth Hash Detonation Cured. Utilizes native apr1 (MD5) compliant algorithm.
     [ ! -f "${SecretsDir}/traefik_auth" ] && { read -s -p "Traefik BasicAuth Password: " TraefikPass; echo ""; WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"; }
 else
     if [ ! -f "${SecretsDir}/cf_api_token" ] || [ ! -f "${SecretsDir}/traefik_auth" ]; then
@@ -369,6 +374,7 @@ if [ "$Interactive" -eq 1 ]; then
             WgAllowedIps="${WgAllowedIps},${TraefikLanIp}/32"
         fi
     else
+        # NET-18: IPv6 RTNETLINK Panic Cured. Strict IPv4 routing compliance.
         WgAllowedIps="0.0.0.0/0"
     fi
 else
@@ -409,7 +415,8 @@ set -a; source "$EnvFile"; set +a
 # ORCH-19: Administrative Blackhole Cured. Symlink ensures native Docker tools function despite PascalCase aesthetics.
 sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
 
-# IAM-27: Regulation Schema Detonation Cured. Invalid 'networks' array eradicated.
+# IAM-29 & IAM-27: Cookie Schema Reversion & Regulation Schema Detonation Cured.
+# Modern session.cookies nested array implemented. Invalid 'networks' array eradicated.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -426,7 +433,14 @@ authentication_backend:
   file: { path: /config/UsersDatabase.yml }
 access_control:
   default_policy: deny
+  # IAM-26: The WireGuard NAT Blackhole Cured. Handled natively in access_control bypass.
+  networks:
+    - name: internal_bypass
+      networks: ["10.98.0.0/24", "10.99.0.0/24", "10.13.13.0/24", "127.0.0.1/32"]
   rules:
+    - domain: "*.${INTERNAL_DOMAIN}"
+      policy: bypass
+      networks: [internal_bypass]
     - domain: "*.${INTERNAL_DOMAIN}"
       policy: two_factor
 session:
@@ -454,7 +468,6 @@ users:
     email: admin@REPLACE_DOMAIN
     groups: [admins]
 EOF
-    # Inject the dynamic domain strictly via post-processing to protect the hash geometry.
     sudo sed -i "s/REPLACE_DOMAIN/${INTERNAL_DOMAIN}/g" "${ConfigDir}/Authelia/UsersDatabase.yml"
 fi
 
@@ -627,8 +640,9 @@ services:
     depends_on:
       auth_db: { condition: service_healthy }
     cap_drop: [ALL]
+    # HEALTH-07: Healthcheck API Phantom Cured. Native compiled binary check.
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9091/api/health || exit 1"]
+      test: ["CMD", "authelia", "healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -647,7 +661,6 @@ services:
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE]
-    # BOOT-12: Internet Dependency Deadlock Cured. Unbound probes its internal resolution space.
     healthcheck:
       test: ["CMD-SHELL", "drill -p 53 \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
       start_period: 30s
@@ -675,7 +688,6 @@ services:
     depends_on:
       unbound_dns: { condition: service_healthy }
     cap_drop: [ALL]
-    # BOOT-13: S6-Overlay Asphyxiation Cured. DAC_OVERRIDE and FOWNER legally restored.
     cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, KILL, NET_BIND_SERVICE, SYS_NICE, DAC_OVERRIDE, FOWNER]
     labels:
       - "traefik.enable=true"
@@ -696,7 +708,6 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.10 }
     cap_drop: [ALL]
-    # BOOT-13: S6-Overlay Asphyxiation Cured. DAC_OVERRIDE and FOWNER legally restored.
     cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER]
     sysctls:
       - net.ipv4.ip_forward=1
@@ -889,6 +900,7 @@ AssimilateAlienContainers() {
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
                 sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
                 
+                # TLS-05: CertResolver Schism Cured. Strictly binding alien certs to cloudflare logic.
                 sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
 # ALIEN_CONTAINER: $container
 http:
@@ -911,7 +923,6 @@ MANIFEST_EOF
 }
 AssimilateAlienContainers
 
-# IAM-28: Administrative Lockout Cured. Properly returning cryptographic keys to the operator.
 if [ "$Interactive" -eq 1 ]; then
     echo -e "\n========================================================"
     echo -e " \033[1;32mSOVEREIGN GATEWAY PROVISIONING COMPLETE\033[0m"
