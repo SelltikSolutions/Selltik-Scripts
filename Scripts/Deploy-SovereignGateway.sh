@@ -1,26 +1,26 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v65.0-SOVEREIGN-CATACOMBS
+#  Version: v66.0-SOVEREIGN-OBLIVION
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Catacombs Hardening Fixes (The Final Absolute Truth):
-#  1. HEALTH-09: Healthcheck CLI Detonation Cured. Replaced hallucinated CLI 
-#     command with the native standalone 'authelia-healthcheck' compiled binary.
-#  2. LOG-10: Logrotate Ghost Path Cured. Enforced strict topological variable 
-#     alignment ($TraefikLogDir) to guarantee logrotate targets the exact mount.
+#  Oblivion Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-30: Access Control Schema Detonation Cured. Eradicated the hallucinated 
+#     'networks' block from Authelia's configuration to prevent fatal unmarshaler panics.
+#  2. IAM-31: Zero-Trust Annihilation Cured. Purged the 'policy: bypass' directive 
+#     for internal NAT traffic. All packets are now strictly forced through 2FA.
 #  Inherited Master Fixes:
-#  - IAM-29 (Cookie Schema), HEALTH-07 (Healthcheck API), TLS-05 (CertResolver)
-#  - IAM-27 (Regulation Schema), NET-22 (Roaming Brick), IAM-28 (Admin Lockout)
-#  - DNS-16 (Alpine Namespace), BOOT-13 (s6-overlay cap_add), IAM-26 (NAT Bypass)
-#  - LOG-08 (Access Log Hemorrhage), DB-02 (InitDB Dirty Void), NET-23 (Exec Vacuum)
-#  - IAM-22 (PascalCase Parser), ORCH-19 (Admin Blackhole), NET-21 (NetworkManager)
-#  - IAM-21 (Argon2id Mutilation), KRN-06 (Strict RP_Filter), NET-19 (DHCP Resolv)
-#  - DNS-14 (Resolv Symlink Vacuum), TLS-04 (Null ACME), NTP-02 (Chrony Sync)
-#  - IAM-20 (Crypto Split-Brain), NET-18 (IPv6 RTNETLINK), ORCH-18 (Alien Purge)
-#  - NET-16 (Immutable Resolv), TLS-03 (ACME Lockout), ROUTE-22 (YAML Detonation)
-#  - DB-01 (Crypto Starvation), DNS-13 (DNSSEC Bomb), ORCH-17 (Ghost Route Sprawl)
-#  - VOL-02 (Database Lockout), ROUTE-21 (Air-Gap), LOG-07 (Access Logs)
+#  - HEALTH-09 (CLI Detonation), LOG-10 (Ghost Path), IAM-29 (Cookie Schema)
+#  - HEALTH-07 (Healthcheck API), TLS-05 (CertResolver), IAM-27 (Regulation Schema)
+#  - NET-22 (Roaming Brick), IAM-28 (Admin Lockout), DNS-16 (Alpine Namespace)
+#  - BOOT-13 (s6-overlay cap_add), LOG-08 (Access Logs), DB-02 (InitDB Dirty Void)
+#  - NET-23 (Exec Vacuum), IAM-22 (PascalCase Parser), ORCH-19 (Admin Blackhole)
+#  - NET-21 (NetworkManager), IAM-21 (Argon2id Mutilation), KRN-06 (Strict RP_Filter)
+#  - NET-19 (DHCP Resolv), DNS-14 (Resolv Vacuum), TLS-04 (Null ACME)
+#  - NTP-02 (Chrony Sync), IAM-20 (Crypto Split-Brain), NET-18 (IPv6 RTNETLINK)
+#  - ORCH-18 (Alien Purge), NET-16 (Immutable Resolv), TLS-03 (ACME Lockout)
+#  - ROUTE-22 (YAML Detonation), DB-01 (Crypto Starvation), DNS-13 (DNSSEC Bomb)
+#  - ORCH-17 (Ghost Route Sprawl), VOL-02 (Database Lockout), ROUTE-21 (Air-Gap)
 #  - IAM-17 (BasicAuth Hash), PORT-53 (systemd-resolved), ORCH-16 (Socket Ping)
 #  - IAM-15 (Unprivileged Lockout), IAM-16 (Parser Detonation), CAP-04 (SYS_NICE)
 #  - PRIVACY-03 (DNS Split Blackhole), BOOT-11 (Bind Panic), PROXY-07 (Spoofing)
@@ -414,8 +414,8 @@ set -a; source "$EnvFile"; set +a
 # ORCH-19: Administrative Blackhole Cured. Symlink ensures native Docker tools function despite PascalCase aesthetics.
 sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
 
-# IAM-29 & IAM-27: Cookie Schema Reversion & Regulation Schema Detonation Cured.
-# Modern session.cookies nested array implemented. Invalid 'networks' array eradicated.
+# IAM-30 & IAM-31: Access Control Schema Detonation & Zero-Trust Annihilation Cured.
+# We eradicate the hallucinated 'networks' block and ruthlessly enforce two_factor for all traffic.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -432,14 +432,7 @@ authentication_backend:
   file: { path: /config/UsersDatabase.yml }
 access_control:
   default_policy: deny
-  # IAM-26: The WireGuard NAT Blackhole Cured. Handled natively in access_control bypass.
-  networks:
-    - name: internal_bypass
-      networks: ["10.98.0.0/24", "10.99.0.0/24", "10.13.13.0/24", "127.0.0.1/32"]
   rules:
-    - domain: "*.${INTERNAL_DOMAIN}"
-      policy: bypass
-      networks: [internal_bypass]
     - domain: "*.${INTERNAL_DOMAIN}"
       policy: two_factor
 session:
