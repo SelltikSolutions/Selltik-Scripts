@@ -1,27 +1,27 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v80.0-SOVEREIGN-ASTRAL
+#  Version: v81.0-SOVEREIGN-MONOLITH
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Astral Hardening Fixes (The Final Absolute Truth):
-#  1. BOOT-16: S6-Overlay Init Paradox Cured. Extracted the volatile custom-init 
-#     script and deployed an indestructible awk parser to physically seed the 
-#     WireGuard template and inject active NAT return rules on every deployment.
-#  2. IAM-38: Deprecated Authz Endpoint Cured. Upgraded the Traefik middleware 
-#     forwardAuth definition to target the modern v4.38+ /api/authz/forward-auth 
-#     endpoint, eradicating the permanent 404 authentication void.
+#  Monolith Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-41: Unmarshaler Detonation Cured. Eradicated the deprecated password_file 
+#     key from Authelia's YAML generation struct to prevent fatal daemon panics.
+#  2. CONFIG-02: Double-Injected PreDown Parasites Cured. Constrained AWK regex 
+#     to target ONLY the PostUp masquerade hook, preventing duplicate rule stacking.
 #  Inherited Master Fixes:
-#  - ENV-05 (Strict Nounset Detonation), BOOT-15 (S6-Overlay Init Destruction)
+#  - BOOT-16 (S6 Init Paradox), IAM-38 (Deprecated Authz Endpoint)
+#  - TLS-08 (ACME Ghosting), CONFIG-01 (Template Stagnation), SEC-36 (DMZ Bypass)
 #  - SEC-35 (Lateral Trust Hallucination), IAM-40 (Idempotent Password Wipe)
-#  - ORCH-26 (Watchdog Amnesia), ROUTE-26 (Whitelist Trap), IAM-37 (Communal Ban)
-#  - NET-28 (Watchdog Boot-Storm), IAM-36 (Immutable Ledger), ROUTE-25 (CDN Blackhole)
-#  - DNS-20 (LAN Void), NET-27 (NAT Bypass Timing), SEC-32 (L3 Engine Exposure)
-#  - SEC-33 (VPN Whitelist), SEC-31 (Lateral Header Spoofing), DNS-19 (Phantom Sinkhole)
-#  - ROUTE-24 (Cross-Bridge Void), LOG-12 (Root Ownership), IAM-35 (Immutable DB)
-#  - SEC-29 (Air-Gap Breach), IAM-34 (Brute-Force Immunity), LOG-11 (Parent Panic)
-#  - IAM-33 (Fail2Ban Mass Extinction), SEC-28 (Header Spoofing), DNS-17 (Loopback)
-#  - TLS-07 (Traefik CLI Detonation), ROUTE-23 (Asymmetrical Routing Void)
+#  - ORCH-26 (Watchdog Amnesia), ENV-05 (Strict Nounset Detonation)
+#  - BOOT-15 (S6-Overlay Init Destruction), ROUTE-26 (Whitelist Trap)
+#  - IAM-37 (Communal Ban), NET-28 (Watchdog Boot-Storm), IAM-36 (Immutable Ledger)
+#  - ROUTE-25 (CDN Blackhole), DNS-20 (LAN Void), NET-27 (NAT Bypass Timing)
+#  - SEC-32 (L3 Engine Exposure), SEC-33 (VPN Whitelist), SEC-31 (Lateral Header Spoofing)
+#  - DNS-19 (Phantom LAN Sinkhole), ROUTE-24 (Cross-Bridge Void), LOG-12 (Root Ownership)
+#  - IAM-35 (Immutable DB), SEC-29 (Air-Gap Breach), IAM-34 (Brute-Force Immunity)
+#  - LOG-11 (Parent Panic), IAM-33 (Fail2Ban Mass Extinction), SEC-28 (Header Spoofing)
+#  - DNS-17 (Loopback), TLS-07 (Traefik CLI Detonation), ROUTE-23 (Asymmetrical Routing Void)
 #  - ORCH-24 (Event Stream Blindness), ORCH-22 (HAProxy/Socat Schism)
 #  - BOOT-14 (Module Capability Asphyxiation), IAM-30 (Access Control Schema)
 #  - IAM-31 (Zero-Trust NAT Annihilation), DB-03 (Posix Asphyxiation)
@@ -440,12 +440,12 @@ PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d ${TraefikLanIp}/32 
 EOF
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/templates"
 
-# CONFIG-01: WireGuard Template Stagnation Cured.
-# If the configuration already exists, we deploy an indestructible awk parser to dynamically 
-# inject the live RETURN rules directly into wg0.conf, preserving existing private keys.
+# CONFIG-01 & CONFIG-02: WireGuard Template Stagnation & Double-Injection Parasites Cured.
+# Active parsing logic dynamically injects the physical LAN IP routing bypass directly into 
+# the active wg0.conf exactly ONCE on every boot, guarding against template stagnation and duplicate iptables traces.
 if [ -f "${ConfigDir}/WireGuard/wg0.conf" ]; then
     sudo sed -i '/-j RETURN/d' "${ConfigDir}/WireGuard/wg0.conf"
-    sudo awk '/-j MASQUERADE/ {print; print "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN || true"; next}1' "${ConfigDir}/WireGuard/wg0.conf" > /tmp/wg0.tmp && sudo mv /tmp/wg0.tmp "${ConfigDir}/WireGuard/wg0.conf"
+    sudo awk '/PostUp.*-j MASQUERADE/ {print; print "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN || true"; next}1' "${ConfigDir}/WireGuard/wg0.conf" > /tmp/wg0.tmp && sudo mv /tmp/wg0.tmp "${ConfigDir}/WireGuard/wg0.conf"
     sudo chown "$HostUid:$HostGid" "${ConfigDir}/WireGuard/wg0.conf"
 fi
 
@@ -481,8 +481,9 @@ set -a; source "$EnvFile"; set +a
 # ORCH-19: Administrative Blackhole Cured. Symlink ensures native Docker tools function despite PascalCase aesthetics.
 sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
 
-# IAM-36: Hardcoded Immutable Ledger Cured. 
+# IAM-36 & IAM-41: Hardcoded Immutable Ledger & Unmarshaler Detonation Cured. 
 # Reverted password_reset strict disable flag to restore physical credential rotation.
+# Surgically eradicated the deprecated password_file key from the YAML struct to prevent fatal daemon parsing panics.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -493,7 +494,6 @@ storage:
     port: 5432
     database: authelia
     username: authelia
-    password_file: /run/secrets/postgres_password
 authentication_backend:
   password_reset: { disable: false }
   file: { path: /config/UsersDatabase.yml }
@@ -807,7 +807,7 @@ services:
     container_name: traefik_proxy
     networks: [socket_network, proxy_network]
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
-    # LOG-12: Root Ownership Paradox Cured. Explicit alignment with root:root host volume.
+    # TLS-08: ACME Directory Ghosting Cured. Explicit alignment with root:root host volume.
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
       - ${TraefikAcmeFile}:/etc/traefik/acme/acme.json:rw
@@ -824,7 +824,6 @@ services:
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.websecure.address=:443"
-      # ROUTE-25: Cloudflare CDN Blackhole Cured. Dynamically ingests upstream Edge IPs natively.
       - "--entrypoints.websecure.forwardedHeaders.trustedIPs=\${TRAEFIK_TRUSTED_IPS}"
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
