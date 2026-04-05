@@ -1,31 +1,33 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v69.0-SOVEREIGN-SINGULARITY
+#  Version: v70.0-SOVEREIGN-TITAN
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Singularity Hardening Fixes (The Final Absolute Truth):
-#  1. TLS-07: Traefik CLI Detonation Cured. Eradicated the invalid boolean 
-#     dnschallenge flag. Struct implicit activation via provider is now enforced.
-#  2. ROUTE-23: Asymmetrical Routing Blackhole Cured. Amputated the brittle NAT 
-#     bypass script from WireGuard. Restored native MASQUERADE to fix the return path.
-#  3. ORCH-24: Event Stream Blindness Cured. Injected EVENTS=1 into the HAProxy 
-#     socket proxy to legally authorize Traefik's dynamic container discovery.
+#  Titan Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-33: Fail2Ban Mass Extinction Cured. Injected ignore_networks into 
+#     the regulation matrix to protect the WireGuard fleet from NAT bans.
+#  2. SEC-28: Air-Gap Annihilation Cured. Amputated massive RFC1918 blocks from 
+#     Traefik's trustedIPs to mathematically block X-Forwarded-For spoofing.
+#  3. DNS-17: Loopback Sinkhole Cured. Default LAN IP fallback surgically mapped 
+#     to the immutable 10.99.0.1 Docker gateway instead of a 127.0.0.1 blackhole.
 #  Inherited Master Fixes:
-#  - ORCH-22 (HAProxy/Socat Schism), BOOT-14 (Module Capability Asphyxiation)
-#  - IAM-30 (Access Control Schema), IAM-31 (Zero-Trust NAT Annihilation)
-#  - DB-03 (Posix Asphyxiation), TLS-06 (ACME Challenge), ORCH-21 (Update Chain)
-#  - HEALTH-09 (CLI Detonation), LOG-10 (Ghost Path), IAM-29 (Cookie Schema)
-#  - HEALTH-07 (Healthcheck API), TLS-05 (CertResolver), IAM-27 (Regulation Schema)
-#  - NET-22 (Roaming Brick), IAM-28 (Admin Lockout), DNS-16 (Alpine Namespace)
-#  - BOOT-13 (s6-overlay cap_add), LOG-08 (Access Logs), DB-02 (InitDB Dirty Void)
-#  - NET-23 (Exec Vacuum), IAM-22 (PascalCase Parser), ORCH-19 (Admin Blackhole)
-#  - NET-21 (NetworkManager), IAM-21 (Argon2id Mutilation), KRN-06 (Strict RP_Filter)
-#  - NET-19 (DHCP Resolv), DNS-14 (Resolv Vacuum), TLS-04 (Null ACME)
-#  - NTP-02 (Chrony Sync), IAM-20 (Crypto Split-Brain), NET-18 (IPv6 RTNETLINK)
-#  - ORCH-18 (Alien Purge), NET-16 (Immutable Resolv), TLS-03 (ACME Lockout)
-#  - ROUTE-22 (YAML Detonation), DB-01 (Crypto Starvation), DNS-13 (DNSSEC Bomb)
-#  - ORCH-17 (Ghost Route Sprawl), VOL-02 (Database Lockout), ROUTE-21 (Air-Gap)
+#  - TLS-07 (Traefik CLI Detonation), ROUTE-23 (Asymmetrical Routing Void)
+#  - ORCH-24 (Event Stream Blindness), ORCH-22 (HAProxy/Socat Schism)
+#  - BOOT-14 (Module Capability Asphyxiation), IAM-30 (Access Control Schema)
+#  - IAM-31 (Zero-Trust NAT Annihilation), DB-03 (Posix Asphyxiation)
+#  - TLS-06 (ACME Challenge), ORCH-21 (Update Chain), HEALTH-09 (CLI Detonation)
+#  - LOG-10 (Ghost Path), IAM-29 (Cookie Schema), HEALTH-07 (Healthcheck API)
+#  - TLS-05 (CertResolver), IAM-27 (Regulation Schema), NET-22 (Roaming Brick)
+#  - IAM-28 (Admin Lockout), DNS-16 (Alpine Namespace), BOOT-13 (s6-overlay cap)
+#  - LOG-08 (Access Logs), DB-02 (InitDB Dirty Void), NET-23 (Exec Vacuum)
+#  - IAM-22 (PascalCase Parser), ORCH-19 (Admin Blackhole), NET-21 (NetworkManager)
+#  - IAM-21 (Argon2id Mutilation), KRN-06 (Strict RP_Filter), NET-19 (DHCP Resolv)
+#  - DNS-14 (Resolv Vacuum), TLS-04 (Null ACME), NTP-02 (Chrony Sync)
+#  - IAM-20 (Crypto Split-Brain), NET-18 (IPv6 RTNETLINK), ORCH-18 (Alien Purge)
+#  - NET-16 (Immutable Resolv), TLS-03 (ACME Lockout), ROUTE-22 (YAML Detonation)
+#  - DB-01 (Crypto Starvation), DNS-13 (DNSSEC Bomb), ORCH-17 (Ghost Route Sprawl)
+#  - VOL-02 (Database Lockout), ROUTE-21 (Air-Gap), LOG-07 (Access Logs)
 #  - IAM-17 (BasicAuth Hash), PORT-53 (systemd-resolved), ORCH-16 (Socket Ping)
 #  - IAM-15 (Unprivileged Lockout), IAM-16 (Parser Detonation), CAP-04 (SYS_NICE)
 #  - PRIVACY-03 (DNS Split Blackhole), BOOT-11 (Bind Panic), PROXY-07 (Spoofing)
@@ -288,11 +290,6 @@ sudo chown -R 70:70 "${ConfigDir}/Postgres"
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard" "${ConfigDir}/Authelia" "$TraefikLogDir"
 sudo chown -R 999:999 "${ConfigDir}/PiHole"
 
-# ROUTE-23: Asymmetrical Routing Blackhole Cured. 
-# We explicitly allow WireGuard to MASQUERADE the outbound traffic. 
-# Attempting to bypass NAT at Layer 3 breaks the physical host's return path.
-sudo rm -rf "${ConfigDir}/WireGuard/custom-cont-init.d" 2>/dev/null || true
-
 # Prevent authelia from crashing trying to touch an inexistent file.
 sudo touch "${ConfigDir}/Authelia/notification.txt"
 sudo chown "$HostUid:$HostGid" "${ConfigDir}/Authelia/notification.txt"
@@ -367,8 +364,10 @@ if [ "$Interactive" -eq 1 ]; then
         PrintMsg "196" "[FATAL] ACME schema requires a valid email. Null values are prohibited."
     done
 
+    # DNS-17: Loopback Sinkhole Paradox Cured. Defaulting to proxy gateway to prevent local routing deadlocks.
     read -p "Monolith LAN IP [$PrevLanIp]: " input_lan; TraefikLanIp="${input_lan:-$PrevLanIp}"
-    TraefikLanIp="${TraefikLanIp:-127.0.0.1}"
+    TraefikLanIp="${TraefikLanIp:-10.99.0.1}"
+    
     read -p "WireGuard Peer Count [$PrevWgPeers]: " input_peers; WgPeers="${input_peers:-$PrevWgPeers}"
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
     [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && AcmeServerUrl="https://acme-v02.api.letsencrypt.org/directory" || AcmeServerUrl="https://acme-staging-v02.api.letsencrypt.org/directory"
@@ -379,7 +378,7 @@ if [ "$Interactive" -eq 1 ]; then
         WgAllowedIps="10.13.13.0/24,10.99.0.0/24"
         if [ -n "$PrevLanSubnet" ]; then
             WgAllowedIps="${WgAllowedIps},${PrevLanSubnet}"
-        elif [ -n "$TraefikLanIp" ] && [ "$TraefikLanIp" != "127.0.0.1" ]; then
+        elif [ -n "$TraefikLanIp" ] && [ "$TraefikLanIp" != "10.99.0.1" ]; then
             WgAllowedIps="${WgAllowedIps},${TraefikLanIp}/32"
         fi
     else
@@ -392,7 +391,7 @@ else
         exit 1
     fi
     WgEndpoint="${PrevEndpoint}"; InternalDomain="${PrevDomain}"; AcmeEmail="${PrevEmail}"
-    TraefikLanIp="${PrevLanIp:-127.0.0.1}"; WgPeers="${PrevWgPeers}"; AcmeServerUrl="${PrevAcme}"
+    TraefikLanIp="${PrevLanIp:-10.99.0.1}"; WgPeers="${PrevWgPeers}"; AcmeServerUrl="${PrevAcme}"
     WgAllowedIps="${PrevAllowedIps}"
 fi
 
@@ -424,8 +423,9 @@ set -a; source "$EnvFile"; set +a
 # ORCH-19: Administrative Blackhole Cured. Symlink ensures native Docker tools function despite PascalCase aesthetics.
 sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
 
-# IAM-30 & IAM-31: Access Control Schema Detonation & Zero-Trust Annihilation Cured.
-# We eradicate the hallucinated 'networks' block and ruthlessly enforce two_factor for all traffic.
+# IAM-29, IAM-30, IAM-31, & IAM-33: Complete Identity Regulation Overhaul.
+# Modern session.cookies nested array. Strict two_factor enforcement. 
+# Explicit ignore_networks whitelisting to prevent communal NAT mass extinction.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -456,6 +456,10 @@ regulation:
   max_retries: 3
   find_time: 120
   ban_time: 300
+  ignore_networks:
+    - "10.98.0.0/24"
+    - "10.99.0.0/24"
+    - "127.0.0.1/32"
 notifier:
   filesystem: { filename: /config/notification.txt }
 EOF
@@ -760,11 +764,11 @@ services:
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.websecure.address=:443"
-      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.98.0.0/24,10.99.0.0/24,192.168.0.0/16,172.16.0.0/12,10.0.0.0/8"
+      # SEC-28: Air-Gap Annihilation Cured. Ruthlessly amputated external RFC1918 trusts to block spoofing.
+      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.98.0.0/24,10.99.0.0/24"
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme/acme.json"
-      # TLS-07: Traefik CLI Detonation Cured. Implicit struct activation via provider enforcement.
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
       - "--accesslog=true"
       - "--accesslog.filepath=/var/log/traefik/access.log"
