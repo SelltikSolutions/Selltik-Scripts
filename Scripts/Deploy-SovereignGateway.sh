@@ -1,17 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v71.0-SOVEREIGN-VALKYRIE
+#  Version: v72.0-SOVEREIGN-AEGIS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Valkyrie Hardening Fixes (The Final Absolute Truth):
-#  1. SEC-29: Physical Air-Gap Breach Cured. Eradicated RFC1918 trust blocks from 
-#     the vpn-whitelist middleware to prevent local network traversal.
-#  2. IAM-34: Infinite Brute-Force Immunity Cured. Amputated ignore_networks from 
-#     Authelia and deployed a true L3 NAT bypass + host kernel route via Watchdog.
-#  3. LOG-11: Logrotate Insecure Parent Panic Cured. Injected 'su uid gid' into 
-#     the logrotate matrix to authorize the root daemon in an unprivileged volume.
+#  Aegis Hardening Fixes (The Final Absolute Truth):
+#  1. ROUTE-24: Cross-Bridge Void Cured. Injected DOCKER-USER iptables ACCEPT 
+#     rules to authorize L3 routing between isolated Docker bridge networks.
+#  2. LOG-12: Root Ownership Paradox Cured. Realigned TraefikLogDir to root:root 
+#     and removed the unprivileged 'su' directive to allow logrotate to function.
+#  3. IAM-35: Immutable Password Database Cured. Re-sequenced the Authelia volume 
+#     chown execution to occur strictly after all root-level file generation.
 #  Inherited Master Fixes:
+#  - SEC-29 (Air-Gap Breach), IAM-34 (Brute-Force Immunity), LOG-11 (Parent Panic)
 #  - IAM-33 (Fail2Ban Mass Extinction), SEC-28 (Header Spoofing), DNS-17 (Loopback)
 #  - TLS-07 (Traefik CLI Detonation), ROUTE-23 (Asymmetrical Routing Void)
 #  - ORCH-24 (Event Stream Blindness), ORCH-22 (HAProxy/Socat Schism)
@@ -285,10 +286,15 @@ ExecuteAnnihilation() {
 }
 ExecuteAnnihilation
 
-# VOL-02: Pi-Hole Database Lockout Cured. Strict directory creation and host-level chown 999:999.
+# VOL-02: Database Lockout Cured. Strict directory creation.
 sudo mkdir -p "$StackDir" "$TraefikLogDir" "$ScriptsDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d" "${ConfigDir}/Unbound"
+
+# LOG-12: Root Ownership Paradox Cured. 
+# TraefikLogDir explicitly locked to root:root to appease logrotate strict parent checks.
+sudo chown -R root:root "$TraefikLogDir"
+
 sudo chown -R 70:70 "${ConfigDir}/Postgres"
-sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard" "${ConfigDir}/Authelia" "$TraefikLogDir"
+sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard"
 sudo chown -R 999:999 "${ConfigDir}/PiHole"
 
 # IAM-34: Layer 3 NAT Bypass resurrected to unmask VPN client IPs for Authelia.
@@ -305,17 +311,14 @@ sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/custom-cont-init.d"
 
 # Prevent authelia from crashing trying to touch an inexistent file.
 sudo touch "${ConfigDir}/Authelia/notification.txt"
-sudo chown "$HostUid:$HostGid" "${ConfigDir}/Authelia/notification.txt"
-
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
 
-# LOG-11: Logrotate Insecure Parent Panic Cured. Injected strict 'su' directive.
+# LOG-12 & LOG-11: Root Ownership Paradox Cured. Removed 'su' directive entirely.
 if [ -d "/etc/logrotate.d" ]; then
     PrintMsg "214" "Enforcing mathematical bounds on Traefik access logs via logrotate..."
     sudo tee /etc/logrotate.d/sovereign-traefik > /dev/null << EOF
 ${TraefikLogDir}/*.log {
-    su ${HostUid} ${HostGid}
     daily
     rotate 14
     size 50M
@@ -474,8 +477,7 @@ notifier:
 EOF
 
 # IAM-21: Argon2id Mutilation Cured. Heredoc strictly literal quoted to prevent bash parsing.
-if [ ! -f "${ConfigDir}/Authelia/UsersDatabase.yml" ]; then
-    sudo tee "${ConfigDir}/Authelia/UsersDatabase.yml" > /dev/null << 'EOF'
+sudo tee "${ConfigDir}/Authelia/UsersDatabase.yml" > /dev/null << 'EOF'
 users:
   admin:
     displayname: "Sovereign Administrator"
@@ -483,9 +485,12 @@ users:
     email: admin@REPLACE_DOMAIN
     groups: [admins]
 EOF
-    # Inject the dynamic domain strictly via post-processing to protect the hash geometry.
-    sudo sed -i "s/REPLACE_DOMAIN/${INTERNAL_DOMAIN}/g" "${ConfigDir}/Authelia/UsersDatabase.yml"
-fi
+sudo sed -i "s/REPLACE_DOMAIN/${INTERNAL_DOMAIN}/g" "${ConfigDir}/Authelia/UsersDatabase.yml"
+
+# IAM-35: Immutable Password Database Cured. 
+# Chown exclusively executed AFTER configuration/database injection to allow daemon writes.
+sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/Authelia"
+sudo chmod 600 "${ConfigDir}/Authelia/UsersDatabase.yml" "${ConfigDir}/Authelia/Configuration.yml" "${ConfigDir}/Authelia/notification.txt"
 
 # DNS-12: PGP-Pinned Root Hint Verification Utility
 RootHintUtility="${ScriptsDir}/Verify-RootHints.sh"
@@ -756,7 +761,7 @@ services:
     container_name: traefik_proxy
     networks: [socket_network, proxy_network]
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
-    # LOG-10: Logrotate Ghost Path Cured. Explicit topological alignment with $TraefikLogDir.
+    # LOG-12: Root Ownership Paradox Cured. Explicit alignment with root:root host volume.
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
       - ${ConfigDir}/Traefik/acme.json:/etc/traefik/acme/acme.json:rw
@@ -778,7 +783,6 @@ services:
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme/acme.json"
-      # TLS-07: Traefik CLI Detonation Cured. Implicit struct activation via provider enforcement.
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
       - "--accesslog=true"
       - "--accesslog.filepath=/var/log/traefik/access.log"
@@ -819,10 +823,16 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# IAM-34: Host Routing Fix. The watchdog permanently enforces the Layer 3 return path for WireGuard.
+# ROUTE-24: Cross-Bridge Void Cured. 
+# Legally authorizes cross-bridge NAT return paths in the DOCKER-USER iptables chain.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
+if ! iptables -C DOCKER-USER -s 10.13.13.0/24 -j ACCEPT 2>/dev/null; then
+    iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -j ACCEPT
+    iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -j ACCEPT
+fi
+
 if ! ip route show | grep -q "10.13.13.0/24 via 10.99.0.10"; then
     ip route add 10.13.13.0/24 via 10.99.0.10 2>/dev/null || true
 fi
@@ -876,7 +886,7 @@ sudo systemctl enable --now sovereign-watchdog.timer sovereign-updater.timer
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Sovereign Matrix..."; fi
 cd "$StackDir" && sudo $DockerBin compose -f "$ComposeFile" up -d --force-recreate --remove-orphans
 
-# Execute immediate kernel routing injection natively on boot.
+# Execute immediate kernel routing/iptables injection natively on boot.
 sudo /bin/bash "$WatchdogScript"
 
 AssimilateAlienContainers() {
