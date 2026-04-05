@@ -1,26 +1,27 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v78.0-SOVEREIGN-PARAGON
+#  Version: v79.0-SOVEREIGN-EXCALIBUR
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Paragon Hardening Fixes (The Final Absolute Truth):
-#  1. SEC-35: Lateral Trust Hallucination Cured. Eradicated internal Docker subnets 
-#     from TraefikTrustedIps. The proxy now mathematically refuses forged headers from the DMZ.
-#  2. IAM-40: Idempotent Password Wipe Cured. Wrapped UsersDatabase.yml in a strict 
-#     existence check. Routine deployments no longer factory-reset the administrator hash.
-#  3. ORCH-26: Watchdog Amnesia Cured. Amputated destructive 'rm -f' logic. The 
-#     drone no longer deletes ingress manifests during container maintenance windows.
+#  Excalibur Hardening Fixes (The Final Absolute Truth):
+#  1. TLS-08: ACME Directory Ghosting Cured. Realigned script variables to target 
+#     the true TraefikAcme volume mount. CA pivots will now correctly wipe state.
+#  2. CONFIG-01: WireGuard Template Stagnation Cured. The init script now uses sed 
+#     to dynamically replace legacy RETURN rules in the active wg0.conf on boot.
+#  3. SEC-36: L3 DMZ Bypass Cured. Watchdog DOCKER-USER rules are now restricted 
+#     exclusively to TCP 80/443, mathematically trapping VPN users behind Traefik.
 #  Inherited Master Fixes:
-#  - ENV-05 (Strict Nounset Detonation), BOOT-15 (S6-Overlay Init Destruction)
-#  - ROUTE-26 (Whitelist Trap), IAM-37 (Communal Ban), NET-28 (Watchdog Boot-Storm)
-#  - IAM-36 (Immutable Ledger), ROUTE-25 (CDN Blackhole), DNS-20 (LAN Void)
-#  - NET-27 (NAT Bypass Timing), SEC-32 (L3 Engine Exposure), SEC-33 (VPN Whitelist)
-#  - SEC-31 (Lateral Header Spoofing), DNS-19 (Phantom LAN Sinkhole)
-#  - ROUTE-24 (Cross-Bridge Void), LOG-12 (Root Ownership), IAM-35 (Immutable DB)
-#  - SEC-29 (Air-Gap Breach), IAM-34 (Brute-Force Immunity), LOG-11 (Parent Panic)
-#  - IAM-33 (Fail2Ban Mass Extinction), SEC-28 (Header Spoofing), DNS-17 (Loopback)
-#  - TLS-07 (Traefik CLI Detonation), ROUTE-23 (Asymmetrical Routing Void)
+#  - SEC-35 (Lateral Trust Hallucination), IAM-40 (Idempotent Password Wipe)
+#  - ORCH-26 (Watchdog Amnesia), ENV-05 (Strict Nounset Detonation)
+#  - BOOT-15 (S6-Overlay Init Destruction), ROUTE-26 (Whitelist Trap)
+#  - IAM-37 (Communal Ban), NET-28 (Watchdog Boot-Storm), IAM-36 (Immutable Ledger)
+#  - ROUTE-25 (CDN Blackhole), DNS-20 (LAN Void), NET-27 (NAT Bypass Timing)
+#  - SEC-32 (L3 Engine Exposure), SEC-33 (VPN Whitelist), SEC-31 (Lateral Header Spoofing)
+#  - DNS-19 (Phantom LAN Sinkhole), ROUTE-24 (Cross-Bridge Void), LOG-12 (Root Ownership)
+#  - IAM-35 (Immutable DB), SEC-29 (Air-Gap Breach), IAM-34 (Brute-Force Immunity)
+#  - LOG-11 (Parent Panic), IAM-33 (Fail2Ban Mass Extinction), SEC-28 (Header Spoofing)
+#  - DNS-17 (Loopback), TLS-07 (Traefik CLI Detonation), ROUTE-23 (Asymmetrical Routing Void)
 #  - ORCH-24 (Event Stream Blindness), ORCH-22 (HAProxy/Socat Schism)
 #  - BOOT-14 (Module Capability Asphyxiation), IAM-30 (Access Control Schema)
 #  - IAM-31 (Zero-Trust NAT Annihilation), DB-03 (Posix Asphyxiation)
@@ -59,6 +60,8 @@ StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
 TraefikLogDir="${LogsDir}/Traefik"
+TraefikAcmeDir="${ConfigDir}/TraefikAcme"
+TraefikAcmeFile="${TraefikAcmeDir}/acme.json"
 
 # Native Engine Discovery (PascalCase Enforcement)
 ComposeFile="${StackDir}/DockerCompose.yml"
@@ -222,7 +225,7 @@ elif systemctl is-active --quiet systemd-timesyncd; then
     sudo systemctl restart systemd-timesyncd || true
 fi
 
-# ROUTE-25: Cloudflare CDN Blackhole Cured. Dynamically mapping explicit upstream proxy IP vectors.
+# ROUTE-25: Cloudflare CDN Blackhole Cured. Dynamically mapping upstream Edge IP vectors.
 # SEC-35: Lateral Trust Hallucination Cured. Eradicated internal Docker subnets from the array.
 PrintMsg "240" "Fetching Cloudflare Edge IP ranges for Layer 7 header authentication..."
 CfIpsV4=$(curl -s --max-time 10 https://www.cloudflare.com/ips-v4 | tr '\n' ',' || echo "173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22")
@@ -293,7 +296,7 @@ ExecuteAnnihilation() {
             cd "$StackDir" && sudo $DockerBin compose -f "$ComposeFile" down -v --remove-orphans > /dev/null 2>&1 || true
             PrintMsg "214" "Mathematically shredding cryptographic master keys..."
             [ -d "${SecretsDir}" ] && sudo find "${SecretsDir}" -type f -exec shred -u {} \; || true
-            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound" "$LogsDir"
+            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound" "$LogsDir" "$TraefikAcmeDir"
             PrintMsg "82" "✔ Earth scorched. Magnetic persistence neutralized."
         fi
     fi
@@ -301,11 +304,10 @@ ExecuteAnnihilation() {
 ExecuteAnnihilation
 
 # VOL-02: Database Lockout Cured. Strict directory creation.
-sudo mkdir -p "$StackDir" "$TraefikLogDir" "$ScriptsDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d" "${ConfigDir}/Unbound"
+sudo mkdir -p "$StackDir" "$TraefikLogDir" "$ScriptsDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d" "${ConfigDir}/Unbound" "$TraefikAcmeDir"
 
 # LOG-12: Root Ownership Paradox Cured. 
-# TraefikLogDir explicitly locked to root:root to appease logrotate strict parent checks.
-sudo chown -R root:root "$TraefikLogDir"
+sudo chown -R root:root "$TraefikLogDir" "$TraefikAcmeDir"
 
 sudo chown -R 70:70 "${ConfigDir}/Postgres"
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard"
@@ -313,7 +315,8 @@ sudo chown -R 999:999 "${ConfigDir}/PiHole"
 
 # Prevent authelia from crashing trying to touch an inexistent file.
 sudo touch "${ConfigDir}/Authelia/notification.txt"
-sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
+# TLS-08: ACME Directory Ghosting Cured. Targeting the TRUE mounted volume path to protect state.
+sudo touch "$TraefikAcmeFile"; sudo chmod 600 "$TraefikAcmeFile"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
 
 # LOG-12 & LOG-11: Root Ownership Paradox Cured. Removed 'su' directive entirely.
@@ -415,33 +418,32 @@ else
     WgAllowedIps="${PrevAllowedIps}"
 fi
 
-# ROUTE-26 & NET-27 & IAM-37 & BOOT-15: Asymmetrical Whitelist Trap & Init Destruction Cured.
-# Physically seeding the s6-overlay template BEFORE boot prevents the daemon from aborting key generation.
-# Dynamic injection of TraefikLanIp protects true source IPs routing to the explicit split-horizon proxy gateway.
-PrintMsg "214" "Surgically seeding WireGuard server template to inject L3 NAT bypass..."
-sudo mkdir -p "${ConfigDir}/WireGuard/templates"
-sudo tee "${ConfigDir}/WireGuard/templates/server.conf" > /dev/null << EOF
-[Interface]
-Address = \${INTERFACE}.1
-ListenPort = \${SERVER_PORT}
-PrivateKey = \${PRIVATE_KEY}
-PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o \${SERVER_DEVICE} -j MASQUERADE
-PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN
-PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN
-PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN
-PreDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o \${SERVER_DEVICE} -j MASQUERADE
-PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true
-PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true
-PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN || true
+# CONFIG-01: WireGuard Template Stagnation Cured. 
+# Active parsing logic dynamically injects the physical LAN IP routing bypass directly into 
+# the active wg0.conf on every boot, guaranteeing protection against topology changes.
+PrintMsg "214" "Surgically scripting dynamic Layer 3 iptables bypass for WireGuard NAT..."
+sudo mkdir -p "${ConfigDir}/WireGuard/custom-cont-init.d"
+sudo tee "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh" > /dev/null << EOF
+#!/bin/bash
+if [ -f "/config/wg0.conf" ]; then
+    sed -i '/-j RETURN/d' /config/wg0.conf 2>/dev/null || true
+    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN" >> /config/wg0.conf
+    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN" >> /config/wg0.conf
+    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN" >> /config/wg0.conf
+    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true" >> /config/wg0.conf
+    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true" >> /config/wg0.conf
+    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN || true" >> /config/wg0.conf
+fi
 EOF
-sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/templates"
+sudo chmod +x "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh"
+sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/custom-cont-init.d"
 
-# TLS-03: ACME State Lockout Cured. State-transition awareness added for CA pivots.
+# TLS-03 & TLS-08: ACME State Lockout Cured. State-transition awareness added for CA pivots.
 if [ -n "${PrevAcme:-}" ] && [ "${PrevAcme}" != "${AcmeServerUrl}" ]; then
     PrintMsg "196" "⚠️ ACME CA transition detected. Purging legacy acme.json state to prevent TLS lockout..."
-    sudo rm -f "${ConfigDir}/Traefik/acme.json"
-    sudo touch "${ConfigDir}/Traefik/acme.json"
-    sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
+    sudo rm -f "$TraefikAcmeFile"
+    sudo touch "$TraefikAcmeFile"
+    sudo chmod 600 "$TraefikAcmeFile"
 fi
 
 sudo tee "$EnvFile" > /dev/null << EOF
@@ -790,10 +792,10 @@ services:
     container_name: traefik_proxy
     networks: [socket_network, proxy_network]
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
-    # LOG-12: Root Ownership Paradox Cured. Explicit alignment with root:root host volume.
+    # TLS-08: ACME Directory Ghosting Cured. Exact volume path alignment to the host generator script.
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
-      - ${ConfigDir}/Traefik/acme.json:/etc/traefik/acme/acme.json:rw
+      - ${TraefikAcmeFile}:/etc/traefik/acme/acme.json:rw
       - ${TraefikLogDir}:/var/log/traefik:rw
     secrets: [cf_api_token, traefik_auth]
     environment: [CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token]
@@ -851,8 +853,7 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# ORCH-26 & NET-28 & SEC-32: Watchdog Amnesia Cured. Destructive logic strictly amputated.
-# Boot-Storm blindness cured via deterministic polling. Internal L3 routes actively secured.
+# SEC-36: L3 DMZ Bypass Cured. Restricts DOCKER-USER forwarding STRICTLY to Traefik proxy ports.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
@@ -865,9 +866,9 @@ for i in {1..30}; do
     sleep 2
 done
 
-if ! iptables -C DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -j ACCEPT 2>/dev/null; then
-    iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.0/24 -j ACCEPT
-    iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.0/24 -j ACCEPT
+if ! iptables -C DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null; then
+    iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.0/24 -p tcp -m multiport --dports 80,443 -j ACCEPT
+    iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.0/24 -p tcp -m multiport --sports 80,443 -j ACCEPT
 fi
 
 if ! ip route show | grep -q "10.13.13.0/24 via 10.99.0.10"; then
