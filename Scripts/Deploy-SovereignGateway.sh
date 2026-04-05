@@ -1,27 +1,28 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v88.0-SOVEREIGN-APOTHEOSIS
+#  Version: v89.0-SOVEREIGN-TERMINUS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Apotheosis Hardening Fixes (The Final Absolute Truth):
-#  1. SEC-38: Immortal Skeleton Key Cured. Sovereign Watchdog now explicitly purges 
-#     legacy wide-open 10.98.0.0/24 iptables rules from live kernel memory.
-#  2. IAM-49: Unmarshaler Detonation v4 Cured. Reverted the identity session block 
-#     to the strict cookies list array required by the v4.38+ YAML schema.
-#  3. IAM-54: Redirection Singularity Cured. Hardcoded 'authelia_url' inside the 
-#     cookies array to anchor the origin portal and shatter the infinite loop.
+#  Terminus Hardening Fixes (The Final Absolute Truth):
+#  1. BOOT-17: The Missing Entrypoint Cured. Surgically restored the web entrypoint 
+#     address binding to Traefik's CLI array, satisfying the HTTP redirection 
+#     reference and eradicating the fatal startup crash loop.
+#  2. IAM-55: Quantum Session Expiration Cured. Converted raw integer duration 
+#     parameters to strict time.Duration strings ("1h", "5m") in Authelia's YAML, 
+#     preventing the unmarshaler from decaying sessions in 3,600 nanoseconds.
 #  Inherited Master Fixes:
-#  - SEC-37 (L3 DMZ Bypass V2), IAM-48 (Unmarshaler Detonation v3)
-#  - DNS-25 (Ghost Inode Deadlock), ORCH-35 (Watchdog Lockout)
-#  - NET-34 (Ghost Iptables Memory Leak), IAM-47 (Unmarshaler Detonation v2)
-#  - TLS-11 (ACME Inode Deadlock), ORCH-31 (WireGuard Stagnation Trap)
-#  - IAM-53 (Open-Redirect Singularity), IAM-52 (ForwardAuth Redirection)
-#  - LOG-14 (Ghost Log Artifact), IAM-46 (Session Array Detonation)
-#  - NET-31 (CRLF Poisoning), IAM-41 (Unmarshaler Detonation)
-#  - CONFIG-02 (PreDown Parasites), BOOT-16 (S6 Init Paradox)
-#  - IAM-38 (Deprecated Authz Endpoint), TLS-08 (ACME Ghosting)
-#  - CONFIG-01 (Template Stagnation), SEC-36 (DMZ Bypass)
+#  - SEC-38 (Immortal Skeleton Key), IAM-49 (Unmarshaler Detonation v4)
+#  - IAM-54 (Redirection Singularity v2), SEC-37 (L3 DMZ Bypass V2)
+#  - IAM-48 (Unmarshaler Detonation v3), DNS-25 (Ghost Inode Deadlock)
+#  - ORCH-35 (Watchdog Lockout), NET-34 (Ghost Iptables Memory Leak)
+#  - IAM-47 (Unmarshaler Detonation v2), TLS-11 (ACME Inode Deadlock)
+#  - ORCH-31 (WireGuard Stagnation Trap), IAM-53 (Open-Redirect Singularity)
+#  - IAM-52 (ForwardAuth Redirection), LOG-14 (Ghost Log Artifact)
+#  - IAM-46 (Session Array Detonation), NET-31 (CRLF Poisoning)
+#  - IAM-41 (Unmarshaler Detonation), CONFIG-02 (PreDown Parasites)
+#  - BOOT-16 (S6 Init Paradox), IAM-38 (Deprecated Authz Endpoint)
+#  - TLS-08 (ACME Ghosting), CONFIG-01 (Template Stagnation), SEC-36 (DMZ Bypass)
 #  - SEC-35 (Lateral Trust Hallucination), IAM-40 (Idempotent Password Wipe)
 #  - ORCH-26 (Watchdog Amnesia), ENV-05 (Strict Nounset Detonation)
 #  - BOOT-15 (S6-Overlay Init Destruction), ROUTE-26 (Whitelist Trap)
@@ -497,10 +498,11 @@ set -a; source "$EnvFile"; set +a
 # ORCH-19: Administrative Blackhole Cured. Symlink ensures native Docker tools function despite PascalCase aesthetics.
 sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
 
-# IAM-36, IAM-41, IAM-46, IAM-53, IAM-47, IAM-48, IAM-49, IAM-54: The Identity Matrix Apotheosis.
+# IAM-36, IAM-41, IAM-46, IAM-53, IAM-47, IAM-48, IAM-49, IAM-54, IAM-55: The Absolute Identity Matrix.
 # 1. Eradicated deprecated password_reset and external_url to prevent Unmarshaler Suicide.
 # 2. Reverted session block to strict 'cookies' list array schema to satisfy v4.38 parser rules.
 # 3. Injected authelia_url inside the cookie array item to anchor origin URL and shatter infinite redirects.
+# 4. IAM-55: Strict string-based time.Duration parameters ("1h", "5m") prevent quantum nanosecond expiration.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -524,8 +526,8 @@ session:
     - name: authelia_session
       domain: "${InternalDomain}"
       authelia_url: "https://auth.${InternalDomain}"
-      expiration: 3600
-      inactivity: 300
+      expiration: "1h"
+      inactivity: "5m"
 regulation:
   max_retries: 3
   find_time: 120
@@ -840,11 +842,13 @@ services:
     depends_on:
       docker_socket_proxy: { condition: service_healthy }
       authelia: { condition: service_healthy }
+    # BOOT-17: The Missing Entrypoint Cured. Surgically restored the web port 80 binding to satisfy the HTTP redirection rule.
     command:
       - "--providers.docker=true"
       - "--providers.docker.endpoint=tcp://docker_socket_proxy:2375"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--entrypoints.web.address=:80"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.websecure.address=:443"
       - "--entrypoints.websecure.forwardedHeaders.trustedIPs=\${TRAEFIK_TRUSTED_IPS}"
