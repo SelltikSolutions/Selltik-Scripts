@@ -1,16 +1,17 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v76.0-SOVEREIGN-APEX
+#  Version: v77.0-SOVEREIGN-NOVA
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Apex Hardening Fixes (The Final Absolute Truth):
-#  1. ROUTE-26 & IAM-37: Asymmetrical Whitelist Trap & Communal Ban Cured. 
-#     Dynamically injected the physical LAN IP into the WireGuard NAT bypass 
-#     to preserve true client IPs across the split-horizon DNS boundaries.
-#  2. NET-28: Watchdog Boot-Storm Blindness Cured. Engineered a deterministic 
-#     polling loop to guarantee DOCKER-USER chain existence before rule injection.
+#  Nova Hardening Fixes (The Final Absolute Truth):
+#  1. ENV-05: Strict Nounset Detonation Cured. Aligned Unbound's configuration 
+#     heredoc to utilize native bash variables to prevent subshell parser panics.
+#  2. BOOT-15: S6-Overlay Init Destruction Cured. Eradicated the race condition. 
+#     Physically seeded the /config/templates/server.conf file so WireGuard natively 
+#     ingests the L3 NAT bypass rules during its own cryptographic genesis sequence.
 #  Inherited Master Fixes:
+#  - ROUTE-26 (Whitelist Trap), IAM-37 (Communal Ban), NET-28 (Watchdog Boot-Storm)
 #  - IAM-36 (Immutable Ledger), ROUTE-25 (CDN Blackhole), DNS-20 (LAN Void)
 #  - NET-27 (NAT Bypass Timing), SEC-32 (L3 Engine Exposure), SEC-33 (VPN Whitelist)
 #  - SEC-31 (Lateral Header Spoofing), DNS-19 (Phantom LAN Sinkhole)
@@ -412,24 +413,26 @@ else
     WgAllowedIps="${PrevAllowedIps}"
 fi
 
-# ROUTE-26 & NET-27 & IAM-37: The Asymmetrical Whitelist Trap & Communal Ban Cured.
-# Dynamically expanding ${TraefikLanIp} BEFORE wg0.conf injection ensures the L3 NAT bypass 
-# protects the true source IPs routing to the explicit split-horizon proxy gateway.
-PrintMsg "214" "Surgically injecting physical Layer 3 iptables bypass for WireGuard NAT..."
-sudo mkdir -p "${ConfigDir}/WireGuard/custom-cont-init.d"
-sudo tee "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh" > /dev/null << EOF
-#!/bin/bash
-if ! grep -q "10.98.0.0/16 -j RETURN" /config/wg0.conf 2>/dev/null; then
-    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN" >> /config/wg0.conf
-    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN" >> /config/wg0.conf
-    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN" >> /config/wg0.conf
-    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true" >> /config/wg0.conf
-    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true" >> /config/wg0.conf
-    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN || true" >> /config/wg0.conf
-fi
+# ROUTE-26 & NET-27 & IAM-37 & BOOT-15: Asymmetrical Whitelist Trap & Init Destruction Cured.
+# Physically seeding the s6-overlay template BEFORE boot prevents the daemon from aborting key generation.
+# Dynamic injection of TraefikLanIp protects true source IPs routing to the explicit split-horizon proxy gateway.
+PrintMsg "214" "Surgically seeding WireGuard server template to inject L3 NAT bypass..."
+sudo mkdir -p "${ConfigDir}/WireGuard/templates"
+sudo tee "${ConfigDir}/WireGuard/templates/server.conf" > /dev/null << EOF
+[Interface]
+Address = \${INTERFACE}.1
+ListenPort = \${SERVER_PORT}
+PrivateKey = \${PRIVATE_KEY}
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o \${SERVER_DEVICE} -j MASQUERADE
+PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN
+PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN
+PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN
+PreDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o \${SERVER_DEVICE} -j MASQUERADE
+PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true
+PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true
+PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN || true
 EOF
-sudo chmod +x "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh"
-sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/custom-cont-init.d"
+sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/templates"
 
 # TLS-03: ACME State Lockout Cured. State-transition awareness added for CA pivots.
 if [ -n "${PrevAcme:-}" ] && [ "${PrevAcme}" != "${AcmeServerUrl}" ]; then
@@ -479,12 +482,12 @@ authentication_backend:
 access_control:
   default_policy: deny
   rules:
-    - domain: "*.${INTERNAL_DOMAIN}"
+    - domain: "*.${InternalDomain}"
       policy: two_factor
 session:
   cookies:
-    - domain: "${INTERNAL_DOMAIN}"
-      authelia_url: "https://auth.${INTERNAL_DOMAIN}"
+    - domain: "${InternalDomain}"
+      authelia_url: "https://auth.${InternalDomain}"
       name: authelia_session
       expiration: 3600
       inactivity: 300
@@ -505,7 +508,7 @@ users:
     email: admin@REPLACE_DOMAIN
     groups: [admins]
 EOF
-sudo sed -i "s/REPLACE_DOMAIN/${INTERNAL_DOMAIN}/g" "${ConfigDir}/Authelia/UsersDatabase.yml"
+sudo sed -i "s/REPLACE_DOMAIN/${InternalDomain}/g" "${ConfigDir}/Authelia/UsersDatabase.yml"
 
 # IAM-35: Immutable Password Database Cured. 
 # Chown exclusively executed AFTER configuration/database injection to allow daemon writes.
@@ -545,7 +548,7 @@ sudo chmod 700 "$RootHintUtility"
 PrintMsg "240" "Verifying DNS Root Integrity via PGP Pinning..."
 sudo "$RootHintUtility" || exit 1
 
-# DNS-16: Alpine Namespace Void Cured. Strictly mapped execution to '_unbound'.
+# DNS-16 & ENV-05: Alpine Namespace Void Cured. Variable expansion mathematically stabilized.
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
   interface: 0.0.0.0
@@ -556,8 +559,8 @@ server:
   auto-trust-anchor-file: "/opt/unbound/etc/unbound/keys/root.key"
   access-control: 127.0.0.0/8 allow
   access-control: 10.99.0.0/24 allow
-  local-zone: "${INTERNAL_DOMAIN}." redirect
-  local-data: "${INTERNAL_DOMAIN}. A ${TRAEFIK_LAN_IP}"
+  local-zone: "${InternalDomain}." redirect
+  local-data: "${InternalDomain}. A ${TraefikLanIp}"
 EOF
 
 # SEC-29: Physical Air-Gap Breach Cured. Ruthlessly amputated RFC1918 space from the whitelist middleware.
@@ -575,7 +578,7 @@ http:
         sourceRange: ["10.13.13.0/24", "127.0.0.1/32"]
     authelia:
       forwardAuth:
-        address: "http://authelia:9091/api/verify?rd=https://auth.${INTERNAL_DOMAIN}/"
+        address: "http://authelia:9091/api/verify?rd=https://auth.${InternalDomain}/"
         trustForwardHeader: true
         authResponseHeaders: ["Remote-User", "Remote-Groups"]
     traefik-auth:
@@ -583,7 +586,7 @@ http:
         usersFile: "/run/secrets/traefik_auth"
   routers:
     auth-router:
-      rule: "Host(\`auth.${INTERNAL_DOMAIN}\`)"
+      rule: "Host(\`auth.${InternalDomain}\`)"
       entryPoints: ["websecure"]
       middlewares: ["secure-headers"]
       service: "authelia-service"
@@ -804,6 +807,7 @@ services:
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme/acme.json"
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
       - "--accesslog=true"
       - "--accesslog.filepath=/var/log/traefik/access.log"
       - "--accesslog.format=json"
