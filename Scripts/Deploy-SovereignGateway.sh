@@ -1,26 +1,27 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v87.0-SOVEREIGN-ZENITH
+#  Version: v88.0-SOVEREIGN-APOTHEOSIS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Zenith Hardening Fixes (The Final Absolute Truth):
-#  1. SEC-37: L3 DMZ Bypass V2 Cured. Assigned Traefik a static IP (10.98.0.254) 
-#     and restricted Watchdog VPN forwarding strictly to that proxy address.
-#  2. IAM-48: Unmarshaler Detonation v3 Cured. Completely eradicated the hallucinated 
-#     external_url parameter from the identity schema to prevent fatal boot panics.
-#  3. DNS-25: Ghost Inode Deadlock Cured. Upgraded the Sovereign Updater to execute 
-#     --force-recreate unbound_dns, physically breaking the stale file lock and 
-#     natively ingesting the weekly cryptographic root anchor updates.
+#  Apotheosis Hardening Fixes (The Final Absolute Truth):
+#  1. SEC-38: Immortal Skeleton Key Cured. Sovereign Watchdog now explicitly purges 
+#     legacy wide-open 10.98.0.0/24 iptables rules from live kernel memory.
+#  2. IAM-49: Unmarshaler Detonation v4 Cured. Reverted the identity session block 
+#     to the strict cookies list array required by the v4.38+ YAML schema.
+#  3. IAM-54: Redirection Singularity Cured. Hardcoded 'authelia_url' inside the 
+#     cookies array to anchor the origin portal and shatter the infinite loop.
 #  Inherited Master Fixes:
-#  - ORCH-35 (Watchdog Lockout), NET-34 (Ghost Iptables Memory Leak)
-#  - IAM-47 (Unmarshaler Detonation v2), TLS-11 (ACME Inode Deadlock)
-#  - ORCH-31 (WireGuard Stagnation Trap), IAM-53 (Open-Redirect Singularity)
-#  - IAM-52 (ForwardAuth Redirection), LOG-14 (Ghost Log Artifact)
-#  - IAM-46 (Session Array Detonation), NET-31 (CRLF Poisoning)
-#  - IAM-41 (Unmarshaler Detonation), CONFIG-02 (PreDown Parasites)
-#  - BOOT-16 (S6 Init Paradox), IAM-38 (Deprecated Authz Endpoint)
-#  - TLS-08 (ACME Ghosting), CONFIG-01 (Template Stagnation), SEC-36 (DMZ Bypass)
+#  - SEC-37 (L3 DMZ Bypass V2), IAM-48 (Unmarshaler Detonation v3)
+#  - DNS-25 (Ghost Inode Deadlock), ORCH-35 (Watchdog Lockout)
+#  - NET-34 (Ghost Iptables Memory Leak), IAM-47 (Unmarshaler Detonation v2)
+#  - TLS-11 (ACME Inode Deadlock), ORCH-31 (WireGuard Stagnation Trap)
+#  - IAM-53 (Open-Redirect Singularity), IAM-52 (ForwardAuth Redirection)
+#  - LOG-14 (Ghost Log Artifact), IAM-46 (Session Array Detonation)
+#  - NET-31 (CRLF Poisoning), IAM-41 (Unmarshaler Detonation)
+#  - CONFIG-02 (PreDown Parasites), BOOT-16 (S6 Init Paradox)
+#  - IAM-38 (Deprecated Authz Endpoint), TLS-08 (ACME Ghosting)
+#  - CONFIG-01 (Template Stagnation), SEC-36 (DMZ Bypass)
 #  - SEC-35 (Lateral Trust Hallucination), IAM-40 (Idempotent Password Wipe)
 #  - ORCH-26 (Watchdog Amnesia), ENV-05 (Strict Nounset Detonation)
 #  - BOOT-15 (S6-Overlay Init Destruction), ROUTE-26 (Whitelist Trap)
@@ -306,7 +307,7 @@ ExecuteAnnihilation() {
             cd "$StackDir" && sudo $DockerBin compose -f "$ComposeFile" down -v --remove-orphans > /dev/null 2>&1 || true
             PrintMsg "214" "Mathematically shredding cryptographic master keys..."
             [ -d "${SecretsDir}" ] && sudo find "${SecretsDir}" -type f -exec shred -u {} \; || true
-            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound" "$LogsDir" "$TraefikAcmeDir"
+            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound" "$TraefikAcmeDir" "$LogsDir"
             PrintMsg "82" "✔ Earth scorched. Magnetic persistence neutralized."
         fi
     fi
@@ -496,10 +497,10 @@ set -a; source "$EnvFile"; set +a
 # ORCH-19: Administrative Blackhole Cured. Symlink ensures native Docker tools function despite PascalCase aesthetics.
 sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
 
-# IAM-36, IAM-41, IAM-46, IAM-53, IAM-47 & IAM-48: Identity Matrix Cured.
-# Eradicated the deprecated password_reset and password_file directives. 
-# Flattened the session block schema entirely to conform to strict v4.38+ YAML generation.
-# IAM-48: Purged the hallucinated external_url from the root server block to prevent Unmarshaler suicide.
+# IAM-36, IAM-41, IAM-46, IAM-53, IAM-47, IAM-48, IAM-49, IAM-54: The Identity Matrix Apotheosis.
+# 1. Eradicated deprecated password_reset and external_url to prevent Unmarshaler Suicide.
+# 2. Reverted session block to strict 'cookies' list array schema to satisfy v4.38 parser rules.
+# 3. Injected authelia_url inside the cookie array item to anchor origin URL and shatter infinite redirects.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -519,10 +520,12 @@ access_control:
     - domain: "*.${InternalDomain}"
       policy: two_factor
 session:
-  name: authelia_session
-  domain: "${InternalDomain}"
-  expiration: 3600
-  inactivity: 300
+  cookies:
+    - name: authelia_session
+      domain: "${InternalDomain}"
+      authelia_url: "https://auth.${InternalDomain}"
+      expiration: 3600
+      inactivity: 300
 regulation:
   max_retries: 3
   find_time: 120
@@ -889,8 +892,9 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# SEC-36 & SEC-37: L3 DMZ Bypass V2 Cured. 
-# VPN clients are mathematically forbidden from touching 10.98.0.0/24 directly. They are hard-routed ONLY to Traefik's static 10.98.0.254 interface.
+# SEC-36, SEC-37, & SEC-38: Immortal Skeleton Key Cured. 
+# The script explicitly hunts down and deletes legacy 10.98.0.0/24 subnet rules from live memory.
+# VPN clients are mathematically forbidden from touching the DMZ directly. Hard-routed ONLY to Traefik's .254 interface.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
@@ -903,6 +907,11 @@ for i in {1..30}; do
     sleep 2
 done
 
+# SEC-38: Surgically flush immortal legacy skeleton keys from live kernel memory
+iptables -D DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null || true
+iptables -D DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.0/24 -p tcp -m multiport --sports 80,443 -j ACCEPT 2>/dev/null || true
+
+# Insert the strictly bound 10.98.0.254 constraint
 if ! iptables -C DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null; then
     iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT
     iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.254/32 -p tcp -m multiport --sports 80,443 -j ACCEPT
