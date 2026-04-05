@@ -1,17 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v70.0-SOVEREIGN-TITAN
+#  Version: v71.0-SOVEREIGN-VALKYRIE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Titan Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-33: Fail2Ban Mass Extinction Cured. Injected ignore_networks into 
-#     the regulation matrix to protect the WireGuard fleet from NAT bans.
-#  2. SEC-28: Air-Gap Annihilation Cured. Amputated massive RFC1918 blocks from 
-#     Traefik's trustedIPs to mathematically block X-Forwarded-For spoofing.
-#  3. DNS-17: Loopback Sinkhole Cured. Default LAN IP fallback surgically mapped 
-#     to the immutable 10.99.0.1 Docker gateway instead of a 127.0.0.1 blackhole.
+#  Valkyrie Hardening Fixes (The Final Absolute Truth):
+#  1. SEC-29: Physical Air-Gap Breach Cured. Eradicated RFC1918 trust blocks from 
+#     the vpn-whitelist middleware to prevent local network traversal.
+#  2. IAM-34: Infinite Brute-Force Immunity Cured. Amputated ignore_networks from 
+#     Authelia and deployed a true L3 NAT bypass + host kernel route via Watchdog.
+#  3. LOG-11: Logrotate Insecure Parent Panic Cured. Injected 'su uid gid' into 
+#     the logrotate matrix to authorize the root daemon in an unprivileged volume.
 #  Inherited Master Fixes:
+#  - IAM-33 (Fail2Ban Mass Extinction), SEC-28 (Header Spoofing), DNS-17 (Loopback)
 #  - TLS-07 (Traefik CLI Detonation), ROUTE-23 (Asymmetrical Routing Void)
 #  - ORCH-24 (Event Stream Blindness), ORCH-22 (HAProxy/Socat Schism)
 #  - BOOT-14 (Module Capability Asphyxiation), IAM-30 (Access Control Schema)
@@ -290,6 +291,18 @@ sudo chown -R 70:70 "${ConfigDir}/Postgres"
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard" "${ConfigDir}/Authelia" "$TraefikLogDir"
 sudo chown -R 999:999 "${ConfigDir}/PiHole"
 
+# IAM-34: Layer 3 NAT Bypass resurrected to unmask VPN client IPs for Authelia.
+PrintMsg "214" "Surgically injecting Layer 3 iptables bypass for WireGuard NAT..."
+sudo mkdir -p "${ConfigDir}/WireGuard/custom-cont-init.d"
+sudo tee "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh" > /dev/null << 'EOF'
+#!/bin/bash
+# Surgically inject an iptables RETURN rule before the MASQUERADE to un-mask true client IPs for Traefik/Authelia.
+iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true
+iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true
+EOF
+sudo chmod +x "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh"
+sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/custom-cont-init.d"
+
 # Prevent authelia from crashing trying to touch an inexistent file.
 sudo touch "${ConfigDir}/Authelia/notification.txt"
 sudo chown "$HostUid:$HostGid" "${ConfigDir}/Authelia/notification.txt"
@@ -297,11 +310,12 @@ sudo chown "$HostUid:$HostGid" "${ConfigDir}/Authelia/notification.txt"
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
 
-# LOG-10 & LOG-08: Access Log Ghost Path Cured. Explicit alignment with $TraefikLogDir.
+# LOG-11: Logrotate Insecure Parent Panic Cured. Injected strict 'su' directive.
 if [ -d "/etc/logrotate.d" ]; then
     PrintMsg "214" "Enforcing mathematical bounds on Traefik access logs via logrotate..."
     sudo tee /etc/logrotate.d/sovereign-traefik > /dev/null << EOF
 ${TraefikLogDir}/*.log {
+    su ${HostUid} ${HostGid}
     daily
     rotate 14
     size 50M
@@ -423,9 +437,8 @@ set -a; source "$EnvFile"; set +a
 # ORCH-19: Administrative Blackhole Cured. Symlink ensures native Docker tools function despite PascalCase aesthetics.
 sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
 
-# IAM-29, IAM-30, IAM-31, & IAM-33: Complete Identity Regulation Overhaul.
-# Modern session.cookies nested array. Strict two_factor enforcement. 
-# Explicit ignore_networks whitelisting to prevent communal NAT mass extinction.
+# IAM-34: Infinite Brute-Force Immunity Cured. Removed 'ignore_networks' so the regulation
+# engine tracks the true unmasked WireGuard client IPs via the L3 bypass logic.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -456,10 +469,6 @@ regulation:
   max_retries: 3
   find_time: 120
   ban_time: 300
-  ignore_networks:
-    - "10.98.0.0/24"
-    - "10.99.0.0/24"
-    - "127.0.0.1/32"
 notifier:
   filesystem: { filename: /config/notification.txt }
 EOF
@@ -526,7 +535,7 @@ server:
   local-data: "${INTERNAL_DOMAIN}. A ${TRAEFIK_LAN_IP}"
 EOF
 
-# ROUTE-21: Physical Air-Gap Cured. RFC1918 injected directly into Traefik's strict vpn-whitelist.
+# SEC-29: Physical Air-Gap Breach Cured. Ruthlessly amputated RFC1918 space from the whitelist middleware.
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -538,7 +547,7 @@ http:
           X-XSS-Protection: "1; mode=block"
     vpn-whitelist:
       ipAllowList:
-        sourceRange: ["10.13.13.0/24", "10.99.0.0/24", "127.0.0.1/32", "192.168.0.0/16", "172.16.0.0/12", "10.0.0.0/8"]
+        sourceRange: ["10.13.13.0/24", "10.98.0.0/24", "10.99.0.0/24", "127.0.0.1/32"]
     authelia:
       forwardAuth:
         address: "http://authelia:9091/api/verify?rd=https://auth.${INTERNAL_DOMAIN}/"
@@ -769,6 +778,7 @@ services:
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme/acme.json"
+      # TLS-07: Traefik CLI Detonation Cured. Implicit struct activation via provider enforcement.
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
       - "--accesslog=true"
       - "--accesslog.filepath=/var/log/traefik/access.log"
@@ -809,9 +819,14 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+# IAM-34: Host Routing Fix. The watchdog permanently enforces the Layer 3 return path for WireGuard.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
+if ! ip route show | grep -q "10.13.13.0/24 via 10.99.0.10"; then
+    ip route add 10.13.13.0/24 via 10.99.0.10 2>/dev/null || true
+fi
+
 for manifest in "${ConfigDir}/Traefik/Dynamic/"*_assimilation.yml; do
     [ -e "\$manifest" ] || continue
     alien=\$(grep "^# ALIEN_CONTAINER: " "\$manifest" | cut -d' ' -f3 || true)
@@ -860,6 +875,9 @@ sudo systemctl enable --now sovereign-watchdog.timer sovereign-updater.timer
 
 if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Sovereign Matrix..."; fi
 cd "$StackDir" && sudo $DockerBin compose -f "$ComposeFile" up -d --force-recreate --remove-orphans
+
+# Execute immediate kernel routing injection natively on boot.
+sudo /bin/bash "$WatchdogScript"
 
 AssimilateAlienContainers() {
     ProxyNetworkName="sovereign_gateway_proxy_network"
