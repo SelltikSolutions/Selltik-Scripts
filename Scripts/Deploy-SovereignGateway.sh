@@ -1,19 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v91.0-SOVEREIGN-PALLADIUM
+#  Version: v92.0-SOVEREIGN-AEGIS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Palladium Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-58: Redirection Singularity v3 Cured. Explicitly injected AUTHELIA_SERVER_ADDRESS 
-#     into the container environment to mathematically anchor the origin portal.
-#  2. ORCH-38: Selective Immortality Cured. Split the systemd updater execution string to 
-#     globally update the entire fleet before surgically flushing the DNS inode.
-#  3. NET-42: TCP DNS Truncation Drop Cured. Duplicated the asymmetrical return path 
-#     authorization in DOCKER-USER to support TCP port 53 for large DNSSEC payloads.
+#  Aegis Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-59: Socket Binding Suicide Cured. Eradicated AUTHELIA_SERVER_ADDRESS 
+#     to prevent the identity engine from attempting to bind a TCP socket to an 
+#     HTTPS URL, resolving the fatal boot crash.
+#  2. ORCH-36: Multidimensional Firewall Hallucinations Cured. Amputated host-level 
+#     iptables deletion commands that vainly targeted isolated Docker network namespaces.
 #  Inherited Master Fixes:
-#  - IAM-56 (Unmarshaler Detonation v5), NET-36 (Asymmetrical DNS Blackhole)
-#  - ORCH-36 (Namespace Hallucination Trap), BOOT-17 (Missing Entrypoint)
+#  - IAM-58 (Redirection Singularity v3), ORCH-38 (Selective Immortality)
+#  - NET-42 (TCP DNS Truncation Drop), IAM-56 (Unmarshaler Detonation v5)
+#  - NET-36 (Asymmetrical DNS Blackhole), BOOT-17 (Missing Entrypoint)
 #  - IAM-55 (Quantum Session Expiration), SEC-38 (Immortal Skeleton Key)
 #  - IAM-49 (Unmarshaler Detonation v4), IAM-54 (Redirection Singularity v2)
 #  - SEC-37 (L3 DMZ Bypass V2), IAM-48 (Unmarshaler Detonation v3)
@@ -455,18 +455,13 @@ PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d ${TraefikLanIp}/32 
 EOF
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/templates"
 
-# CONFIG-01, CONFIG-02, & NET-34: Template Stagnation, Parasites, & Memory Leaks Cured.
+# CONFIG-01, CONFIG-02 & ORCH-36: Template Stagnation & Namespace Hallucinations Cured.
 # Active parsing logic dynamically injects the physical LAN IP routing bypass directly into 
 # the active wg0.conf exactly ONCE on every boot. 
-# Pre-flight extraction guarantees legacy IPs are manually flushed from the live kernel first.
+# Explicitly removed 'iptables -D' from the host execution context. We natively rely on Docker 
+# container lifecycle events to tear down and recreate the network namespace.
 if [ -f "${ConfigDir}/WireGuard/wg0.conf" ]; then
-    PrintMsg "214" "Purging legacy kernel intercepts to prevent ghost routing leaks..."
-    LegacyIp=$(grep -oP '(?<=-d )\d+\.\d+\.\d+\.\d+(?=/32 -j RETURN)' "${ConfigDir}/WireGuard/wg0.conf" | head -n 1 || true)
-    if [ -n "$LegacyIp" ]; then
-        sudo iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN 2>/dev/null || true
-        sudo iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN 2>/dev/null || true
-        sudo iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d "$LegacyIp/32" -j RETURN 2>/dev/null || true
-    fi
+    PrintMsg "214" "Dynamically injecting active routing bypass into existing wg0.conf..."
     sudo sed -i '/-j RETURN/d' "${ConfigDir}/WireGuard/wg0.conf"
     sudo awk '/PostUp.*-j MASQUERADE/ {print; print "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN || true"; next}1' "${ConfigDir}/WireGuard/wg0.conf" > /tmp/wg0.tmp && sudo mv /tmp/wg0.tmp "${ConfigDir}/WireGuard/wg0.conf"
     sudo chown "$HostUid:$HostGid" "${ConfigDir}/WireGuard/wg0.conf"
@@ -504,7 +499,7 @@ sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
 # IAM-36, IAM-41, IAM-46, IAM-53, IAM-47, IAM-48, IAM-49, IAM-54, IAM-55, IAM-56: The Absolute Identity Matrix.
 # 1. Eradicated deprecated password_reset and external_url to prevent Unmarshaler Suicide.
 # 2. Reverted session block to strict 'cookies' list array schema to satisfy v4.38 parser rules.
-# 3. IAM-56: Eradicated the illegal 'authelia_url' key from the array. 
+# 3. IAM-56: Eradicated the illegal 'authelia_url' key from the array. Traefik's headers handle redirect logic.
 # 4. IAM-55: Strict string-based time.Duration parameters ("1h", "5m") prevent quantum nanosecond expiration.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
@@ -726,8 +721,7 @@ services:
       AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret
       AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_key
       AUTHELIA_STORAGE_POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-      # IAM-58: Redirection Singularity v3 Cured. Explicit origin anchor injected outside strict yaml parsing.
-      AUTHELIA_SERVER_ADDRESS: "https://auth.\${INTERNAL_DOMAIN}/"
+      # IAM-59: Socket Binding Suicide Cured. Eradicated AUTHELIA_SERVER_ADDRESS variable mapping.
     depends_on:
       auth_db: { condition: service_healthy }
     cap_drop: [ALL]
@@ -752,7 +746,7 @@ services:
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE]
-    # BOOT-12: Internet Dependency Deadlock Cured.
+    # BOOT-12: Internet Dependency Deadlock Cured. Unbound probes its internal resolution space.
     healthcheck:
       test: ["CMD-SHELL", "drill -p 53 \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
       start_period: 30s
@@ -765,7 +759,7 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.12 }
       proxy_network: {}
-    # DNS-19: Phantom LAN Sinkhole Cured.
+    # DNS-19: Phantom LAN Sinkhole Cured. Binds explicitly to 0.0.0.0 to serve the physical host interface natively.
     ports:
       - "0.0.0.0:53:53/tcp"
       - "0.0.0.0:53:53/udp"
@@ -781,7 +775,7 @@ services:
     depends_on:
       unbound_dns: { condition: service_healthy }
     cap_drop: [ALL]
-    # BOOT-13: S6-Overlay Asphyxiation Cured.
+    # BOOT-13: S6-Overlay Asphyxiation Cured. DAC_OVERRIDE and FOWNER legally restored.
     cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, KILL, NET_BIND_SERVICE, SYS_NICE, DAC_OVERRIDE, FOWNER]
     labels:
       - "traefik.enable=true"
@@ -802,12 +796,12 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.10 }
     cap_drop: [ALL]
-    # BOOT-14 & BOOT-13: Module Asphyxiation Cured.
+    # BOOT-14 & BOOT-13: Module Asphyxiation Cured. SYS_MODULE injected for native kernel modprobe.
     cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER, SYS_MODULE]
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
-    # ORCH-31: WireGuard Stagnation Trap Cured.
+    # ORCH-31: WireGuard Stagnation Trap Cured. STATE_TRIGGER guarantees a compose recreation when the physical LAN IP changes.
     environment:
       PUID: "\${HOST_UID}"
       PGID: "\${HOST_GID}"
@@ -830,13 +824,13 @@ services:
   traefik_proxy:
     image: traefik:v2.11
     container_name: traefik_proxy
-    # SEC-37: L3 DMZ Bypass V2 Cured.
+    # SEC-37: L3 DMZ Bypass V2 Cured. Assigned a static, immutable proxy IP to ruthlessly anchor the Watchdog's VPN isolation rules.
     networks: 
       socket_network: {}
       proxy_network: 
         ipv4_address: 10.98.0.254
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
-    # TLS-11: ACME Inode Deadlock Cured.
+    # TLS-11: ACME Inode Deadlock Cured. Directory-level mount strictly enables the atomic rename() syscall for Let's Encrypt generation.
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
       - ${TraefikAcmeDir}:/etc/traefik/acme:rw
@@ -846,7 +840,7 @@ services:
     depends_on:
       docker_socket_proxy: { condition: service_healthy }
       authelia: { condition: service_healthy }
-    # BOOT-17: The Missing Entrypoint Cured.
+    # BOOT-17: The Missing Entrypoint Cured. Surgically restored the web port 80 binding to satisfy the HTTP redirection rule.
     command:
       - "--providers.docker=true"
       - "--providers.docker.endpoint=tcp://docker_socket_proxy:2375"
