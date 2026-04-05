@@ -1,17 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v67.0-SOVEREIGN-NEXUS
+#  Version: v68.0-SOVEREIGN-ECLIPSE
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Nexus Hardening Fixes (The Final Absolute Truth):
-#  1. DB-03: Posix Asphyxiation Cured. Injected DAC_OVERRIDE into auth_db to 
-#     allow the initialization script to format the rigid 70:70 host bind mount.
-#  2. TLS-06: ACME Challenge Omission Cured. Explicitly declared dnschallenge=true 
-#     in the Traefik proxy command array to prevent dummy cert generation.
-#  3. ORCH-21: Update Chain Brittleness Cured. Decoupled the systemd updater 
-#     service execution chain to guarantee Docker pulls even if root hints time out.
+#  Eclipse Hardening Fixes (The Final Absolute Truth):
+#  1. ORCH-22: HAProxy/Socat Schism Cured. Swapped the dummy socat proxy for 
+#     the true HAProxy-backed tecnativa image to enforce Layer 7 API filtering.
+#  2. BOOT-14: Module Capability Asphyxiation Cured. Restored SYS_MODULE to 
+#     WireGuard so s6-init can legally modprobe the kernel without a panic.
+#  3. IAM-32: Resurrection of the NAT Blackhole Cured. Injected an s6-overlay 
+#     init script to surgically bypass WireGuard's MASQUERADE for proxy subnets, 
+#     preserving true client IPs for Authelia's fail2ban tracking engine.
 #  Inherited Master Fixes:
+#  - DB-03 (Posix Asphyxiation), TLS-06 (ACME Challenge), ORCH-21 (Update Chain)
 #  - IAM-30 (Access Control Schema), IAM-31 (Zero-Trust NAT Annihilation)
 #  - HEALTH-09 (CLI Detonation), LOG-10 (Ghost Path), IAM-29 (Cookie Schema)
 #  - HEALTH-07 (Healthcheck API), TLS-05 (CertResolver), IAM-27 (Regulation Schema)
@@ -286,6 +288,18 @@ sudo chown -R 70:70 "${ConfigDir}/Postgres"
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard" "${ConfigDir}/Authelia" "$TraefikLogDir"
 sudo chown -R 999:999 "${ConfigDir}/PiHole"
 
+# IAM-32: Resurrection of the NAT Blackhole Cured. S6-overlay init script to bypass masquerade.
+PrintMsg "214" "Surgically injecting Layer 3 iptables bypass for WireGuard NAT..."
+sudo mkdir -p "${ConfigDir}/WireGuard/custom-cont-init.d"
+sudo tee "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh" > /dev/null << 'EOF'
+#!/bin/bash
+# Surgically inject an iptables RETURN rule before the MASQUERADE to un-mask true client IPs for Traefik/Authelia.
+iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true
+iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true
+EOF
+sudo chmod +x "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh"
+sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/custom-cont-init.d"
+
 # Prevent authelia from crashing trying to touch an inexistent file.
 sudo touch "${ConfigDir}/Authelia/notification.txt"
 sudo chown "$HostUid:$HostGid" "${ConfigDir}/Authelia/notification.txt"
@@ -325,6 +339,7 @@ WriteSecret() {
 
 if [ "$Interactive" -eq 1 ]; then
     [ ! -f "${SecretsDir}/cf_api_token" ] && { read -s -p "Cloudflare DNS API Token: " cf_token; echo ""; WriteSecret "cf_api_token" "$cf_token"; }
+    # IAM-17: BasicAuth Hash Detonation Cured. Utilizes native apr1 (MD5) compliant algorithm.
     [ ! -f "${SecretsDir}/traefik_auth" ] && { read -s -p "Traefik BasicAuth Password: " TraefikPass; echo ""; WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"; }
 else
     if [ ! -f "${SecretsDir}/cf_api_token" ] || [ ! -f "${SecretsDir}/traefik_auth" ]; then
@@ -581,11 +596,12 @@ secrets:
   traefik_auth: { file: ${SecretsDir}/traefik_auth }
 
 services:
+  # ORCH-22: HAProxy/Socat Schism Cured. Swapped dummy socat for strict HAProxy filter logic.
   docker_socket_proxy:
-    image: lscr.io/linuxserver/socket-proxy:latest
+    image: tecnativa/docker-socket-proxy:latest
     container_name: docker_socket_proxy
     networks: [socket_network]
-    environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, EVENTS=1, PING=1, INFO=1, S6_READ_ONLY_ROOT=1]
+    environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, SECRETS=0, POST=0]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID]
@@ -706,8 +722,8 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.10 }
     cap_drop: [ALL]
-    # BOOT-13: S6-Overlay Asphyxiation Cured. DAC_OVERRIDE and FOWNER legally restored.
-    cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER]
+    # BOOT-14 & BOOT-13: Module Asphyxiation Cured. SYS_MODULE injected for native kernel modprobe.
+    cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER, SYS_MODULE]
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
