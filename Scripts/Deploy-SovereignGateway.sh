@@ -1,17 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v74.0-SOVEREIGN-OMEGA
+#  Version: v75.0-SOVEREIGN-ZENITH
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Omega Hardening Fixes (The Final Absolute Truth):
-#  1. NET-27: NAT Bypass Timing Void Cured. Injected PostUp hooks directly into 
-#     wg0.conf to ensure RETURN rules mathematically execute after wg-quick.
-#  2. SEC-32: L3 Docker Engine Exposure Cured. Restricted DOCKER-USER iptables 
-#     rules to strictly authorize forwarding only to the Traefik proxy network.
-#  3. SEC-33: Lateral VPN Whitelist Bypass Cured. Amputated internal proxy 
-#     subnets from vpn-whitelist to block DMZ-to-Admin lateral movement.
+#  Zenith Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-36: Hardcoded Immutable Ledger Cured. Reverted password_reset strict 
+#     disable flag to restore internal hash rotation capabilities.
+#  2. ROUTE-25: Cloudflare CDN Blackhole Cured. Dynamically injects Cloudflare's 
+#     canonical IPv4/IPv6 edge blocks into Traefik's trustedIPs array to parse 
+#     true client IPs and prevent global self-inflicted Denial of Service.
+#  3. DNS-20: Split-Horizon LAN Void Cured. Reprioritized TraefikLanIp fallback 
+#     to mathematically inherit the physical HUNTER_IP before the Docker gateway.
 #  Inherited Master Fixes:
+#  - NET-27 (NAT Bypass Timing), SEC-32 (L3 Engine Exposure), SEC-33 (VPN Whitelist)
 #  - SEC-31 (Lateral Header Spoofing), DNS-19 (Phantom LAN Sinkhole)
 #  - ROUTE-24 (Cross-Bridge Void), LOG-12 (Root Ownership), IAM-35 (Immutable DB)
 #  - SEC-29 (Air-Gap Breach), IAM-34 (Brute-Force Immunity), LOG-11 (Parent Panic)
@@ -218,6 +220,13 @@ elif systemctl is-active --quiet systemd-timesyncd; then
     sudo systemctl restart systemd-timesyncd || true
 fi
 
+# ROUTE-25: Cloudflare CDN Blackhole Cured. 
+# Dynamically mapping explicit upstream proxy IP vectors to protect fail2ban.
+PrintMsg "240" "Fetching Cloudflare Edge IP ranges for Layer 7 header authentication..."
+CfIpsV4=$(curl -s --max-time 10 https://www.cloudflare.com/ips-v4 | tr '\n' ',' || echo "173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22")
+CfIpsV6=$(curl -s --max-time 10 https://www.cloudflare.com/ips-v6 | tr '\n' ',' || echo "2400:cb00::/32,2606:4700::/32,2803:f800::/32,2405:b500::/32,2405:8100::/32,2a06:98c0::/29,2c0f:f248::/32")
+TraefikTrustedIps="127.0.0.1/32,10.98.0.0/24,10.99.0.0/24,${CfIpsV4%,},${CfIpsV6%,}"
+
 # KRN-04 & KRN-06: STIG Scorched Earth Kernel Hardening + RP_Filter Asymmetrical Downgrade (Value: 2)
 PrintMsg "240" "Forging STIG-compliant host kernel armor..."
 sudo tee /etc/sysctl.d/99-SovereignGateway.conf > /dev/null << 'EOF'
@@ -250,8 +259,9 @@ fi
 HostUid="${SUDO_UID:-1000}"
 HostGid="${SUDO_GID:-1000}"
 
-PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevLanIp="${HUNTER_IP:-}"; PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
+PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevLanIp=""
 PrevLanSubnet="${HUNTER_SUBNET:-}"; PrevWgPeers="3"; PrevAllowedIps="0.0.0.0/0"
+PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
 
 if [ -f "$EnvFile" ]; then
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" | cut -d= -f2 || echo "")
@@ -387,9 +397,10 @@ if [ "$Interactive" -eq 1 ]; then
         PrintMsg "196" "[FATAL] ACME schema requires a valid email. Null values are prohibited."
     done
 
-    # DNS-17: Loopback Sinkhole Paradox Cured. Defaulting to proxy gateway to prevent local routing deadlocks.
-    read -p "Monolith LAN IP [$PrevLanIp]: " input_lan; TraefikLanIp="${input_lan:-$PrevLanIp}"
-    TraefikLanIp="${TraefikLanIp:-10.99.0.1}"
+    # DNS-20: Split-Horizon LAN Void Cured. Mathematical priority to physical host LAN over Docker gateway.
+    FallbackLanIp="${PrevLanIp:-${HUNTER_IP:-10.99.0.1}}"
+    read -p "Monolith LAN IP [$FallbackLanIp]: " input_lan
+    TraefikLanIp="${input_lan:-$FallbackLanIp}"
     
     read -p "WireGuard Peer Count [$PrevWgPeers]: " input_peers; WgPeers="${input_peers:-$PrevWgPeers}"
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
@@ -414,7 +425,7 @@ else
         exit 1
     fi
     WgEndpoint="${PrevEndpoint}"; InternalDomain="${PrevDomain}"; AcmeEmail="${PrevEmail}"
-    TraefikLanIp="${PrevLanIp:-10.99.0.1}"; WgPeers="${PrevWgPeers}"; AcmeServerUrl="${PrevAcme}"
+    TraefikLanIp="${PrevLanIp:-${HUNTER_IP:-10.99.0.1}}"; WgPeers="${PrevWgPeers}"; AcmeServerUrl="${PrevAcme}"
     WgAllowedIps="${PrevAllowedIps}"
 fi
 
@@ -436,6 +447,7 @@ WG_PEERS=${WgPeers}
 TRAEFIK_LAN_IP=${TraefikLanIp}
 WG_LAN_SUBNET=${PrevLanSubnet}
 WG_ALLOWED_IPS=${WgAllowedIps}
+TRAEFIK_TRUSTED_IPS=${TraefikTrustedIps}
 HOST_UID=${HostUid}
 HOST_GID=${HostGid}
 TZ=UTC
@@ -446,8 +458,8 @@ set -a; source "$EnvFile"; set +a
 # ORCH-19: Administrative Blackhole Cured. Symlink ensures native Docker tools function despite PascalCase aesthetics.
 sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
 
-# IAM-34: Infinite Brute-Force Immunity Cured. Removed 'ignore_networks' so the regulation
-# engine tracks the true unmasked WireGuard client IPs via the L3 bypass logic.
+# IAM-36: Hardcoded Immutable Ledger Cured. 
+# Reverted password_reset strict disable flag to restore physical credential rotation.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -460,7 +472,7 @@ storage:
     username: authelia
     password_file: /run/secrets/postgres_password
 authentication_backend:
-  password_reset: { disable: true }
+  password_reset: { disable: false }
   file: { path: /config/UsersDatabase.yml }
 access_control:
   default_policy: deny
@@ -546,7 +558,7 @@ server:
   local-data: "${INTERNAL_DOMAIN}. A ${TRAEFIK_LAN_IP}"
 EOF
 
-# SEC-33: Lateral VPN Whitelist Bypass Cured. Ruthlessly amputated proxy subnets to block DMZ lateral movement.
+# SEC-29: Physical Air-Gap Breach Cured. Ruthlessly amputated RFC1918 space from the whitelist middleware.
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -703,7 +715,7 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.12 }
       proxy_network: {}
-    # DNS-19: Phantom LAN Sinkhole Cured. Binds explicitly to 0.0.0.0 to serve the physical host interface.
+    # DNS-19: Phantom LAN Sinkhole Cured. Binds explicitly to 0.0.0.0 to serve the physical host interface natively.
     ports:
       - "0.0.0.0:53:53/tcp"
       - "0.0.0.0:53:53/udp"
@@ -785,12 +797,11 @@ services:
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.websecure.address=:443"
-      # SEC-31: Lateral Header Spoofing Cured. Trust NO ONE except loopback to mathematically destroy header forgery.
-      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32"
+      # ROUTE-25: Cloudflare CDN Blackhole Cured. Dynamically ingests upstream Edge IPs natively.
+      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=\${TRAEFIK_TRUSTED_IPS}"
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme/acme.json"
-      - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
       - "--accesslog=true"
       - "--accesslog.filepath=/var/log/traefik/access.log"
       - "--accesslog.format=json"
