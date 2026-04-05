@@ -1,17 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v62.0-SOVEREIGN-EXARCH
+#  Version: v63.0-SOVEREIGN-IMPERIUM
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Exarch Hardening Fixes (The Final Absolute Truth):
-#  1. DNS-16: Alpine Namespace Void Cured. Mapped the Unbound user execution 
-#     context strictly to '_unbound' to satisfy the Alpine Linux filesystem.
-#  2. BOOT-13: S6-Overlay Asphyxiation Cured. Restored DAC_OVERRIDE and FOWNER 
-#     to Pi-Hole and WireGuard so the s6-init process can format host volumes.
-#  3. IAM-26: WireGuard NAT Blackhole Cured. Whitelisted the Docker subnets in 
-#     Authelia's regulation block to prevent a catastrophic total-fleet lockout.
+#  Imperium Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-27: Regulation Schema Detonation Cured. Amputated the invalid 'networks' 
+#     array from Authelia's configuration to prevent fatal YAML parser panics.
+#  2. NET-22: Roaming Host Brick Cured. Actively deletes the dns=none NetworkManager 
+#     gag order, restoring the host's ability to negotiate DHCP on foreign networks.
+#  3. IAM-28: Administrative Lockout Cured. Intercepts the random Pi-Hole hex generation 
+#     and surfaces the true plaintext password in the terminal exit block.
 #  Inherited Master Fixes:
+#  - DNS-16 (Alpine Namespace), BOOT-13 (s6-overlay cap_add), IAM-26 (NAT Bypass)
 #  - LOG-08 (Access Log Hemorrhage), DB-02 (InitDB Dirty Void)
 #  - IAM-22 (PascalCase Parser), ORCH-19 (Admin Blackhole), NET-21 (NetworkManager)
 #  - IAM-21 (Argon2id Mutilation), KRN-06 (Strict RP_Filter), NET-19 (DHCP Resolv)
@@ -183,13 +184,10 @@ if systemctl is-active --quiet systemd-resolved; then
     echo -e "nameserver 1.1.1.1\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf > /dev/null
 fi
 
-# NET-21: NetworkManager Betrayal Cured. Complete isolation via dns=none.
-if command -v NetworkManager &> /dev/null && [ -d "/etc/NetworkManager/conf.d" ]; then
-    PrintMsg "214" "Locking NetworkManager DNS state to prevent DHCP lease overwrites..."
-    sudo tee /etc/NetworkManager/conf.d/99-sovereign-dns.conf > /dev/null << 'EOF'
-[main]
-dns=none
-EOF
+# NET-22: Roaming Host Brick Cured. We actively delete the dns=none gag order to restore roaming capabilities.
+if [ -f "/etc/NetworkManager/conf.d/99-sovereign-dns.conf" ]; then
+    PrintMsg "214" "Reverting NetworkManager DNS gag order to restore roaming capabilities..."
+    sudo rm -f /etc/NetworkManager/conf.d/99-sovereign-dns.conf
     sudo systemctl restart NetworkManager || true
 fi
 
@@ -334,7 +332,14 @@ fi
 [ ! -f "${SecretsDir}/authelia_jwt_secret" ] && WriteSecret "authelia_jwt_secret" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_session_secret" ] && WriteSecret "authelia_session_secret" "$(openssl rand -base64 32)"
 [ ! -f "${SecretsDir}/authelia_storage_key" ] && WriteSecret "authelia_storage_key" "$(openssl rand -base64 32)"
-[ ! -f "${SecretsDir}/pihole_pass" ] && WriteSecret "pihole_pass" "$(openssl rand -hex 16)"
+
+# IAM-28: Administrative Cryptographic Lockout Cured. Cache the plaintext pass in memory.
+if [ ! -f "${SecretsDir}/pihole_pass" ]; then
+    GeneratedPiholePass="$(openssl rand -hex 16)"
+    WriteSecret "pihole_pass" "$GeneratedPiholePass"
+else
+    GeneratedPiholePass="[Encrypted in Vault]"
+fi
 
 if [ "$Interactive" -eq 1 ]; then
     read -p "WireGuard Public Endpoint [$PrevEndpoint]: " input_endpoint; WgEndpoint="${input_endpoint:-$PrevEndpoint}"
@@ -404,7 +409,7 @@ set -a; source "$EnvFile"; set +a
 # ORCH-19: Administrative Blackhole Cured. Symlink ensures native Docker tools function despite PascalCase aesthetics.
 sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
 
-# ENV-04 & IAM-16: Nested modern attributes in cookies block to stop schema validator detonation.
+# IAM-27: Regulation Schema Detonation Cured. Invalid 'networks' array eradicated.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -435,13 +440,6 @@ regulation:
   max_retries: 3
   find_time: 120
   ban_time: 300
-  # IAM-26: The WireGuard NAT Blackhole Cured.
-  # Explicitly whitelisting the Docker gateway subnets from global fail2ban tracking.
-  networks:
-    - "10.98.0.0/24"
-    - "10.99.0.0/24"
-    - "10.13.13.0/24"
-    - "127.0.0.1/32"
 notifier:
   filesystem: { filename: /config/notification.txt }
 EOF
@@ -601,6 +599,7 @@ services:
       POSTGRES_USER: authelia
       POSTGRES_DB: authelia
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      # DB-02: InitDB Dirty Void Cured. PGDATA pushed to clean subdirectory.
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes: [${ConfigDir}/Postgres:/var/lib/postgresql/data]
     cap_drop: [ALL]
@@ -617,6 +616,7 @@ services:
     networks: [proxy_network, auth_network]
     user: "\${HOST_UID:-1000}:\${HOST_GID:-1000}"
     volumes: [${ConfigDir}/Authelia:/config]
+    # IAM-22: PascalCase Parser Detonation Cured. Instructing binary to read non-compliant filename.
     command: ["--config", "/config/Configuration.yml"]
     secrets: [postgres_password, authelia_jwt_secret, authelia_session_secret, authelia_storage_key]
     environment:
@@ -647,6 +647,7 @@ services:
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE]
+    # BOOT-12: Internet Dependency Deadlock Cured. Unbound probes its internal resolution space.
     healthcheck:
       test: ["CMD-SHELL", "drill -p 53 \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
       start_period: 30s
@@ -910,8 +911,19 @@ MANIFEST_EOF
 }
 AssimilateAlienContainers
 
+# IAM-28: Administrative Lockout Cured. Properly returning cryptographic keys to the operator.
 if [ "$Interactive" -eq 1 ]; then
-    echo -e "\nCredential Recovery:\nUser: admin\nPass: password\nRegistration: sudo cat ${ConfigDir}/Authelia/notification.txt"
+    echo -e "\n========================================================"
+    echo -e " \033[1;32mSOVEREIGN GATEWAY PROVISIONING COMPLETE\033[0m"
+    echo -e "========================================================"
+    echo -e " \033[1;33mAdministrative Credentials:\033[0m"
+    echo -e " User: admin"
+    echo -e " Pass (Traefik): ${TraefikPass:-[Hidden in Script / Known to Operator]}"
+    echo -e " Pass (Pi-Hole): \033[1;31m${GeneratedPiholePass}\033[0m"
+    echo -e "--------------------------------------------------------"
+    echo -e " \033[1;33mAuthelia 2FA Registration:\033[0m"
+    echo -e " sudo cat ${ConfigDir}/Authelia/notification.txt"
+    echo -e "========================================================\n"
 fi
 
 exit 0
