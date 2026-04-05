@@ -1,20 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v101.0-SOVEREIGN-GENESIS
+#  Version: v102.0-SOVEREIGN-PALLADIUM-V2
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
 #
-#  Genesis Hardening Fixes (The Final Absolute Truth):
-#  1. DNS-37: Security Theater Cured. Amputated the flawed Bash-level GPG 
-#     verification that was hardcoded to bypass its own failures. Root hints 
-#     are fetched via strict HTTPS, and true cryptographic DNSSEC validation 
-#     is safely deferred to the native unbound-anchor binary inside the container.
-#  2. IAM-66: Unmarshaler Detonation v7 Cured. Verified the absolute eradication 
-#     of the deprecated 'password_reset' key from the authentication_backend block.
-#  3. SEC-44: Layer 7 Blindness Cured. Re-injected \${TRAEFIK_TRUSTED_IPS} into 
-#     the Traefik command array. The proxy will now correctly parse X-Forwarded-For 
-#     headers from Cloudflare, restoring forensic visibility for threat detection.
+#  Palladium-V2 Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-66: Unmarshaler Detonation v8 Cured. Ruthlessly amputated the 
+#     hallucinated 'password_file' key from the storage.postgres YAML block. 
+#     Secret injection relies purely on AUTHELIA_STORAGE_POSTGRES_PASSWORD_FILE.
+#  2. PROXY-08: CLI Parser Detonation Cured. Corrected Traefik's strict 
+#     camelCase arguments (--entrypoints.web.http.redirections.entryPoint.to).
+#  3. SEC-45: Header Atrophy Cured. Restored 'contentTypeNosniff: true' and 
+#     'browserXssFilter: true' to the secure-headers middleware matrix to 
+#     mathematically seal Layer 7 degradation vectors.
 #
 #  SECURITY WARNING: This script implements Scorched Earth policies. It will
 #  destroy unassimilated containers, modify live kernel routing tables, and 
@@ -359,7 +358,6 @@ else
     WgAllowedIps="${PrevAllowedIps}"
 fi
 
-# IAM-65: Storage Key Entropy Detonation Cured. Expanded base64 generation to 64 bytes (88 chars).
 [ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 64)" "70:$HostGid" "640"
 [ ! -f "${SecretsDir}/authelia_jwt_secret" ] && WriteSecret "authelia_jwt_secret" "$(openssl rand -base64 64)"
 [ ! -f "${SecretsDir}/authelia_session_secret" ] && WriteSecret "authelia_session_secret" "$(openssl rand -base64 64)"
@@ -423,7 +421,7 @@ if [ -n "${PrevAcme:-}" ] && [ "${PrevAcme}" != "${AcmeServerUrl}" ]; then
     sudo chmod 600 "$TraefikAcmeFile"
 fi
 
-# The Absolute Identity Matrix (IAM-66 Cured: password_reset strictly expunged)
+# IAM-66: Unmarshaler Detonation v8 Cured. Explicitly eradicated 'password_file' from postgres dictionary.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -471,7 +469,6 @@ sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/Authelia"
 sudo chmod 600 "${ConfigDir}/Authelia/UsersDatabase.yml" "${ConfigDir}/Authelia/Configuration.yml" "${ConfigDir}/Authelia/Notification.txt"
 
 # DNS-37: Security Theater Cured. Excised bash-level GPG checks to prevent false aborts and silent bypasses.
-# DNSSEC validation is strictly deferred to Unbound's native 'unbound-anchor' binary.
 PrintMsg "240" "Bootstrapping DNS Root Hints via HTTPS (DNSSEC validation deferred to Unbound)..."
 sudo curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root" -o "${ConfigDir}/Unbound/RootHints.txt" || true
 
@@ -509,13 +506,15 @@ server:
   local-data: "${InternalDomain}. A 10.98.0.254"
 EOF
 
-# SEC-43: Identity Surface Exposure Cured. Injected 'vpn-whitelist' into auth-router middlewares.
+# SEC-45: Header Atrophy Cured. Restored 'contentTypeNosniff' and 'browserXssFilter'.
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
     secure-headers:
       headers:
         stsSeconds: 31536000
+        contentTypeNosniff: true
+        browserXssFilter: true
         customResponseHeaders:
           X-Frame-Options: "SAMEORIGIN"
           X-XSS-Protection: "1; mode=block"
@@ -721,15 +720,16 @@ services:
     depends_on:
       DockerSocketProxy: { condition: service_healthy }
       Authelia: { condition: service_healthy }
+    # PROXY-08: CLI Parser Detonation Cured. Strictly applied camelCase 'entryPoint' to resolve boot exceptions.
     command:
       - "--providers.docker=true"
       - "--providers.docker.endpoint=tcp://DockerSocketProxy:2375"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--entrypoints.web.address=:80"
-      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
       - "--entrypoints.websecure.address=:443"
-      # SEC-44: Layer 7 Blindness Cured. Cloudflare edge IPs dynamically appended to allow forensic header parsing.
       - "--entrypoints.websecure.forwardedHeaders.trustedIPs=\${TRAEFIK_TRUSTED_IPS},127.0.0.1/32,10.98.0.0/24,10.99.0.0/24"
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
