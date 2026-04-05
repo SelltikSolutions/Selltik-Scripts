@@ -1,15 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v81.0-SOVEREIGN-MONOLITH
+#  Version: v82.0-SOVEREIGN-OBSIDIAN
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Monolith Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-41: Unmarshaler Detonation Cured. Eradicated the deprecated password_file 
-#     key from Authelia's YAML generation struct to prevent fatal daemon panics.
-#  2. CONFIG-02: Double-Injected PreDown Parasites Cured. Constrained AWK regex 
-#     to target ONLY the PostUp masquerade hook, preventing duplicate rule stacking.
+#  Obsidian Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-46: Session Array Detonation Cured. Surgically flattened the Authelia 
+#     session block to conform to the strict v4.38+ YAML schema, eradicating the 
+#     deprecated 'cookies' array to prevent fatal unmarshaler panics on boot.
+#  2. NET-31: Carriage Return Poisoning Cured. Injected 'tr -d \r' into the 
+#     Cloudflare API pipeline to mathematically sanitize CRLF line endings, 
+#     preventing Traefik from choking on invisible control characters.
 #  Inherited Master Fixes:
+#  - IAM-41 (Unmarshaler Detonation), CONFIG-02 (PreDown Parasites)
 #  - BOOT-16 (S6 Init Paradox), IAM-38 (Deprecated Authz Endpoint)
 #  - TLS-08 (ACME Ghosting), CONFIG-01 (Template Stagnation), SEC-36 (DMZ Bypass)
 #  - SEC-35 (Lateral Trust Hallucination), IAM-40 (Idempotent Password Wipe)
@@ -227,9 +230,10 @@ fi
 
 # ROUTE-25: Cloudflare CDN Blackhole Cured. Dynamically mapping upstream Edge IP vectors.
 # SEC-35: Lateral Trust Hallucination Cured. Eradicated internal Docker subnets from the array.
+# NET-31: Carriage Return Poisoning Cured. Injected 'tr -d \r' to mathematically sanitize CRLF line endings.
 PrintMsg "240" "Fetching Cloudflare Edge IP ranges for Layer 7 header authentication..."
-CfIpsV4=$(curl -s --max-time 10 https://www.cloudflare.com/ips-v4 | tr '\n' ',' || echo "173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22")
-CfIpsV6=$(curl -s --max-time 10 https://www.cloudflare.com/ips-v6 | tr '\n' ',' || echo "2400:cb00::/32,2606:4700::/32,2803:f800::/32,2405:b500::/32,2405:8100::/32,2a06:98c0::/29,2c0f:f248::/32")
+CfIpsV4=$(curl -s --max-time 10 https://www.cloudflare.com/ips-v4 | tr -d '\r' | tr '\n' ',' || echo "173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22")
+CfIpsV6=$(curl -s --max-time 10 https://www.cloudflare.com/ips-v6 | tr -d '\r' | tr '\n' ',' || echo "2400:cb00::/32,2606:4700::/32,2803:f800::/32,2405:b500::/32,2405:8100::/32,2a06:98c0::/29,2c0f:f248::/32")
 TraefikTrustedIps="127.0.0.1/32,${CfIpsV4%,},${CfIpsV6%,}"
 
 # KRN-04 & KRN-06: STIG Scorched Earth Kernel Hardening + RP_Filter Asymmetrical Downgrade (Value: 2)
@@ -481,9 +485,8 @@ set -a; source "$EnvFile"; set +a
 # ORCH-19: Administrative Blackhole Cured. Symlink ensures native Docker tools function despite PascalCase aesthetics.
 sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
 
-# IAM-36 & IAM-41: Hardcoded Immutable Ledger & Unmarshaler Detonation Cured. 
-# Reverted password_reset strict disable flag to restore physical credential rotation.
-# Surgically eradicated the deprecated password_file key from the YAML struct to prevent fatal daemon parsing panics.
+# IAM-36 & IAM-41 & IAM-46: Immutable Ledger, Unmarshaler Detonation, & Session Array Detonation Cured.
+# Flattened the session block schema entirely to conform to strict v4.38+ YAML generation.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -503,12 +506,10 @@ access_control:
     - domain: "*.${InternalDomain}"
       policy: two_factor
 session:
-  cookies:
-    - domain: "${InternalDomain}"
-      authelia_url: "https://auth.${InternalDomain}"
-      name: authelia_session
-      expiration: 3600
-      inactivity: 300
+  name: authelia_session
+  domain: "${InternalDomain}"
+  expiration: 3600
+  inactivity: 300
 regulation:
   max_retries: 3
   find_time: 120
