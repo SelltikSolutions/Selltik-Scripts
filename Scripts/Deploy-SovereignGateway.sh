@@ -1,20 +1,20 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v68.0-SOVEREIGN-ECLIPSE
+#  Version: v69.0-SOVEREIGN-SINGULARITY
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Eclipse Hardening Fixes (The Final Absolute Truth):
-#  1. ORCH-22: HAProxy/Socat Schism Cured. Swapped the dummy socat proxy for 
-#     the true HAProxy-backed tecnativa image to enforce Layer 7 API filtering.
-#  2. BOOT-14: Module Capability Asphyxiation Cured. Restored SYS_MODULE to 
-#     WireGuard so s6-init can legally modprobe the kernel without a panic.
-#  3. IAM-32: Resurrection of the NAT Blackhole Cured. Injected an s6-overlay 
-#     init script to surgically bypass WireGuard's MASQUERADE for proxy subnets, 
-#     preserving true client IPs for Authelia's fail2ban tracking engine.
+#  Singularity Hardening Fixes (The Final Absolute Truth):
+#  1. TLS-07: Traefik CLI Detonation Cured. Eradicated the invalid boolean 
+#     dnschallenge flag. Struct implicit activation via provider is now enforced.
+#  2. ROUTE-23: Asymmetrical Routing Blackhole Cured. Amputated the brittle NAT 
+#     bypass script from WireGuard. Restored native MASQUERADE to fix the return path.
+#  3. ORCH-24: Event Stream Blindness Cured. Injected EVENTS=1 into the HAProxy 
+#     socket proxy to legally authorize Traefik's dynamic container discovery.
 #  Inherited Master Fixes:
-#  - DB-03 (Posix Asphyxiation), TLS-06 (ACME Challenge), ORCH-21 (Update Chain)
+#  - ORCH-22 (HAProxy/Socat Schism), BOOT-14 (Module Capability Asphyxiation)
 #  - IAM-30 (Access Control Schema), IAM-31 (Zero-Trust NAT Annihilation)
+#  - DB-03 (Posix Asphyxiation), TLS-06 (ACME Challenge), ORCH-21 (Update Chain)
 #  - HEALTH-09 (CLI Detonation), LOG-10 (Ghost Path), IAM-29 (Cookie Schema)
 #  - HEALTH-07 (Healthcheck API), TLS-05 (CertResolver), IAM-27 (Regulation Schema)
 #  - NET-22 (Roaming Brick), IAM-28 (Admin Lockout), DNS-16 (Alpine Namespace)
@@ -288,17 +288,10 @@ sudo chown -R 70:70 "${ConfigDir}/Postgres"
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard" "${ConfigDir}/Authelia" "$TraefikLogDir"
 sudo chown -R 999:999 "${ConfigDir}/PiHole"
 
-# IAM-32: Resurrection of the NAT Blackhole Cured. S6-overlay init script to bypass masquerade.
-PrintMsg "214" "Surgically injecting Layer 3 iptables bypass for WireGuard NAT..."
-sudo mkdir -p "${ConfigDir}/WireGuard/custom-cont-init.d"
-sudo tee "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh" > /dev/null << 'EOF'
-#!/bin/bash
-# Surgically inject an iptables RETURN rule before the MASQUERADE to un-mask true client IPs for Traefik/Authelia.
-iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true
-iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true
-EOF
-sudo chmod +x "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh"
-sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/custom-cont-init.d"
+# ROUTE-23: Asymmetrical Routing Blackhole Cured. 
+# We explicitly allow WireGuard to MASQUERADE the outbound traffic. 
+# Attempting to bypass NAT at Layer 3 breaks the physical host's return path.
+sudo rm -rf "${ConfigDir}/WireGuard/custom-cont-init.d" 2>/dev/null || true
 
 # Prevent authelia from crashing trying to touch an inexistent file.
 sudo touch "${ConfigDir}/Authelia/notification.txt"
@@ -596,12 +589,12 @@ secrets:
   traefik_auth: { file: ${SecretsDir}/traefik_auth }
 
 services:
-  # ORCH-22: HAProxy/Socat Schism Cured. Swapped dummy socat for strict HAProxy filter logic.
+  # ORCH-22 & ORCH-24: HAProxy Schism Cured. EVENTS=1 strictly restores dynamic stream API access.
   docker_socket_proxy:
     image: tecnativa/docker-socket-proxy:latest
     container_name: docker_socket_proxy
     networks: [socket_network]
-    environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, SECRETS=0, POST=0]
+    environment: [CONTAINERS=1, NETWORKS=1, VERSION=1, SECRETS=0, POST=0, EVENTS=1]
     volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID]
@@ -771,8 +764,7 @@ services:
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme/acme.json"
-      # TLS-06: ACME Challenge Omission Cured. Explicit dnschallenge=true boolean restored.
-      - "--certificatesresolvers.cloudflare.acme.dnschallenge=true"
+      # TLS-07: Traefik CLI Detonation Cured. Implicit struct activation via provider enforcement.
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
       - "--accesslog=true"
       - "--accesslog.filepath=/var/log/traefik/access.log"
