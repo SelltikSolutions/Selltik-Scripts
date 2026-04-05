@@ -1,19 +1,21 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v84.0-SOVEREIGN-ECLIPSE
+#  Version: v85.0-SOVEREIGN-AEON
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Eclipse Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-53: Open-Redirect Singularity Cured. Eradicated deprecated query 
-#     parameters and explicitly injected 'external_url' into the Authelia root 
-#     server matrix, shattering the infinite HTTP 302 redirect loop.
+#  Aeon Hardening Fixes (The Final Absolute Truth):
+#  1. TLS-11: ACME Inode Deadlock Cured. Migrated Traefik volume from a file-level 
+#     bind-mount to a directory-level mount to authorize atomic rename() syscalls.
+#  2. ORCH-31: WireGuard Stagnation Trap Cured. Injected STATE_TRIGGER into the 
+#     WireGuard environment matrix to force Docker Compose state recreation on IP changes.
 #  Inherited Master Fixes:
-#  - IAM-52 (ForwardAuth Redirection), LOG-14 (Ghost Log Artifact)
-#  - IAM-46 (Session Array Detonation), NET-31 (CRLF Poisoning)
-#  - IAM-41 (Unmarshaler Detonation), CONFIG-02 (PreDown Parasites)
-#  - BOOT-16 (S6 Init Paradox), IAM-38 (Deprecated Authz Endpoint)
-#  - TLS-08 (ACME Ghosting), CONFIG-01 (Template Stagnation), SEC-36 (DMZ Bypass)
+#  - IAM-53 (Open-Redirect Singularity), IAM-52 (ForwardAuth Redirection)
+#  - LOG-14 (Ghost Log Artifact), IAM-46 (Session Array Detonation)
+#  - NET-31 (CRLF Poisoning), IAM-41 (Unmarshaler Detonation)
+#  - CONFIG-02 (PreDown Parasites), BOOT-16 (S6 Init Paradox)
+#  - IAM-38 (Deprecated Authz Endpoint), TLS-08 (ACME Ghosting)
+#  - CONFIG-01 (Template Stagnation), SEC-36 (DMZ Bypass)
 #  - SEC-35 (Lateral Trust Hallucination), IAM-40 (Idempotent Password Wipe)
 #  - ORCH-26 (Watchdog Amnesia), ENV-05 (Strict Nounset Detonation)
 #  - BOOT-15 (S6-Overlay Init Destruction), ROUTE-26 (Whitelist Trap)
@@ -309,8 +311,8 @@ ExecuteAnnihilation
 # VOL-02: Database Lockout Cured. Strict directory creation.
 sudo mkdir -p "$StackDir" "$TraefikLogDir" "$ScriptsDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d" "${ConfigDir}/Unbound" "$TraefikAcmeDir"
 
-# LOG-12: Root Ownership Paradox Cured. 
-# TraefikLogDir explicitly locked to root:root to appease logrotate strict parent checks.
+# LOG-12 & TLS-11: Root Ownership Paradox & ACME Inode Deadlock Cured.
+# The TraefikAcmeDir directory is firmly owned by root:root, explicitly enabling the daemon's atomic rename() syscalls.
 sudo chown -R root:root "$TraefikLogDir" "$TraefikAcmeDir"
 
 sudo chown -R 70:70 "${ConfigDir}/Postgres"
@@ -451,9 +453,6 @@ if [ -f "${ConfigDir}/WireGuard/wg0.conf" ]; then
     sudo awk '/PostUp.*-j MASQUERADE/ {print; print "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN || true"; next}1' "${ConfigDir}/WireGuard/wg0.conf" > /tmp/wg0.tmp && sudo mv /tmp/wg0.tmp "${ConfigDir}/WireGuard/wg0.conf"
     sudo chown "$HostUid:$HostGid" "${ConfigDir}/WireGuard/wg0.conf"
 fi
-
-# Eradicate the legacy initialization paradox script to ensure terminal cleanliness.
-sudo rm -f "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh"
 
 # TLS-03 & TLS-08: ACME State Lockout Cured. State-transition awareness added for CA pivots.
 if [ -n "${PrevAcme:-}" ] && [ "${PrevAcme}" != "${AcmeServerUrl}" ]; then
@@ -785,6 +784,7 @@ services:
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
+    # ORCH-31: WireGuard Stagnation Trap Cured. STATE_TRIGGER guarantees a compose recreation when the physical LAN IP changes.
     environment:
       PUID: "\${HOST_UID}"
       PGID: "\${HOST_GID}"
@@ -794,6 +794,7 @@ services:
       PEERDNS: 10.99.0.12
       INTERNAL_SUBNET: "10.13.13.0/24"
       ALLOWEDIPS: "\${WG_ALLOWED_IPS}"
+      STATE_TRIGGER: "\${TRAEFIK_LAN_IP}"
     volumes:
       - /lib/modules:/lib/modules:ro
       - ${ConfigDir}/WireGuard:/config
@@ -808,10 +809,10 @@ services:
     container_name: traefik_proxy
     networks: [socket_network, proxy_network]
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
-    # TLS-08: ACME Directory Ghosting Cured. Explicit alignment with root:root host volume.
+    # TLS-11: ACME Inode Deadlock Cured. Directory-level mount strictly enables the atomic rename() syscall for Let's Encrypt generation.
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
-      - ${TraefikAcmeFile}:/etc/traefik/acme/acme.json:rw
+      - ${TraefikAcmeDir}:/etc/traefik/acme:rw
       - ${TraefikLogDir}:/var/log/traefik:rw
     secrets: [cf_api_token, traefik_auth]
     environment: [CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token]
