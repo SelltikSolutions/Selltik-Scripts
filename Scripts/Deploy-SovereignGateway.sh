@@ -1,16 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v92.0-SOVEREIGN-AEGIS
+#  Version: v93.0-SOVEREIGN-BASTION
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Aegis Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-59: Socket Binding Suicide Cured. Eradicated AUTHELIA_SERVER_ADDRESS 
-#     to prevent the identity engine from attempting to bind a TCP socket to an 
-#     HTTPS URL, resolving the fatal boot crash.
-#  2. ORCH-36: Multidimensional Firewall Hallucinations Cured. Amputated host-level 
-#     iptables deletion commands that vainly targeted isolated Docker network namespaces.
+#  Bastion Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-62: Redirection Singularity v4 Cured. Injected the ?authelia_url 
+#     query parameter into Traefik's middleware to unmarshaler-safely anchor 
+#     the origin portal and shatter the infinite HTTP 302 redirect loop.
+#  2. DNS-26: Supply Chain Boot Poisoning Cured. The initial deployment sequence 
+#     now executes strict GPG signature verification against the InterNIC root 
+#     trust anchors before bootstrapping the DNS resolver.
 #  Inherited Master Fixes:
+#  - IAM-59 (Socket Binding Suicide), ORCH-36 (Namespace Hallucinations)
 #  - IAM-58 (Redirection Singularity v3), ORCH-38 (Selective Immortality)
 #  - NET-42 (TCP DNS Truncation Drop), IAM-56 (Unmarshaler Detonation v5)
 #  - NET-36 (Asymmetrical DNS Blackhole), BOOT-17 (Missing Entrypoint)
@@ -455,11 +457,9 @@ PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d ${TraefikLanIp}/32 
 EOF
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/templates"
 
-# CONFIG-01, CONFIG-02 & ORCH-36: Template Stagnation & Namespace Hallucinations Cured.
+# CONFIG-01, CONFIG-02, & NET-34: Template Stagnation, Parasites, & Memory Leaks Cured.
 # Active parsing logic dynamically injects the physical LAN IP routing bypass directly into 
 # the active wg0.conf exactly ONCE on every boot. 
-# Explicitly removed 'iptables -D' from the host execution context. We natively rely on Docker 
-# container lifecycle events to tear down and recreate the network namespace.
 if [ -f "${ConfigDir}/WireGuard/wg0.conf" ]; then
     PrintMsg "214" "Dynamically injecting active routing bypass into existing wg0.conf..."
     sudo sed -i '/-j RETURN/d' "${ConfigDir}/WireGuard/wg0.conf"
@@ -552,7 +552,31 @@ fi
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/Authelia"
 sudo chmod 600 "${ConfigDir}/Authelia/UsersDatabase.yml" "${ConfigDir}/Authelia/Configuration.yml" "${ConfigDir}/Authelia/notification.txt"
 
-# DNS-12: PGP-Pinned Root Hint Verification Utility
+# DNS-12 & DNS-26: Supply Chain Boot Poisoning Cured.
+# Initial deployment sequence now executes strict GPG signature verification against 
+# the authoritative InterNIC trust anchors prior to execution.
+PrintMsg "240" "Bootstrapping cryptographically verified DNS Root Trust Anchors..."
+EphKeyring="${ConfigDir}/Unbound/icann.gpg"
+sudo curl -sS --connect-timeout 10 "https://www.internic.net/domain/named.root" -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
+sudo curl -sS --connect-timeout 10 "https://www.internic.net/domain/named.root.sig" -o "${ConfigDir}/Unbound/RootHints.txt.sig" || true
+sudo curl -sS --connect-timeout 10 "https://data.iana.org/root-anchors/icann.pgp" -o "${ConfigDir}/Unbound/icann.pgp" || true
+
+sudo gpg --no-default-keyring --keyring "$EphKeyring" --import "${ConfigDir}/Unbound/icann.pgp" >/dev/null 2>&1 || true
+
+if ! sudo gpg --no-default-keyring --keyring "$EphKeyring" --fingerprint 0x0BD07395 | tr -d ' ' | grep -q "E0F2C1291162E536E8EEEEF0F781C36C0BD07395"; then
+    PrintMsg "196" "[FATAL] DNS Root Trust Anchor Compromised. MitM detected."
+    exit 1
+fi
+
+if sudo gpg --no-default-keyring --keyring "$EphKeyring" --verify "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
+    sudo mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
+    sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/icann.pgp" "$EphKeyring" "${EphKeyring}~"
+    PrintMsg "82" "✔ Root Hints cryptographically verified and installed."
+else
+    PrintMsg "196" "[FATAL] GPG Signature verification failed for DNS root hints."
+    exit 1
+fi
+
 RootHintUtility="${ScriptsDir}/Verify-RootHints.sh"
 sudo tee "$RootHintUtility" > /dev/null << 'EOF'
 #!/bin/bash
@@ -582,9 +606,6 @@ fi
 EOF
 sudo chmod 700 "$RootHintUtility"
 
-PrintMsg "240" "Verifying DNS Root Integrity via PGP Pinning..."
-sudo "$RootHintUtility" || exit 1
-
 # DNS-16 & ENV-05: Alpine Namespace Void Cured. Variable expansion mathematically stabilized.
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
@@ -601,7 +622,8 @@ server:
 EOF
 
 # SEC-29: Physical Air-Gap Breach Cured. Ruthlessly amputated RFC1918 space from the whitelist middleware.
-# IAM-38 & IAM-52 & IAM-53: Deprecated Authz Endpoint & Redirection Singularity Cured. Clean modernized verification target.
+# IAM-38 & IAM-62: Deprecated Authz Endpoint & Redirection Singularity v4 Cured. 
+# Clean modernized verification target with mathematically anchored authelia_url query parameter.
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -616,7 +638,7 @@ http:
         sourceRange: ["10.13.13.0/24", "127.0.0.1/32"]
     authelia:
       forwardAuth:
-        address: "http://authelia:9091/api/authz/forward-auth"
+        address: "http://authelia:9091/api/authz/forward-auth?authelia_url=https://auth.${InternalDomain}/"
         trustForwardHeader: true
         authResponseHeaders: ["Remote-User", "Remote-Groups", "Remote-Name", "Remote-Email"]
     traefik-auth:
@@ -721,7 +743,6 @@ services:
       AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret
       AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_key
       AUTHELIA_STORAGE_POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-      # IAM-59: Socket Binding Suicide Cured. Eradicated AUTHELIA_SERVER_ADDRESS variable mapping.
     depends_on:
       auth_db: { condition: service_healthy }
     cap_drop: [ALL]
