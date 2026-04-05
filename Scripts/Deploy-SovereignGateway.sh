@@ -1,24 +1,26 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v86.0-SOVEREIGN-NEXUS
+#  Version: v87.0-SOVEREIGN-ZENITH
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Nexus Hardening Fixes (The Final Absolute Truth):
-#  1. ORCH-35: Systemd Watchdog Lockout Cured. Injected ReadWritePaths=-/run/xtables.lock 
-#     to mathematically authorize the sandboxed daemon to manipulate the L3 firewall.
-#  2. NET-34: Ghost Iptables Memory Leak Cured. Script now extracts and physically 
-#     flushes legacy IPs from the live kernel before mutating the active disk templates.
-#  3. IAM-47: Unmarshaler Detonation v2 Cured. Eradicated the deprecated password_reset 
-#     boolean from the Authelia matrix. The identity engine now boots flawlessly.
+#  Zenith Hardening Fixes (The Final Absolute Truth):
+#  1. SEC-37: L3 DMZ Bypass V2 Cured. Assigned Traefik a static IP (10.98.0.254) 
+#     and restricted Watchdog VPN forwarding strictly to that proxy address.
+#  2. IAM-48: Unmarshaler Detonation v3 Cured. Completely eradicated the hallucinated 
+#     external_url parameter from the identity schema to prevent fatal boot panics.
+#  3. DNS-25: Ghost Inode Deadlock Cured. Upgraded the Sovereign Updater to execute 
+#     --force-recreate unbound_dns, physically breaking the stale file lock and 
+#     natively ingesting the weekly cryptographic root anchor updates.
 #  Inherited Master Fixes:
-#  - TLS-11 (ACME Inode Deadlock), ORCH-31 (WireGuard Stagnation Trap)
-#  - IAM-53 (Open-Redirect Singularity), IAM-52 (ForwardAuth Redirection)
-#  - LOG-14 (Ghost Log Artifact), IAM-46 (Session Array Detonation)
-#  - NET-31 (CRLF Poisoning), IAM-41 (Unmarshaler Detonation)
-#  - CONFIG-02 (PreDown Parasites), BOOT-16 (S6 Init Paradox)
-#  - IAM-38 (Deprecated Authz Endpoint), TLS-08 (ACME Ghosting)
-#  - CONFIG-01 (Template Stagnation), SEC-36 (DMZ Bypass)
+#  - ORCH-35 (Watchdog Lockout), NET-34 (Ghost Iptables Memory Leak)
+#  - IAM-47 (Unmarshaler Detonation v2), TLS-11 (ACME Inode Deadlock)
+#  - ORCH-31 (WireGuard Stagnation Trap), IAM-53 (Open-Redirect Singularity)
+#  - IAM-52 (ForwardAuth Redirection), LOG-14 (Ghost Log Artifact)
+#  - IAM-46 (Session Array Detonation), NET-31 (CRLF Poisoning)
+#  - IAM-41 (Unmarshaler Detonation), CONFIG-02 (PreDown Parasites)
+#  - BOOT-16 (S6 Init Paradox), IAM-38 (Deprecated Authz Endpoint)
+#  - TLS-08 (ACME Ghosting), CONFIG-01 (Template Stagnation), SEC-36 (DMZ Bypass)
 #  - SEC-35 (Lateral Trust Hallucination), IAM-40 (Idempotent Password Wipe)
 #  - ORCH-26 (Watchdog Amnesia), ENV-05 (Strict Nounset Detonation)
 #  - BOOT-15 (S6-Overlay Init Destruction), ROUTE-26 (Whitelist Trap)
@@ -494,15 +496,14 @@ set -a; source "$EnvFile"; set +a
 # ORCH-19: Administrative Blackhole Cured. Symlink ensures native Docker tools function despite PascalCase aesthetics.
 sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
 
-# IAM-36, IAM-41, IAM-46, IAM-53, & IAM-47: Identity Matrix Cured.
+# IAM-36, IAM-41, IAM-46, IAM-53, IAM-47 & IAM-48: Identity Matrix Cured.
 # Eradicated the deprecated password_reset and password_file directives. 
 # Flattened the session block schema entirely to conform to strict v4.38+ YAML generation.
-# Explicit external_url mathematically shatters the redirect infinite loop.
+# IAM-48: Purged the hallucinated external_url from the root server block to prevent Unmarshaler suicide.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
   port: 9091
-  external_url: "https://auth.${InternalDomain}"
 storage:
   postgres:
     host: auth_db
@@ -820,7 +821,11 @@ services:
   traefik_proxy:
     image: traefik:v2.11
     container_name: traefik_proxy
-    networks: [socket_network, proxy_network]
+    # SEC-37: L3 DMZ Bypass V2 Cured. Assigned a static, immutable proxy IP to ruthlessly anchor the Watchdog's VPN isolation rules.
+    networks: 
+      socket_network: {}
+      proxy_network: 
+        ipv4_address: 10.98.0.254
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
     # TLS-11: ACME Inode Deadlock Cured. Directory-level mount strictly enables the atomic rename() syscall for Let's Encrypt generation.
     volumes:
@@ -854,7 +859,8 @@ services:
     restart: unless-stopped
 EOF
 
-# ORCH-21: Update Chain Brittleness Cured. Separated ExecStart sequences prevent total lifecycle halts.
+# ORCH-21 & DNS-25: Ghost Inode Deadlock Cured. 
+# Replaced soft-restart with --force-recreate. Docker will now legally drop the stale RootHints.txt inode lock and mount the fresh weekly anchor.
 sudo tee /etc/systemd/system/sovereign-updater.service > /dev/null << EOF
 [Unit]
 Description=Sovereign Gateway Weekly Updater
@@ -863,7 +869,7 @@ After=network-online.target docker.service
 [Service]
 Type=oneshot
 ExecStart=-/usr/bin/bash -c '${RootHintUtility}'
-ExecStart=/usr/bin/bash -c 'cd ${StackDir} && ${DockerBin} compose -f ${ComposeFile} pull && ${DockerBin} compose -f ${ComposeFile} up -d && ${DockerBin} image prune -f && ${DockerBin} compose -f ${ComposeFile} restart unbound_dns'
+ExecStart=/usr/bin/bash -c 'cd ${StackDir} && ${DockerBin} compose -f ${ComposeFile} pull && ${DockerBin} compose -f ${ComposeFile} up -d --force-recreate unbound_dns && ${DockerBin} image prune -f'
 PrivateTmp=yes
 
 [Install]
@@ -883,7 +889,8 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# SEC-36: L3 DMZ Bypass Cured. Restricts DOCKER-USER forwarding STRICTLY to Traefik proxy ports.
+# SEC-36 & SEC-37: L3 DMZ Bypass V2 Cured. 
+# VPN clients are mathematically forbidden from touching 10.98.0.0/24 directly. They are hard-routed ONLY to Traefik's static 10.98.0.254 interface.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
@@ -896,9 +903,9 @@ for i in {1..30}; do
     sleep 2
 done
 
-if ! iptables -C DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null; then
-    iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.0/24 -p tcp -m multiport --dports 80,443 -j ACCEPT
-    iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.0/24 -p tcp -m multiport --sports 80,443 -j ACCEPT
+if ! iptables -C DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null; then
+    iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT
+    iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.254/32 -p tcp -m multiport --sports 80,443 -j ACCEPT
 fi
 
 if ! ip route show | grep -q "10.13.13.0/24 via 10.99.0.10"; then
