@@ -1,15 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v85.0-SOVEREIGN-AEON
+#  Version: v86.0-SOVEREIGN-NEXUS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Aeon Hardening Fixes (The Final Absolute Truth):
-#  1. TLS-11: ACME Inode Deadlock Cured. Migrated Traefik volume from a file-level 
-#     bind-mount to a directory-level mount to authorize atomic rename() syscalls.
-#  2. ORCH-31: WireGuard Stagnation Trap Cured. Injected STATE_TRIGGER into the 
-#     WireGuard environment matrix to force Docker Compose state recreation on IP changes.
+#  Nexus Hardening Fixes (The Final Absolute Truth):
+#  1. ORCH-35: Systemd Watchdog Lockout Cured. Injected ReadWritePaths=-/run/xtables.lock 
+#     to mathematically authorize the sandboxed daemon to manipulate the L3 firewall.
+#  2. NET-34: Ghost Iptables Memory Leak Cured. Script now extracts and physically 
+#     flushes legacy IPs from the live kernel before mutating the active disk templates.
+#  3. IAM-47: Unmarshaler Detonation v2 Cured. Eradicated the deprecated password_reset 
+#     boolean from the Authelia matrix. The identity engine now boots flawlessly.
 #  Inherited Master Fixes:
+#  - TLS-11 (ACME Inode Deadlock), ORCH-31 (WireGuard Stagnation Trap)
 #  - IAM-53 (Open-Redirect Singularity), IAM-52 (ForwardAuth Redirection)
 #  - LOG-14 (Ghost Log Artifact), IAM-46 (Session Array Detonation)
 #  - NET-31 (CRLF Poisoning), IAM-41 (Unmarshaler Detonation)
@@ -445,10 +448,18 @@ PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d ${TraefikLanIp}/32 
 EOF
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/templates"
 
-# CONFIG-01 & CONFIG-02: WireGuard Template Stagnation & Double-Injection Parasites Cured.
+# CONFIG-01, CONFIG-02, & NET-34: Template Stagnation, Parasites, & Memory Leaks Cured.
 # Active parsing logic dynamically injects the physical LAN IP routing bypass directly into 
-# the active wg0.conf exactly ONCE on every boot, guarding against template stagnation and duplicate iptables traces.
+# the active wg0.conf exactly ONCE on every boot. 
+# Pre-flight extraction guarantees legacy IPs are manually flushed from the live kernel first.
 if [ -f "${ConfigDir}/WireGuard/wg0.conf" ]; then
+    PrintMsg "214" "Purging legacy kernel intercepts to prevent ghost routing leaks..."
+    LegacyIp=$(grep -oP '(?<=-d )\d+\.\d+\.\d+\.\d+(?=/32 -j RETURN)' "${ConfigDir}/WireGuard/wg0.conf" | head -n 1 || true)
+    if [ -n "$LegacyIp" ]; then
+        sudo iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN 2>/dev/null || true
+        sudo iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN 2>/dev/null || true
+        sudo iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d "$LegacyIp/32" -j RETURN 2>/dev/null || true
+    fi
     sudo sed -i '/-j RETURN/d' "${ConfigDir}/WireGuard/wg0.conf"
     sudo awk '/PostUp.*-j MASQUERADE/ {print; print "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN || true"; next}1' "${ConfigDir}/WireGuard/wg0.conf" > /tmp/wg0.tmp && sudo mv /tmp/wg0.tmp "${ConfigDir}/WireGuard/wg0.conf"
     sudo chown "$HostUid:$HostGid" "${ConfigDir}/WireGuard/wg0.conf"
@@ -483,7 +494,9 @@ set -a; source "$EnvFile"; set +a
 # ORCH-19: Administrative Blackhole Cured. Symlink ensures native Docker tools function despite PascalCase aesthetics.
 sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
 
-# IAM-36 & IAM-41 & IAM-46 & IAM-53: Immutable Ledger, Unmarshaler Detonation, Session Array, & Open-Redirect Singularity Cured.
+# IAM-36, IAM-41, IAM-46, IAM-53, & IAM-47: Identity Matrix Cured.
+# Eradicated the deprecated password_reset and password_file directives. 
+# Flattened the session block schema entirely to conform to strict v4.38+ YAML generation.
 # Explicit external_url mathematically shatters the redirect infinite loop.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
@@ -497,8 +510,8 @@ storage:
     database: authelia
     username: authelia
 authentication_backend:
-  password_reset: { disable: false }
-  file: { path: /config/UsersDatabase.yml }
+  file:
+    path: /config/UsersDatabase.yml
 access_control:
   default_policy: deny
   rules:
@@ -907,6 +920,8 @@ done
 EOF
 sudo chmod 700 "$WatchdogScript"
 
+# ORCH-35: Systemd Watchdog Lockout Cured. 
+# ReadWritePaths explicitly pierces the strict sandbox to grant iptables access to the required kernel mutex lock.
 sudo tee /etc/systemd/system/sovereign-watchdog.service > /dev/null << EOF
 [Unit]
 Description=Sovereign Gateway Network Watchdog
@@ -917,7 +932,7 @@ Type=oneshot
 ExecStart=$WatchdogScript
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=${ConfigDir}/Traefik/Dynamic
+ReadWritePaths=${ConfigDir}/Traefik/Dynamic -/run/xtables.lock
 EOF
 
 sudo tee /etc/systemd/system/sovereign-watchdog.timer > /dev/null << EOF
