@@ -1,27 +1,27 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v79.0-SOVEREIGN-EXCALIBUR
+#  Version: v80.0-SOVEREIGN-ASTRAL
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Excalibur Hardening Fixes (The Final Absolute Truth):
-#  1. TLS-08: ACME Directory Ghosting Cured. Realigned script variables to target 
-#     the true TraefikAcme volume mount. CA pivots will now correctly wipe state.
-#  2. CONFIG-01: WireGuard Template Stagnation Cured. The init script now uses sed 
-#     to dynamically replace legacy RETURN rules in the active wg0.conf on boot.
-#  3. SEC-36: L3 DMZ Bypass Cured. Watchdog DOCKER-USER rules are now restricted 
-#     exclusively to TCP 80/443, mathematically trapping VPN users behind Traefik.
+#  Astral Hardening Fixes (The Final Absolute Truth):
+#  1. BOOT-16: S6-Overlay Init Paradox Cured. Extracted the volatile custom-init 
+#     script and deployed an indestructible awk parser to physically seed the 
+#     WireGuard template and inject active NAT return rules on every deployment.
+#  2. IAM-38: Deprecated Authz Endpoint Cured. Upgraded the Traefik middleware 
+#     forwardAuth definition to target the modern v4.38+ /api/authz/forward-auth 
+#     endpoint, eradicating the permanent 404 authentication void.
 #  Inherited Master Fixes:
+#  - ENV-05 (Strict Nounset Detonation), BOOT-15 (S6-Overlay Init Destruction)
 #  - SEC-35 (Lateral Trust Hallucination), IAM-40 (Idempotent Password Wipe)
-#  - ORCH-26 (Watchdog Amnesia), ENV-05 (Strict Nounset Detonation)
-#  - BOOT-15 (S6-Overlay Init Destruction), ROUTE-26 (Whitelist Trap)
-#  - IAM-37 (Communal Ban), NET-28 (Watchdog Boot-Storm), IAM-36 (Immutable Ledger)
-#  - ROUTE-25 (CDN Blackhole), DNS-20 (LAN Void), NET-27 (NAT Bypass Timing)
-#  - SEC-32 (L3 Engine Exposure), SEC-33 (VPN Whitelist), SEC-31 (Lateral Header Spoofing)
-#  - DNS-19 (Phantom LAN Sinkhole), ROUTE-24 (Cross-Bridge Void), LOG-12 (Root Ownership)
-#  - IAM-35 (Immutable DB), SEC-29 (Air-Gap Breach), IAM-34 (Brute-Force Immunity)
-#  - LOG-11 (Parent Panic), IAM-33 (Fail2Ban Mass Extinction), SEC-28 (Header Spoofing)
-#  - DNS-17 (Loopback), TLS-07 (Traefik CLI Detonation), ROUTE-23 (Asymmetrical Routing Void)
+#  - ORCH-26 (Watchdog Amnesia), ROUTE-26 (Whitelist Trap), IAM-37 (Communal Ban)
+#  - NET-28 (Watchdog Boot-Storm), IAM-36 (Immutable Ledger), ROUTE-25 (CDN Blackhole)
+#  - DNS-20 (LAN Void), NET-27 (NAT Bypass Timing), SEC-32 (L3 Engine Exposure)
+#  - SEC-33 (VPN Whitelist), SEC-31 (Lateral Header Spoofing), DNS-19 (Phantom Sinkhole)
+#  - ROUTE-24 (Cross-Bridge Void), LOG-12 (Root Ownership), IAM-35 (Immutable DB)
+#  - SEC-29 (Air-Gap Breach), IAM-34 (Brute-Force Immunity), LOG-11 (Parent Panic)
+#  - IAM-33 (Fail2Ban Mass Extinction), SEC-28 (Header Spoofing), DNS-17 (Loopback)
+#  - TLS-07 (Traefik CLI Detonation), ROUTE-23 (Asymmetrical Routing Void)
 #  - ORCH-24 (Event Stream Blindness), ORCH-22 (HAProxy/Socat Schism)
 #  - BOOT-14 (Module Capability Asphyxiation), IAM-30 (Access Control Schema)
 #  - IAM-31 (Zero-Trust NAT Annihilation), DB-03 (Posix Asphyxiation)
@@ -307,6 +307,7 @@ ExecuteAnnihilation
 sudo mkdir -p "$StackDir" "$TraefikLogDir" "$ScriptsDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d" "${ConfigDir}/Unbound" "$TraefikAcmeDir"
 
 # LOG-12: Root Ownership Paradox Cured. 
+# TraefikLogDir explicitly locked to root:root to appease logrotate strict parent checks.
 sudo chown -R root:root "$TraefikLogDir" "$TraefikAcmeDir"
 
 sudo chown -R 70:70 "${ConfigDir}/Postgres"
@@ -418,25 +419,38 @@ else
     WgAllowedIps="${PrevAllowedIps}"
 fi
 
-# CONFIG-01: WireGuard Template Stagnation Cured. 
-# Active parsing logic dynamically injects the physical LAN IP routing bypass directly into 
-# the active wg0.conf on every boot, guaranteeing protection against topology changes.
-PrintMsg "214" "Surgically scripting dynamic Layer 3 iptables bypass for WireGuard NAT..."
-sudo mkdir -p "${ConfigDir}/WireGuard/custom-cont-init.d"
-sudo tee "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh" > /dev/null << EOF
-#!/bin/bash
-if [ -f "/config/wg0.conf" ]; then
-    sed -i '/-j RETURN/d' /config/wg0.conf 2>/dev/null || true
-    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN" >> /config/wg0.conf
-    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN" >> /config/wg0.conf
-    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN" >> /config/wg0.conf
-    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true" >> /config/wg0.conf
-    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true" >> /config/wg0.conf
-    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN || true" >> /config/wg0.conf
-fi
+# BOOT-16: S6-Overlay Init Paradox Cured.
+# The volatile custom-cont-init script has been eradicated. We now physically seed the 
+# WireGuard template directly, ensuring the native container initialization ingests it.
+PrintMsg "214" "Surgically seeding WireGuard server template to inject L3 NAT bypass..."
+sudo mkdir -p "${ConfigDir}/WireGuard/templates"
+sudo tee "${ConfigDir}/WireGuard/templates/server.conf" > /dev/null << EOF
+[Interface]
+Address = \${INTERFACE}.1
+ListenPort = \${SERVER_PORT}
+PrivateKey = \${PRIVATE_KEY}
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o \${SERVER_DEVICE} -j MASQUERADE
+PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN
+PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN
+PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN
+PreDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o \${SERVER_DEVICE} -j MASQUERADE
+PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true
+PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true
+PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN || true
 EOF
-sudo chmod +x "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh"
-sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/custom-cont-init.d"
+sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/templates"
+
+# CONFIG-01: WireGuard Template Stagnation Cured.
+# If the configuration already exists, we deploy an indestructible awk parser to dynamically 
+# inject the live RETURN rules directly into wg0.conf, preserving existing private keys.
+if [ -f "${ConfigDir}/WireGuard/wg0.conf" ]; then
+    sudo sed -i '/-j RETURN/d' "${ConfigDir}/WireGuard/wg0.conf"
+    sudo awk '/-j MASQUERADE/ {print; print "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN || true"; next}1' "${ConfigDir}/WireGuard/wg0.conf" > /tmp/wg0.tmp && sudo mv /tmp/wg0.tmp "${ConfigDir}/WireGuard/wg0.conf"
+    sudo chown "$HostUid:$HostGid" "${ConfigDir}/WireGuard/wg0.conf"
+fi
+
+# Eradicate the legacy initialization paradox script to ensure terminal cleanliness.
+sudo rm -f "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh"
 
 # TLS-03 & TLS-08: ACME State Lockout Cured. State-transition awareness added for CA pivots.
 if [ -n "${PrevAcme:-}" ] && [ "${PrevAcme}" != "${AcmeServerUrl}" ]; then
@@ -571,6 +585,7 @@ server:
 EOF
 
 # SEC-29: Physical Air-Gap Breach Cured. Ruthlessly amputated RFC1918 space from the whitelist middleware.
+# IAM-38: Deprecated Authz Endpoint Cured. Modernized Authelia forwardAuth verification target to v4.38 standards.
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -585,9 +600,9 @@ http:
         sourceRange: ["10.13.13.0/24", "127.0.0.1/32"]
     authelia:
       forwardAuth:
-        address: "http://authelia:9091/api/verify?rd=https://auth.${InternalDomain}/"
+        address: "http://authelia:9091/api/authz/forward-auth"
         trustForwardHeader: true
-        authResponseHeaders: ["Remote-User", "Remote-Groups"]
+        authResponseHeaders: ["Remote-User", "Remote-Groups", "Remote-Name", "Remote-Email"]
     traefik-auth:
       basicAuth:
         usersFile: "/run/secrets/traefik_auth"
@@ -792,7 +807,7 @@ services:
     container_name: traefik_proxy
     networks: [socket_network, proxy_network]
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
-    # TLS-08: ACME Directory Ghosting Cured. Exact volume path alignment to the host generator script.
+    # LOG-12: Root Ownership Paradox Cured. Explicit alignment with root:root host volume.
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
       - ${TraefikAcmeFile}:/etc/traefik/acme/acme.json:rw
@@ -809,6 +824,7 @@ services:
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.websecure.address=:443"
+      # ROUTE-25: Cloudflare CDN Blackhole Cured. Dynamically ingests upstream Edge IPs natively.
       - "--entrypoints.websecure.forwardedHeaders.trustedIPs=\${TRAEFIK_TRUSTED_IPS}"
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
