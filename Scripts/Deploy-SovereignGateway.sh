@@ -1,15 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v61.0-SOVEREIGN-PANTHEON
+#  Version: v62.0-SOVEREIGN-EXARCH
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Pantheon Hardening Fixes (The Final Absolute Truth):
-#  1. LOG-08: Access Log Hemorrhage Cured. Injected a strict logrotate constraint 
-#     to mathematically bound the physical Traefik logs via copytruncate and compression.
-#  2. DB-02: InitDB Dirty Void Cured. Explicitly declared PGDATA in auth_db to 
-#     force initialization in a sub-directory, bypassing host metadata conflicts.
+#  Exarch Hardening Fixes (The Final Absolute Truth):
+#  1. DNS-16: Alpine Namespace Void Cured. Mapped the Unbound user execution 
+#     context strictly to '_unbound' to satisfy the Alpine Linux filesystem.
+#  2. BOOT-13: S6-Overlay Asphyxiation Cured. Restored DAC_OVERRIDE and FOWNER 
+#     to Pi-Hole and WireGuard so the s6-init process can format host volumes.
+#  3. IAM-26: WireGuard NAT Blackhole Cured. Whitelisted the Docker subnets in 
+#     Authelia's regulation block to prevent a catastrophic total-fleet lockout.
 #  Inherited Master Fixes:
+#  - LOG-08 (Access Log Hemorrhage), DB-02 (InitDB Dirty Void)
 #  - IAM-22 (PascalCase Parser), ORCH-19 (Admin Blackhole), NET-21 (NetworkManager)
 #  - IAM-21 (Argon2id Mutilation), KRN-06 (Strict RP_Filter), NET-19 (DHCP Resolv)
 #  - DNS-14 (Resolv Symlink Vacuum), TLS-04 (Null ACME), NTP-02 (Chrony Sync)
@@ -432,6 +435,13 @@ regulation:
   max_retries: 3
   find_time: 120
   ban_time: 300
+  # IAM-26: The WireGuard NAT Blackhole Cured.
+  # Explicitly whitelisting the Docker gateway subnets from global fail2ban tracking.
+  networks:
+    - "10.98.0.0/24"
+    - "10.99.0.0/24"
+    - "10.13.13.0/24"
+    - "127.0.0.1/32"
 notifier:
   filesystem: { filename: /config/notification.txt }
 EOF
@@ -483,12 +493,13 @@ sudo chmod 700 "$RootHintUtility"
 PrintMsg "240" "Verifying DNS Root Integrity via PGP Pinning..."
 sudo "$RootHintUtility" || exit 1
 
+# DNS-16: Alpine Namespace Void Cured. Strictly mapped execution to '_unbound'.
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
   interface: 0.0.0.0
   port: 53
   do-ip4: yes
-  username: "unbound"
+  username: "_unbound"
   root-hints: "/opt/unbound/etc/unbound/root.hints"
   auto-trust-anchor-file: "/opt/unbound/etc/unbound/keys/root.key"
   access-control: 127.0.0.0/8 allow
@@ -590,7 +601,6 @@ services:
       POSTGRES_USER: authelia
       POSTGRES_DB: authelia
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-      # DB-02: InitDB Dirty Void Cured. PGDATA pushed to clean subdirectory.
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes: [${ConfigDir}/Postgres:/var/lib/postgresql/data]
     cap_drop: [ALL]
@@ -607,7 +617,6 @@ services:
     networks: [proxy_network, auth_network]
     user: "\${HOST_UID:-1000}:\${HOST_GID:-1000}"
     volumes: [${ConfigDir}/Authelia:/config]
-    # IAM-22: PascalCase Parser Detonation Cured. Instructing binary to read non-compliant filename.
     command: ["--config", "/config/Configuration.yml"]
     secrets: [postgres_password, authelia_jwt_secret, authelia_session_secret, authelia_storage_key]
     environment:
@@ -638,7 +647,6 @@ services:
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE]
-    # BOOT-12: Internet Dependency Deadlock Cured. Unbound probes its internal resolution space.
     healthcheck:
       test: ["CMD-SHELL", "drill -p 53 \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
       start_period: 30s
@@ -666,7 +674,8 @@ services:
     depends_on:
       unbound_dns: { condition: service_healthy }
     cap_drop: [ALL]
-    cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, KILL, NET_BIND_SERVICE, SYS_NICE]
+    # BOOT-13: S6-Overlay Asphyxiation Cured. DAC_OVERRIDE and FOWNER legally restored.
+    cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, KILL, NET_BIND_SERVICE, SYS_NICE, DAC_OVERRIDE, FOWNER]
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.pihole.rule=Host(\`pihole.\${INTERNAL_DOMAIN}\`)"
@@ -686,7 +695,8 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.10 }
     cap_drop: [ALL]
-    cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID]
+    # BOOT-13: S6-Overlay Asphyxiation Cured. DAC_OVERRIDE and FOWNER legally restored.
+    cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER]
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
