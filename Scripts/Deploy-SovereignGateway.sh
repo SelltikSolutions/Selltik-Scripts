@@ -1,15 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v73.0-SOVEREIGN-PALLADIUM
+#  Version: v74.0-SOVEREIGN-OMEGA
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Palladium Hardening Fixes (The Final Absolute Truth):
-#  1. SEC-31: Lateral Header Spoofing Cured. Eradicated internal Docker subnets 
-#     from Traefik's trustedIPs array to mathematically block X-Forwarded-For forgery.
-#  2. DNS-19: Phantom LAN Sinkhole Cured. Re-bound Pi-Hole to 0.0.0.0:53 to 
-#     escape the Docker gateway isolation and serve the physical host LAN natively.
+#  Omega Hardening Fixes (The Final Absolute Truth):
+#  1. NET-27: NAT Bypass Timing Void Cured. Injected PostUp hooks directly into 
+#     wg0.conf to ensure RETURN rules mathematically execute after wg-quick.
+#  2. SEC-32: L3 Docker Engine Exposure Cured. Restricted DOCKER-USER iptables 
+#     rules to strictly authorize forwarding only to the Traefik proxy network.
+#  3. SEC-33: Lateral VPN Whitelist Bypass Cured. Amputated internal proxy 
+#     subnets from vpn-whitelist to block DMZ-to-Admin lateral movement.
 #  Inherited Master Fixes:
+#  - SEC-31 (Lateral Header Spoofing), DNS-19 (Phantom LAN Sinkhole)
 #  - ROUTE-24 (Cross-Bridge Void), LOG-12 (Root Ownership), IAM-35 (Immutable DB)
 #  - SEC-29 (Air-Gap Breach), IAM-34 (Brute-Force Immunity), LOG-11 (Parent Panic)
 #  - IAM-33 (Fail2Ban Mass Extinction), SEC-28 (Header Spoofing), DNS-17 (Loopback)
@@ -296,14 +299,18 @@ sudo chown -R 70:70 "${ConfigDir}/Postgres"
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard"
 sudo chown -R 999:999 "${ConfigDir}/PiHole"
 
-# IAM-34: Layer 3 NAT Bypass resurrected to unmask VPN client IPs for Authelia.
+# NET-27: NAT Bypass Timing Void Cured. 
+# Injects PostUp hooks directly into wg0.conf to guarantee execution AFTER wg-quick MASQUERADE.
 PrintMsg "214" "Surgically injecting Layer 3 iptables bypass for WireGuard NAT..."
 sudo mkdir -p "${ConfigDir}/WireGuard/custom-cont-init.d"
 sudo tee "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh" > /dev/null << 'EOF'
 #!/bin/bash
-# Surgically inject an iptables RETURN rule before the MASQUERADE to un-mask true client IPs for Traefik/Authelia.
-iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true
-iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true
+if ! grep -q "10.98.0.0/16 -j RETURN" /config/wg0.conf 2>/dev/null; then
+    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN" >> /config/wg0.conf
+    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN" >> /config/wg0.conf
+    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true" >> /config/wg0.conf
+    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true" >> /config/wg0.conf
+fi
 EOF
 sudo chmod +x "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh"
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/custom-cont-init.d"
@@ -539,7 +546,7 @@ server:
   local-data: "${INTERNAL_DOMAIN}. A ${TRAEFIK_LAN_IP}"
 EOF
 
-# SEC-29: Physical Air-Gap Breach Cured. Ruthlessly amputated RFC1918 space from the whitelist middleware.
+# SEC-33: Lateral VPN Whitelist Bypass Cured. Ruthlessly amputated proxy subnets to block DMZ lateral movement.
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -551,7 +558,7 @@ http:
           X-XSS-Protection: "1; mode=block"
     vpn-whitelist:
       ipAllowList:
-        sourceRange: ["10.13.13.0/24", "10.98.0.0/24", "10.99.0.0/24", "127.0.0.1/32"]
+        sourceRange: ["10.13.13.0/24", "127.0.0.1/32"]
     authelia:
       forwardAuth:
         address: "http://authelia:9091/api/verify?rd=https://auth.${INTERNAL_DOMAIN}/"
@@ -823,14 +830,14 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# ROUTE-24: Cross-Bridge Void Cured. 
-# Legally authorizes cross-bridge NAT return paths in the DOCKER-USER iptables chain.
+# SEC-32: L3 Docker Engine Exposure Cured. 
+# Explicitly restricts DOCKER-USER forwarding to target ONLY the 10.98.0.0/24 proxy network.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
-if ! iptables -C DOCKER-USER -s 10.13.13.0/24 -j ACCEPT 2>/dev/null; then
-    iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -j ACCEPT
-    iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -j ACCEPT
+if ! iptables -C DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -j ACCEPT 2>/dev/null; then
+    iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.0/24 -j ACCEPT
+    iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.0/24 -j ACCEPT
 fi
 
 if ! ip route show | grep -q "10.13.13.0/24 via 10.99.0.10"; then
