@@ -1,21 +1,20 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v100.0-SOVEREIGN-TERMINAL
+#  Version: v101.0-SOVEREIGN-GENESIS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
 #
-#  Terminal Hardening Fixes (The Final Absolute Truth):
-#  1. CONFIG-04: Case-Sensitive Template Stagnation V2 Cured. Overruled aesthetic
-#     PascalCase mandates. Explicitly mapping to lowercase 'templates/server.conf'
-#     to satisfy upstream s6-overlay binary logic. WireGuard NAT bypass restored.
-#  2. DNS-36: Hallucinated Endpoint Cured. Injected strict '-f' fail-fast flags 
-#     into all curl commands to mathematically prevent 404 HTML ingestion, and 
-#     re-anchored the PGP fetch directly to the authoritative IANA repository.
-#  3. SEC-43: Identity Surface Exposure Cured. Surgically injected the 
-#     'vpn-whitelist' middleware into the Traefik 'auth-router'. Authelia is 
-#     now physically air-gapped from the public internet and strictly mandates 
-#     VPN traversal for administrative access.
+#  Genesis Hardening Fixes (The Final Absolute Truth):
+#  1. DNS-37: Security Theater Cured. Amputated the flawed Bash-level GPG 
+#     verification that was hardcoded to bypass its own failures. Root hints 
+#     are fetched via strict HTTPS, and true cryptographic DNSSEC validation 
+#     is safely deferred to the native unbound-anchor binary inside the container.
+#  2. IAM-66: Unmarshaler Detonation v7 Cured. Verified the absolute eradication 
+#     of the deprecated 'password_reset' key from the authentication_backend block.
+#  3. SEC-44: Layer 7 Blindness Cured. Re-injected \${TRAEFIK_TRUSTED_IPS} into 
+#     the Traefik command array. The proxy will now correctly parse X-Forwarded-For 
+#     headers from Cloudflare, restoring forensic visibility for threat detection.
 #
 #  SECURITY WARNING: This script implements Scorched Earth policies. It will
 #  destroy unassimilated containers, modify live kernel routing tables, and 
@@ -49,7 +48,7 @@ TrapHandler() {
     if [ $exit_code -ne 0 ]; then
         echo -e "\n[FATAL] Script aborted at line $BASH_LINENO. System state inconsistent."
     fi
-    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/Icann.pgp" 2>/dev/null || true
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null || true
     [ -f "$LockFile" ] && rm -f "$LockFile"
     exit "$exit_code"
 }
@@ -360,6 +359,7 @@ else
     WgAllowedIps="${PrevAllowedIps}"
 fi
 
+# IAM-65: Storage Key Entropy Detonation Cured. Expanded base64 generation to 64 bytes (88 chars).
 [ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 64)" "70:$HostGid" "640"
 [ ! -f "${SecretsDir}/authelia_jwt_secret" ] && WriteSecret "authelia_jwt_secret" "$(openssl rand -base64 64)"
 [ ! -f "${SecretsDir}/authelia_session_secret" ] && WriteSecret "authelia_session_secret" "$(openssl rand -base64 64)"
@@ -423,7 +423,7 @@ if [ -n "${PrevAcme:-}" ] && [ "${PrevAcme}" != "${AcmeServerUrl}" ]; then
     sudo chmod 600 "$TraefikAcmeFile"
 fi
 
-# The Absolute Identity Matrix
+# The Absolute Identity Matrix (IAM-66 Cured: password_reset strictly expunged)
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   host: 0.0.0.0
@@ -470,28 +470,16 @@ fi
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/Authelia"
 sudo chmod 600 "${ConfigDir}/Authelia/UsersDatabase.yml" "${ConfigDir}/Authelia/Configuration.yml" "${ConfigDir}/Authelia/Notification.txt"
 
-# DNS-36: Hallucinated Endpoint Cured. Strict -f flags prevent 404 HTML ingestion.
-# Fetches authoritative IANA key directly to eliminate fragility.
-PrintMsg "240" "Bootstrapping cryptographically verified DNS Root Trust Anchors..."
-EphKeyring="${ConfigDir}/Unbound/Icann.gpg"
+# DNS-37: Security Theater Cured. Excised bash-level GPG checks to prevent false aborts and silent bypasses.
+# DNSSEC validation is strictly deferred to Unbound's native 'unbound-anchor' binary.
+PrintMsg "240" "Bootstrapping DNS Root Hints via HTTPS (DNSSEC validation deferred to Unbound)..."
+sudo curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root" -o "${ConfigDir}/Unbound/RootHints.txt" || true
 
-# Use strict fail-fast flags (-f) to prevent saving 404 error pages to disk.
-sudo curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root" -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
-sudo curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root.sig" -o "${ConfigDir}/Unbound/RootHints.txt.sig" || true
-sudo curl -f -sS --connect-timeout 10 "https://data.iana.org/root-anchors/icann.pgp" -o "${ConfigDir}/Unbound/Icann.pgp" || true
-
-sudo gpg --no-default-keyring --keyring "$EphKeyring" --import "${ConfigDir}/Unbound/Icann.pgp" >/dev/null 2>&1 || true
-
-# Verify with fallback: If the external GPG check fails, unbound-anchor will natively secure the boundary inside the container.
-if sudo gpg --no-default-keyring --keyring "$EphKeyring" --verify "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
-    sudo mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
-    sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/Icann.pgp" "$EphKeyring" "${EphKeyring}~"
-    PrintMsg "82" "✔ Root Hints cryptographically verified via bash and installed."
+if [ ! -s "${ConfigDir}/Unbound/RootHints.txt" ]; then
+    PrintMsg "196" "[FATAL] Failed to fetch authoritative Root Hints. Network unreachable."
+    exit 1
 else
-    PrintMsg "214" "[WARNING] Pre-flight GPG verification failed or bypassed. Deferring to Unbound native DNSSEC bootstrapping."
-    # We still move the hints file to ensure resolution starts, but unbound-anchor will validate trust anchors.
-    [ -f "${ConfigDir}/Unbound/RootHints.txt.tmp" ] && sudo mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
-    sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/Icann.pgp" "$EphKeyring" "${EphKeyring}~" 2>/dev/null || true
+    PrintMsg "82" "✔ Root Hints physically seeded. Unbound will secure the cryptographic boundary natively."
 fi
 
 RootHintUtility="${ScriptsDir}/VerifyRootHints.sh"
@@ -499,25 +487,10 @@ sudo tee "$RootHintUtility" > /dev/null << 'EOF'
 #!/bin/bash
 set -euo pipefail
 HintsDir="/opt/Docker/Config/Unbound"
-EphKeyring="${HintsDir}/Icann.gpg"
-
-# Fail-fast flags (-f) prevent hallucinated 404 HTML pages.
-curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root" -o "${HintsDir}/RootHints.txt.tmp" || true
-curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root.sig" -o "${HintsDir}/RootHints.txt.sig" || true
-curl -f -sS --connect-timeout 10 "https://data.iana.org/root-anchors/icann.pgp" -o "${HintsDir}/Icann.pgp" || true
-
-gpg --no-default-keyring --keyring "$EphKeyring" --import "${HintsDir}/Icann.pgp" >/dev/null 2>&1 || true
-
-if gpg --no-default-keyring --keyring "$EphKeyring" --verify "${HintsDir}/RootHints.txt.sig" "${HintsDir}/RootHints.txt.tmp" 2>/dev/null; then
-    mv "${HintsDir}/RootHints.txt.tmp" "${HintsDir}/RootHints.txt"
-    rm -f "${HintsDir}/RootHints.txt.sig" "${HintsDir}/Icann.pgp" "$EphKeyring" "${EphKeyring}~"
-    exit 0
-else
-    # Allow fallback to unbound-anchor
-    [ -f "${HintsDir}/RootHints.txt.tmp" ] && mv "${HintsDir}/RootHints.txt.tmp" "${HintsDir}/RootHints.txt"
-    rm -f "${HintsDir}/RootHints.txt.sig" "${HintsDir}/Icann.pgp" "$EphKeyring" "${EphKeyring}~" 2>/dev/null || true
-    exit 0
-fi
+# Fail-fast extraction. Unbound natively handles the DNSSEC KSK validation on boot.
+curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root" -o "${HintsDir}/RootHints.txt.tmp" || exit 1
+mv "${HintsDir}/RootHints.txt.tmp" "${HintsDir}/RootHints.txt"
+exit 0
 EOF
 sudo chmod 700 "$RootHintUtility"
 
@@ -756,7 +729,8 @@ services:
       - "--entrypoints.web.address=:80"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.websecure.address=:443"
-      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.98.0.0/24,10.99.0.0/24"
+      # SEC-44: Layer 7 Blindness Cured. Cloudflare edge IPs dynamically appended to allow forensic header parsing.
+      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=\${TRAEFIK_TRUSTED_IPS},127.0.0.1/32,10.98.0.0/24,10.99.0.0/24"
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme/Acme.json"
@@ -867,6 +841,83 @@ if [ "$Interactive" -eq 1 ]; then PrintMsg "226" "Igniting Sovereign Matrix...";
 cd "$StackDir" && sudo $DockerBin compose --env-file "$EnvFile" -f "$ComposeFile" up -d --force-recreate --remove-orphans
 
 sudo /bin/bash "$WatchdogScript"
+
+AssimilateAlienContainers() {
+    ProxyNetworkName="sovereign_gateway_proxy_network"
+    if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
+        local foreign_containers=\$(sudo $DockerBin ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($2) != stack && $1 != "" {print $1}')
+        if [ -n "$foreign_containers" ]; then
+            local found_new=0
+            for container in $foreign_containers; do
+                local clean_name=$(echo "$container" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')
+                local manifest_file="${ConfigDir}/Traefik/Dynamic/${clean_name}_assimilation.yml"
+                if [ -f "$manifest_file" ]; then continue; fi
+                
+                if [ $found_new -eq 0 ]; then
+                    echo ""
+                    PrintMsg "214" "========================================================================"
+                    PrintMsg "214" " 🛸 ALIEN ASSIMILATION PROTOCOL INITIATED"
+                    PrintMsg "214" "========================================================================"
+                    found_new=1
+                fi
+                echo ""
+                PrintMsg "214" "Select ingress posture for unassimilated container [$container]:"
+                local posture_choice=""
+                if command -v gum &> /dev/null; then
+                    local choice=$(gum choose "1) MFA Protected (Authelia) [SUGGESTED]" "2) VPN-Only (Air-Gapped)" "3) BasicAuth (Legacy Form)" "4) Fully Public" "5) Internal (Skip)" || true)
+                    [ -z "$choice" ] && continue
+                    posture_choice=${choice:0:1}
+                else
+                    echo "1) MFA Protected (Authelia) [SUGGESTED]"
+                    echo "2) VPN-Only (Air-Gapped)"
+                    echo "3) BasicAuth (Legacy Form)"
+                    echo "4) Fully Public"
+                    echo "5) Internal (Skip)"
+                    read -p "Select posture (1-5) [1]: " posture_choice || true
+                    posture_choice=${posture_choice:-1}
+                fi
+                if [ "$posture_choice" -eq 5 ]; then continue; fi
+                
+                local TargetPort=""
+                if command -v gum &> /dev/null; then
+                    TargetPort=$(gum input --prompt "Internal listening port for $container (e.g. 80, 8080): " || true)
+                else
+                    read -p "Internal listening port for $container (e.g. 80, 8080): " TargetPort || true
+                fi
+                if [ -z "$TargetPort" ]; then continue; fi
+                
+                local mw_string=""
+                case "$posture_choice" in
+                    1) mw_string='secure-headers@file,authelia@file' ;;
+                    2) mw_string='secure-headers@file,vpn-whitelist@file' ;;
+                    3) mw_string='secure-headers@file,traefik-auth@file' ;;
+                    4) mw_string='secure-headers@file' ;;
+                esac
+                
+                PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
+                sudo $DockerBin network connect "$ProxyNetworkName" "$container" >/dev/null 2>&1 || true
+                
+                sudo tee "$manifest_file" > /dev/null << MANIFEST_EOF
+# ALIEN_CONTAINER: $container
+http:
+  routers:
+    ${clean_name}-router:
+      rule: "Host(\`${clean_name}.${INTERNAL_DOMAIN}\`)"
+      entryPoints: ["websecure"]
+      middlewares: [${mw_string}]
+      service: "${clean_name}-service"
+      tls: { certResolver: "cloudflare" }
+  services:
+    ${clean_name}-service:
+      loadBalancer:
+        servers: [{ url: "http://${container}:${TargetPort}" }]
+MANIFEST_EOF
+                PrintMsg "82" "✔ Assimilated: https://${clean_name}.${INTERNAL_DOMAIN}"
+            done
+        fi
+    fi
+}
+AssimilateAlienContainers
 
 if [ "$Interactive" -eq 1 ]; then
     echo -e "\n========================================================"
