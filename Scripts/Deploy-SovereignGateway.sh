@@ -1,17 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v93.0-SOVEREIGN-BASTION
+#  Version: v94.0-SOVEREIGN-OBLIVION
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Bastion Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-62: Redirection Singularity v4 Cured. Injected the ?authelia_url 
-#     query parameter into Traefik's middleware to unmarshaler-safely anchor 
-#     the origin portal and shatter the infinite HTTP 302 redirect loop.
-#  2. DNS-26: Supply Chain Boot Poisoning Cured. The initial deployment sequence 
-#     now executes strict GPG signature verification against the InterNIC root 
-#     trust anchors before bootstrapping the DNS resolver.
+#  Oblivion Hardening Fixes (The Final Absolute Truth):
+#  1. NET-45: Open Resolver Cannon Cured. Bound Pi-Hole port 53 exclusively to 
+#     127.0.0.1 to prevent WAN exposure and DNS Amplification DDoS attacks.
+#  2. SEC-39: Permissive Fallthrough Cured. Injected explicit DROP rules for the 
+#     DMZ subnet immediately following the Traefik ACCEPT rules to seal the void.
+#  3. IAM-63: Unmarshaler Detonation v6 Cured. Migrated the deprecated JWT secret 
+#     variable to AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE.
 #  Inherited Master Fixes:
+#  - IAM-62 (Redirection Singularity v4), DNS-26 (Supply Chain Boot Poisoning)
 #  - IAM-59 (Socket Binding Suicide), ORCH-36 (Namespace Hallucinations)
 #  - IAM-58 (Redirection Singularity v3), ORCH-38 (Selective Immortality)
 #  - NET-42 (TCP DNS Truncation Drop), IAM-56 (Unmarshaler Detonation v5)
@@ -735,11 +736,11 @@ services:
     networks: [proxy_network, auth_network]
     user: "\${HOST_UID:-1000}:\${HOST_GID:-1000}"
     volumes: [${ConfigDir}/Authelia:/config]
-    # IAM-22: PascalCase Parser Detonation Cured.
     command: ["--config", "/config/Configuration.yml"]
     secrets: [postgres_password, authelia_jwt_secret, authelia_session_secret, authelia_storage_key]
     environment:
-      AUTHELIA_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret
+      # IAM-63: Unmarshaler Detonation v6 Cured. Eradicated deprecated root-level JWT secret directive.
+      AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret
       AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret
       AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_key
       AUTHELIA_STORAGE_POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
@@ -780,10 +781,10 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.12 }
       proxy_network: {}
-    # DNS-19: Phantom LAN Sinkhole Cured. Binds explicitly to 0.0.0.0 to serve the physical host interface natively.
+    # NET-45: Open Resolver Cannon Cured. Restricted bind strictly to local loopback interface.
     ports:
-      - "0.0.0.0:53:53/tcp"
-      - "0.0.0.0:53:53/udp"
+      - "127.0.0.1:53:53/tcp"
+      - "127.0.0.1:53:53/udp"
     environment:
       WEBPASSWORD_FILE: /run/secrets/pihole_pass
       PIHOLE_DNS_: 10.99.0.11#53
@@ -822,7 +823,6 @@ services:
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
-    # ORCH-31: WireGuard Stagnation Trap Cured. STATE_TRIGGER guarantees a compose recreation when the physical LAN IP changes.
     environment:
       PUID: "\${HOST_UID}"
       PGID: "\${HOST_GID}"
@@ -845,13 +845,11 @@ services:
   traefik_proxy:
     image: traefik:v2.11
     container_name: traefik_proxy
-    # SEC-37: L3 DMZ Bypass V2 Cured. Assigned a static, immutable proxy IP to ruthlessly anchor the Watchdog's VPN isolation rules.
     networks: 
       socket_network: {}
       proxy_network: 
         ipv4_address: 10.98.0.254
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
-    # TLS-11: ACME Inode Deadlock Cured. Directory-level mount strictly enables the atomic rename() syscall for Let's Encrypt generation.
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
       - ${TraefikAcmeDir}:/etc/traefik/acme:rw
@@ -916,8 +914,7 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# SEC-36, SEC-37, SEC-38, NET-36, & NET-42: Asymmetrical Routing and TCP Drop Cured.
-# Explicitly authorize BOTH UDP and TCP port 53 for large DNSSEC payload fallback.
+# SEC-36, SEC-37, SEC-38, SEC-39, NET-36, & NET-42: Comprehensive Multi-Chain Routing Purge and Injection.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
@@ -934,13 +931,24 @@ done
 iptables -D DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null || true
 iptables -D DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.0/24 -p tcp -m multiport --sports 80,443 -j ACCEPT 2>/dev/null || true
 
-# Insert the strictly bound 10.98.0.254 constraint
+# SEC-39: Clean up legacy Permissive Fallthrough DROP rules
+iptables -D DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP 2>/dev/null || true
+iptables -D DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.0/24 -j DROP 2>/dev/null || true
+
+# INJECTION SEQUENCE: Bottom-Up Priority
+# 1. Insert the DROP policy first (so it sits at the bottom of our custom DOCKER-USER rules)
+if ! iptables -C DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP 2>/dev/null; then
+    iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP
+    iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.0/24 -j DROP
+fi
+
+# 2. Insert the strictly bound 10.98.0.254 ACCEPT constraint (This pushes the DROP rules down)
 if ! iptables -C DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null; then
     iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT
     iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.254/32 -p tcp -m multiport --sports 80,443 -j ACCEPT
 fi
 
-# NET-36 & NET-42: Authorize UDP AND TCP 53 return path for asymmetrical bridge routing (VPN <-> Pi-Hole/DNSSEC)
+# 3. NET-36 & NET-42: Authorize UDP AND TCP 53 return path for asymmetrical bridge routing (VPN <-> Pi-Hole/DNSSEC)
 for proto in udp tcp; do
     if ! iptables -C DOCKER-USER -s 10.99.0.12/32 -d 10.13.13.0/24 -p \$proto --sport 53 -j ACCEPT 2>/dev/null; then
         iptables -I DOCKER-USER 1 -s 10.99.0.12/32 -d 10.13.13.0/24 -p \$proto --sport 53 -j ACCEPT
