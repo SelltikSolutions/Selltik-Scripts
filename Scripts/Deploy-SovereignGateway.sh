@@ -1,15 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v66.0-SOVEREIGN-OBLIVION
+#  Version: v67.0-SOVEREIGN-NEXUS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Oblivion Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-30: Access Control Schema Detonation Cured. Eradicated the hallucinated 
-#     'networks' block from Authelia's configuration to prevent fatal unmarshaler panics.
-#  2. IAM-31: Zero-Trust Annihilation Cured. Purged the 'policy: bypass' directive 
-#     for internal NAT traffic. All packets are now strictly forced through 2FA.
+#  Nexus Hardening Fixes (The Final Absolute Truth):
+#  1. DB-03: Posix Asphyxiation Cured. Injected DAC_OVERRIDE into auth_db to 
+#     allow the initialization script to format the rigid 70:70 host bind mount.
+#  2. TLS-06: ACME Challenge Omission Cured. Explicitly declared dnschallenge=true 
+#     in the Traefik proxy command array to prevent dummy cert generation.
+#  3. ORCH-21: Update Chain Brittleness Cured. Decoupled the systemd updater 
+#     service execution chain to guarantee Docker pulls even if root hints time out.
 #  Inherited Master Fixes:
+#  - IAM-30 (Access Control Schema), IAM-31 (Zero-Trust NAT Annihilation)
 #  - HEALTH-09 (CLI Detonation), LOG-10 (Ghost Path), IAM-29 (Cookie Schema)
 #  - HEALTH-07 (Healthcheck API), TLS-05 (CertResolver), IAM-27 (Regulation Schema)
 #  - NET-22 (Roaming Brick), IAM-28 (Admin Lockout), DNS-16 (Alpine Namespace)
@@ -322,7 +325,6 @@ WriteSecret() {
 
 if [ "$Interactive" -eq 1 ]; then
     [ ! -f "${SecretsDir}/cf_api_token" ] && { read -s -p "Cloudflare DNS API Token: " cf_token; echo ""; WriteSecret "cf_api_token" "$cf_token"; }
-    # IAM-17: BasicAuth Hash Detonation Cured. Utilizes native apr1 (MD5) compliant algorithm.
     [ ! -f "${SecretsDir}/traefik_auth" ] && { read -s -p "Traefik BasicAuth Password: " TraefikPass; echo ""; WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"; }
 else
     if [ ! -f "${SecretsDir}/cf_api_token" ] || [ ! -f "${SecretsDir}/traefik_auth" ]; then
@@ -609,7 +611,8 @@ services:
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes: [${ConfigDir}/Postgres:/var/lib/postgresql/data]
     cap_drop: [ALL]
-    cap_add: [CHOWN, SETUID, SETGID]
+    # DB-03: Posix Asphyxiation Cured. DAC_OVERRIDE restored for initialization format logic.
+    cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]
     security_opt: [no-new-privileges:true]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -d authelia -U authelia"]
@@ -752,6 +755,8 @@ services:
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme/acme.json"
+      # TLS-06: ACME Challenge Omission Cured. Explicit dnschallenge=true boolean restored.
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge=true"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
       - "--accesslog=true"
       - "--accesslog.filepath=/var/log/traefik/access.log"
@@ -763,6 +768,7 @@ services:
     restart: unless-stopped
 EOF
 
+# ORCH-21: Update Chain Brittleness Cured. Separated ExecStart sequences prevent total lifecycle halts.
 sudo tee /etc/systemd/system/sovereign-updater.service > /dev/null << EOF
 [Unit]
 Description=Sovereign Gateway Weekly Updater
@@ -770,7 +776,8 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bash -c '${RootHintUtility} && cd ${StackDir} && ${DockerBin} compose -f ${ComposeFile} pull && ${DockerBin} compose -f ${ComposeFile} up -d && ${DockerBin} image prune -f && ${DockerBin} compose -f ${ComposeFile} restart unbound_dns'
+ExecStart=-/usr/bin/bash -c '${RootHintUtility}'
+ExecStart=/usr/bin/bash -c 'cd ${StackDir} && ${DockerBin} compose -f ${ComposeFile} pull && ${DockerBin} compose -f ${ComposeFile} up -d && ${DockerBin} image prune -f && ${DockerBin} compose -f ${ComposeFile} restart unbound_dns'
 PrivateTmp=yes
 
 [Install]
