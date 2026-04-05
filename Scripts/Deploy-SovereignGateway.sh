@@ -1,17 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v89.0-SOVEREIGN-TERMINUS
+#  Version: v90.0-SOVEREIGN-OMEGA
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Terminus Hardening Fixes (The Final Absolute Truth):
-#  1. BOOT-17: The Missing Entrypoint Cured. Surgically restored the web entrypoint 
-#     address binding to Traefik's CLI array, satisfying the HTTP redirection 
-#     reference and eradicating the fatal startup crash loop.
-#  2. IAM-55: Quantum Session Expiration Cured. Converted raw integer duration 
-#     parameters to strict time.Duration strings ("1h", "5m") in Authelia's YAML, 
-#     preventing the unmarshaler from decaying sessions in 3,600 nanoseconds.
+#  Omega Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-56: Unmarshaler Detonation v5 Cured. Eradicated the illegal 'authelia_url' 
+#     key from the session.cookies array to appease the strict v4.38 YAML parser.
+#  2. NET-36: Asymmetrical DNS Blackhole Cured. Injected explicit UDP 53 return 
+#     path authorization into DOCKER-USER to allow Pi-Hole to reply to WireGuard.
+#  3. ORCH-36: Namespace Hallucination Trap Cured. Removed host-level iptables 
+#     deletion attempts for container-level rules. Handled natively via Docker.
 #  Inherited Master Fixes:
+#  - BOOT-17 (Missing Entrypoint), IAM-55 (Quantum Session Expiration)
 #  - SEC-38 (Immortal Skeleton Key), IAM-49 (Unmarshaler Detonation v4)
 #  - IAM-54 (Redirection Singularity v2), SEC-37 (L3 DMZ Bypass V2)
 #  - IAM-48 (Unmarshaler Detonation v3), DNS-25 (Ghost Inode Deadlock)
@@ -63,7 +64,7 @@ set -euo pipefail
 cd /tmp || true
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-StackName="sovereign_gateway"
+StackName="SovereignGateway"
 BaseDir="/opt/Docker"
 ConfigDir="${BaseDir}/Config"
 ScriptsDir="${BaseDir}/Scripts"
@@ -308,7 +309,7 @@ ExecuteAnnihilation() {
             cd "$StackDir" && sudo $DockerBin compose -f "$ComposeFile" down -v --remove-orphans > /dev/null 2>&1 || true
             PrintMsg "214" "Mathematically shredding cryptographic master keys..."
             [ -d "${SecretsDir}" ] && sudo find "${SecretsDir}" -type f -exec shred -u {} \; || true
-            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound" "$TraefikAcmeDir" "$LogsDir"
+            sudo rm -rf "$StackDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole" "${ConfigDir}/Unbound" "$TraefikAcmeDir"
             PrintMsg "82" "✔ Earth scorched. Magnetic persistence neutralized."
         fi
     fi
@@ -452,18 +453,13 @@ PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d ${TraefikLanIp}/32 
 EOF
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/templates"
 
-# CONFIG-01, CONFIG-02, & NET-34: Template Stagnation, Parasites, & Memory Leaks Cured.
+# CONFIG-01, CONFIG-02 & ORCH-36: Template Stagnation & Namespace Hallucinations Cured.
 # Active parsing logic dynamically injects the physical LAN IP routing bypass directly into 
 # the active wg0.conf exactly ONCE on every boot. 
-# Pre-flight extraction guarantees legacy IPs are manually flushed from the live kernel first.
+# Explicitly removed 'iptables -D' from the host execution context. We natively rely on Docker 
+# container lifecycle events to tear down and recreate the network namespace.
 if [ -f "${ConfigDir}/WireGuard/wg0.conf" ]; then
-    PrintMsg "214" "Purging legacy kernel intercepts to prevent ghost routing leaks..."
-    LegacyIp=$(grep -oP '(?<=-d )\d+\.\d+\.\d+\.\d+(?=/32 -j RETURN)' "${ConfigDir}/WireGuard/wg0.conf" | head -n 1 || true)
-    if [ -n "$LegacyIp" ]; then
-        sudo iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN 2>/dev/null || true
-        sudo iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN 2>/dev/null || true
-        sudo iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d "$LegacyIp/32" -j RETURN 2>/dev/null || true
-    fi
+    PrintMsg "214" "Dynamically injecting active routing bypass into existing wg0.conf..."
     sudo sed -i '/-j RETURN/d' "${ConfigDir}/WireGuard/wg0.conf"
     sudo awk '/PostUp.*-j MASQUERADE/ {print; print "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN || true"; next}1' "${ConfigDir}/WireGuard/wg0.conf" > /tmp/wg0.tmp && sudo mv /tmp/wg0.tmp "${ConfigDir}/WireGuard/wg0.conf"
     sudo chown "$HostUid:$HostGid" "${ConfigDir}/WireGuard/wg0.conf"
@@ -498,10 +494,10 @@ set -a; source "$EnvFile"; set +a
 # ORCH-19: Administrative Blackhole Cured. Symlink ensures native Docker tools function despite PascalCase aesthetics.
 sudo ln -sf "$ComposeFile" "${StackDir}/docker-compose.yml"
 
-# IAM-36, IAM-41, IAM-46, IAM-53, IAM-47, IAM-48, IAM-49, IAM-54, IAM-55: The Absolute Identity Matrix.
+# IAM-36, IAM-41, IAM-46, IAM-53, IAM-47, IAM-48, IAM-49, IAM-54, IAM-55, IAM-56: The Absolute Identity Matrix.
 # 1. Eradicated deprecated password_reset and external_url to prevent Unmarshaler Suicide.
 # 2. Reverted session block to strict 'cookies' list array schema to satisfy v4.38 parser rules.
-# 3. Injected authelia_url inside the cookie array item to anchor origin URL and shatter infinite redirects.
+# 3. IAM-56: Eradicated the illegal 'authelia_url' key from the array. Traefik's headers handle redirect logic.
 # 4. IAM-55: Strict string-based time.Duration parameters ("1h", "5m") prevent quantum nanosecond expiration.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
@@ -525,7 +521,6 @@ session:
   cookies:
     - name: authelia_session
       domain: "${InternalDomain}"
-      authelia_url: "https://auth.${InternalDomain}"
       expiration: "1h"
       inactivity: "5m"
 regulation:
@@ -899,6 +894,7 @@ EOF
 # SEC-36, SEC-37, & SEC-38: Immortal Skeleton Key Cured. 
 # The script explicitly hunts down and deletes legacy 10.98.0.0/24 subnet rules from live memory.
 # VPN clients are mathematically forbidden from touching the DMZ directly. Hard-routed ONLY to Traefik's .254 interface.
+# NET-36: Asymmetrical DNS Blackhole Cured. Explicitly authorize UDP 53 return paths from Pi-Hole.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
@@ -919,6 +915,12 @@ iptables -D DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.0/24 -p tcp -m multiport --s
 if ! iptables -C DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null; then
     iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT
     iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.254/32 -p tcp -m multiport --sports 80,443 -j ACCEPT
+fi
+
+# NET-36: Authorize UDP 53 return path for asymmetrical bridge routing (VPN <-> Pi-Hole)
+if ! iptables -C DOCKER-USER -s 10.99.0.12/32 -d 10.13.13.0/24 -p udp --sport 53 -j ACCEPT 2>/dev/null; then
+    iptables -I DOCKER-USER 1 -s 10.99.0.12/32 -d 10.13.13.0/24 -p udp --sport 53 -j ACCEPT
+    iptables -I DOCKER-USER 1 -d 10.99.0.12/32 -s 10.13.13.0/24 -p udp --dport 53 -j ACCEPT
 fi
 
 if ! ip route show | grep -q "10.13.13.0/24 via 10.99.0.10"; then
