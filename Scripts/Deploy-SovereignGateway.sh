@@ -1,22 +1,21 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v107.0-SOVEREIGN-ZENITH
+#  Version: v108.0-SOVEREIGN-VALOR
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
 #
-#  Zenith Hardening Fixes (The Final Absolute Truth):
-#  1. NET-49 & SEC-50: Host Amputation & Embargo Cured. Eradicated the prompt 
-#     allowing operators to define physical proxy IPs. Traefik is strictly locked 
-#     to 10.98.0.254. The Watchdog script explicitly isolates the 10.98.0.0/24 
-#     Docker bridge without embargoing the user's physical 192.168.x.x LAN.
-#  2. DB-04: Database Dialect Detonation Cured. Re-amputated the legacy 'host' 
-#     and 'port' keys from the Authelia Postgres storage block, restoring the 
-#     strictly-typed 'address: "tcp://AuthDb:5432"' schema constraint.
-#  3. DNS-42: Weekly 404 Deadlock Cured. The autonomous updater script no longer 
-#     attempts to curl a ghost PGP file. The authoritative InterNIC public key 
-#     block is physically embedded into VerifyRootHints.sh, guaranteeing 
-#     zero-touch cryptographic bootstrapping forever.
+#  Valor Hardening Fixes (The Final Absolute Truth):
+#  1. ORCH-41: Assimilation Network Asphyxiation Cured. Injected the critical 
+#     'attachable: true' directive into the ProxyNetwork declaration. Alien 
+#     containers can now successfully bridge into the Traefik DMZ.
+#  2. ORCH-40: Watchdog Mutex Deadlock Cured. Expanded the systemd sandbox 
+#     ReadWritePaths to encompass the entire /run directory, legally allowing 
+#     iptables to establish its xtables.lock mutex without crashing on boot.
+#  3. SEC-52: The Ingress Mirage Cured. Violently eradicated the 'Fully Public' 
+#     option from the assimilation matrix. Because Traefik operates as a strict 
+#     darknet proxy with zero host port bindings, advertising public ingress 
+#     is an operational hallucination. The perimeter is now mathematically sealed.
 #
 #  SECURITY WARNING: This script implements Scorched Earth policies. It will
 #  destroy unassimilated containers, modify live kernel routing tables, and 
@@ -295,15 +294,14 @@ WriteSecret() {
     sudo shred -u "$tmp_file"
 }
 
-PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevWgPeers="3"; PrevAllowedIps="0.0.0.0/0"
+PrevEndpoint=""; PrevDomain=""; PrevEmail=""; PrevPort="51820"; PrevWgPeers="3"; PrevAllowedIps="0.0.0.0/0"
 PrevAcme="https://acme-staging-v02.api.letsencrypt.org/directory"
-# NET-49 Cured: The proxy IP is explicitly locked to 10.98.0.254 to prevent host routing amputations.
-TraefikLanIp="10.98.0.254"
 
 if [ -f "$EnvFile" ]; then
     PrevEndpoint=$(grep "^WG_ENDPOINT=" "$EnvFile" | cut -d= -f2 || echo "")
     PrevDomain=$(grep "^INTERNAL_DOMAIN=" "$EnvFile" | cut -d= -f2 || echo "")
     PrevEmail=$(grep "^ACME_EMAIL=" "$EnvFile" | cut -d= -f2 || echo "")
+    PrevPort=$(grep "^WG_PORT=" "$EnvFile" | cut -d= -f2 || echo "51820")
     env_acme=$(grep "^ACME_SERVER_URL=" "$EnvFile" | cut -d= -f2 || echo "")
     [ -n "$env_acme" ] && PrevAcme="$env_acme"
     env_peers=$(grep "^WG_PEERS=" "$EnvFile" | cut -d= -f2 || echo "")
@@ -316,8 +314,8 @@ if [ "$Interactive" -eq 1 ]; then
     [ ! -f "${SecretsDir}/cf_api_token" ] && { read -s -p "Cloudflare DNS API Token: " cf_token; echo ""; WriteSecret "cf_api_token" "$cf_token"; }
     [ ! -f "${SecretsDir}/traefik_auth" ] && { read -s -p "Traefik BasicAuth Password: " TraefikPass; echo ""; WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"; }
     
-    read -p "WireGuard Public Endpoint [$PrevEndpoint]: " input_endpoint; WgEndpoint="${input_endpoint:-$PrevEndpoint}"
-    read -p "Internal Root Domain [$PrevDomain]: " input_domain; InternalDomain="${input_domain:-$PrevDomain}"
+    read -p "WireGuard Public Endpoint (IP/DDNS) [$PrevEndpoint]: " input_endpoint; WgEndpoint="${input_endpoint:-$PrevEndpoint}"
+    read -p "Internal Root Domain (e.g. lan.domain.com) [$PrevDomain]: " input_domain; InternalDomain="${input_domain:-$PrevDomain}"
     
     while true; do
         read -p "Let's Encrypt Email [$PrevEmail]: " input_email
@@ -325,7 +323,7 @@ if [ "$Interactive" -eq 1 ]; then
         if [ -n "$AcmeEmail" ]; then break; fi
         PrintMsg "196" "[FATAL] ACME schema requires a valid email. Null values are prohibited."
     done
-
+    
     read -p "WireGuard Peer Count [$PrevWgPeers]: " input_peers; WgPeers="${input_peers:-$PrevWgPeers}"
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
     [[ "${input_prod:-N}" =~ ^[Yy]$ ]] && AcmeServerUrl="https://acme-v02.api.letsencrypt.org/directory" || AcmeServerUrl="https://acme-staging-v02.api.letsencrypt.org/directory"
@@ -363,9 +361,8 @@ WG_ENDPOINT=${WgEndpoint}
 INTERNAL_DOMAIN=${InternalDomain}
 ACME_EMAIL=${AcmeEmail}
 ACME_SERVER_URL=${AcmeServerUrl}
-WG_PORT=51820
+WG_PORT=${PrevPort:-51820}
 WG_PEERS=${WgPeers}
-TRAEFIK_LAN_IP=${TraefikLanIp}
 WG_ALLOWED_IPS=${WgAllowedIps}
 TRAEFIK_TRUSTED_IPS=${TraefikTrustedIps}
 HOST_UID=${HostUid}
@@ -405,7 +402,6 @@ if [ -n "${PrevAcme:-}" ] && [ "${PrevAcme}" != "${AcmeServerUrl}" ]; then
     sudo chmod 600 "$TraefikAcmeFile"
 fi
 
-# DB-04 Cured: Re-amputated legacy host/port keys. The modern 'address' constraint is strictly enforced.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   address: "tcp://0.0.0.0:9091"
@@ -450,8 +446,6 @@ fi
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/Authelia"
 sudo chmod 600 "${ConfigDir}/Authelia/UsersDatabase.yml" "${ConfigDir}/Authelia/Configuration.yml" "${ConfigDir}/Authelia/Notification.txt"
 
-# DNS-41 Cured: Physically embedding the authoritative InterNIC Zone Maintainer key block 
-# to guarantee zero-touch bootstrapping completely independent of brittle keyservers.
 PrintMsg "240" "Bootstrapping cryptographically verified DNS Root Trust Anchors..."
 EphKeyring="${ConfigDir}/Unbound/Internic.gpg"
 
@@ -481,8 +475,6 @@ else
     exit 1
 fi
 
-# DNS-42 Cured: Weekly updater physically mirrors the offline PGP logic. 
-# Zero reliance on 404 ghost endpoints or rate-limited keyservers.
 RootHintUtility="${ScriptsDir}/VerifyRootHints.sh"
 sudo tee "$RootHintUtility" > /dev/null << 'EOF'
 #!/bin/bash
@@ -518,7 +510,6 @@ fi
 EOF
 sudo chmod 700 "$RootHintUtility"
 
-# Unbound routes the internal domain strictly to Traefik's internal proxy IP (10.98.0.254)
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
   interface: 0.0.0.0
@@ -568,7 +559,7 @@ http:
         servers: [{ url: "http://Authelia:9091" }]
 EOF
 
-# NET-49: Host Amputation Cured. ProxyNetwork rigidly enforced at 10.98.0.0/24.
+# ORCH-41 Cured: The proxy_network is declared attachable for secure assimilation bridging.
 sudo tee "$ComposeFile" > /dev/null << EOF
 networks:
   VpnNetwork:
@@ -576,6 +567,7 @@ networks:
     ipam: { config: [{ subnet: 10.99.0.0/24 }] }
   ProxyNetwork:
     name: sovereign_gateway_proxy_network
+    attachable: true
     ipam: { config: [{ subnet: 10.98.0.0/24 }] }
   AuthNetwork:
     internal: true
@@ -797,7 +789,6 @@ WantedBy=timers.target
 EOF
 
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
-# Execute robust evaluation strictly targeting the 10.98.0.0/24 ProxyNetwork barrier.
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
 
@@ -832,6 +823,8 @@ fi
 EOF
 sudo chmod 700 "$WatchdogScript"
 
+# ORCH-40 Cured: The systemd sandbox grants write access to the entire /run directory 
+# so iptables can safely establish the xtables.lock mutex without triggering read-only panics.
 sudo tee /etc/systemd/system/sovereign-watchdog.service > /dev/null << EOF
 [Unit]
 Description=Sovereign Gateway Network Watchdog
@@ -842,7 +835,7 @@ Type=oneshot
 ExecStart=$WatchdogScript
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=${ConfigDir}/Traefik/Dynamic -/run/xtables.lock
+ReadWritePaths=${ConfigDir}/Traefik/Dynamic /run
 EOF
 
 sudo tee /etc/systemd/system/sovereign-watchdog.timer > /dev/null << EOF
@@ -888,20 +881,21 @@ AssimilateAlienContainers() {
                 echo ""
                 PrintMsg "214" "Select ingress posture for unassimilated container [$container]:"
                 local posture_choice=""
+                
+                # SEC-52 Cured: Violently eradicated the 'Fully Public' mirage.
+                # All assimilated containers operate strictly within the authenticated darknet.
                 if command -v gum &> /dev/null; then
-                    local choice=$(gum choose "1) MFA Protected (Authelia) [SUGGESTED]" "2) VPN-Only (Air-Gapped)" "3) BasicAuth (Legacy Form)" "4) Fully Public" "5) Internal (Skip)" || true)
-                    [ -z "$choice" ] && continue
+                    local choice=$(gum choose "1) MFA Protected (Authelia) [SUGGESTED]" "2) VPN-Only (Air-Gapped)" "3) BasicAuth (Legacy Form)" "4) Internal (Skip)" || true)
                     posture_choice=${choice:0:1}
                 else
                     echo "1) MFA Protected (Authelia) [SUGGESTED]"
                     echo "2) VPN-Only (Air-Gapped)"
                     echo "3) BasicAuth (Legacy Form)"
-                    echo "4) Fully Public"
-                    echo "5) Internal (Skip)"
-                    read -p "Select posture (1-5) [1]: " posture_choice || true
+                    echo "4) Internal (Skip)"
+                    read -p "Select posture (1-4) [1]: " posture_choice || true
                     posture_choice=${posture_choice:-1}
                 fi
-                if [ "$posture_choice" -eq 5 ]; then continue; fi
+                if [ "$posture_choice" -eq 4 ]; then continue; fi
                 
                 local TargetPort=""
                 if command -v gum &> /dev/null; then
@@ -916,7 +910,7 @@ AssimilateAlienContainers() {
                     1) mw_string='secure-headers@file,authelia@file' ;;
                     2) mw_string='secure-headers@file,vpn-whitelist@file' ;;
                     3) mw_string='secure-headers@file,traefik-auth@file' ;;
-                    4) mw_string='secure-headers@file' ;;
+                    *) mw_string='secure-headers@file,authelia@file' ;;
                 esac
                 
                 PrintMsg "226" "Bridging $container to Zero-Trust perimeter..."
