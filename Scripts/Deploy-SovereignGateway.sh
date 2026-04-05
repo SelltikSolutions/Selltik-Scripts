@@ -1,17 +1,16 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v72.0-SOVEREIGN-AEGIS
+#  Version: v73.0-SOVEREIGN-PALLADIUM
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Aegis Hardening Fixes (The Final Absolute Truth):
-#  1. ROUTE-24: Cross-Bridge Void Cured. Injected DOCKER-USER iptables ACCEPT 
-#     rules to authorize L3 routing between isolated Docker bridge networks.
-#  2. LOG-12: Root Ownership Paradox Cured. Realigned TraefikLogDir to root:root 
-#     and removed the unprivileged 'su' directive to allow logrotate to function.
-#  3. IAM-35: Immutable Password Database Cured. Re-sequenced the Authelia volume 
-#     chown execution to occur strictly after all root-level file generation.
+#  Palladium Hardening Fixes (The Final Absolute Truth):
+#  1. SEC-31: Lateral Header Spoofing Cured. Eradicated internal Docker subnets 
+#     from Traefik's trustedIPs array to mathematically block X-Forwarded-For forgery.
+#  2. DNS-19: Phantom LAN Sinkhole Cured. Re-bound Pi-Hole to 0.0.0.0:53 to 
+#     escape the Docker gateway isolation and serve the physical host LAN natively.
 #  Inherited Master Fixes:
+#  - ROUTE-24 (Cross-Bridge Void), LOG-12 (Root Ownership), IAM-35 (Immutable DB)
 #  - SEC-29 (Air-Gap Breach), IAM-34 (Brute-Force Immunity), LOG-11 (Parent Panic)
 #  - IAM-33 (Fail2Ban Mass Extinction), SEC-28 (Header Spoofing), DNS-17 (Loopback)
 #  - TLS-07 (Traefik CLI Detonation), ROUTE-23 (Asymmetrical Routing Void)
@@ -697,9 +696,10 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.12 }
       proxy_network: {}
+    # DNS-19: Phantom LAN Sinkhole Cured. Binds explicitly to 0.0.0.0 to serve the physical host interface.
     ports:
-      - "\${TRAEFIK_LAN_IP}:53:53/tcp"
-      - "\${TRAEFIK_LAN_IP}:53:53/udp"
+      - "0.0.0.0:53:53/tcp"
+      - "0.0.0.0:53:53/udp"
     environment:
       WEBPASSWORD_FILE: /run/secrets/pihole_pass
       PIHOLE_DNS_: 10.99.0.11#53
@@ -778,8 +778,8 @@ services:
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.websecure.address=:443"
-      # SEC-28: Air-Gap Annihilation Cured. Ruthlessly amputated external RFC1918 trusts to block spoofing.
-      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,10.98.0.0/24,10.99.0.0/24"
+      # SEC-31: Lateral Header Spoofing Cured. Trust NO ONE except loopback to mathematically destroy header forgery.
+      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32"
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme/acme.json"
