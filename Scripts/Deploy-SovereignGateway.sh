@@ -1,16 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v77.0-SOVEREIGN-NOVA
+#  Version: v78.0-SOVEREIGN-PARAGON
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Nova Hardening Fixes (The Final Absolute Truth):
-#  1. ENV-05: Strict Nounset Detonation Cured. Aligned Unbound's configuration 
-#     heredoc to utilize native bash variables to prevent subshell parser panics.
-#  2. BOOT-15: S6-Overlay Init Destruction Cured. Eradicated the race condition. 
-#     Physically seeded the /config/templates/server.conf file so WireGuard natively 
-#     ingests the L3 NAT bypass rules during its own cryptographic genesis sequence.
+#  Paragon Hardening Fixes (The Final Absolute Truth):
+#  1. SEC-35: Lateral Trust Hallucination Cured. Eradicated internal Docker subnets 
+#     from TraefikTrustedIps. The proxy now mathematically refuses forged headers from the DMZ.
+#  2. IAM-40: Idempotent Password Wipe Cured. Wrapped UsersDatabase.yml in a strict 
+#     existence check. Routine deployments no longer factory-reset the administrator hash.
+#  3. ORCH-26: Watchdog Amnesia Cured. Amputated destructive 'rm -f' logic. The 
+#     drone no longer deletes ingress manifests during container maintenance windows.
 #  Inherited Master Fixes:
+#  - ENV-05 (Strict Nounset Detonation), BOOT-15 (S6-Overlay Init Destruction)
 #  - ROUTE-26 (Whitelist Trap), IAM-37 (Communal Ban), NET-28 (Watchdog Boot-Storm)
 #  - IAM-36 (Immutable Ledger), ROUTE-25 (CDN Blackhole), DNS-20 (LAN Void)
 #  - NET-27 (NAT Bypass Timing), SEC-32 (L3 Engine Exposure), SEC-33 (VPN Whitelist)
@@ -220,12 +222,12 @@ elif systemctl is-active --quiet systemd-timesyncd; then
     sudo systemctl restart systemd-timesyncd || true
 fi
 
-# ROUTE-25: Cloudflare CDN Blackhole Cured. 
-# Dynamically mapping explicit upstream proxy IP vectors to protect fail2ban.
+# ROUTE-25: Cloudflare CDN Blackhole Cured. Dynamically mapping explicit upstream proxy IP vectors.
+# SEC-35: Lateral Trust Hallucination Cured. Eradicated internal Docker subnets from the array.
 PrintMsg "240" "Fetching Cloudflare Edge IP ranges for Layer 7 header authentication..."
 CfIpsV4=$(curl -s --max-time 10 https://www.cloudflare.com/ips-v4 | tr '\n' ',' || echo "173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22")
 CfIpsV6=$(curl -s --max-time 10 https://www.cloudflare.com/ips-v6 | tr '\n' ',' || echo "2400:cb00::/32,2606:4700::/32,2803:f800::/32,2405:b500::/32,2405:8100::/32,2a06:98c0::/29,2c0f:f248::/32")
-TraefikTrustedIps="127.0.0.1/32,10.98.0.0/24,10.99.0.0/24,${CfIpsV4%,},${CfIpsV6%,}"
+TraefikTrustedIps="127.0.0.1/32,${CfIpsV4%,},${CfIpsV6%,}"
 
 # KRN-04 & KRN-06: STIG Scorched Earth Kernel Hardening + RP_Filter Asymmetrical Downgrade (Value: 2)
 PrintMsg "240" "Forging STIG-compliant host kernel armor..."
@@ -499,8 +501,10 @@ notifier:
   filesystem: { filename: /config/notification.txt }
 EOF
 
-# IAM-21: Argon2id Mutilation Cured. Heredoc strictly literal quoted to prevent bash parsing.
-sudo tee "${ConfigDir}/Authelia/UsersDatabase.yml" > /dev/null << 'EOF'
+# IAM-40: Idempotent Password Wipe Cured. 
+# Strict existence guard prevents routine deployments from factory-resetting the active hashes.
+if [ ! -f "${ConfigDir}/Authelia/UsersDatabase.yml" ]; then
+    sudo tee "${ConfigDir}/Authelia/UsersDatabase.yml" > /dev/null << 'EOF'
 users:
   admin:
     displayname: "Sovereign Administrator"
@@ -508,7 +512,8 @@ users:
     email: admin@REPLACE_DOMAIN
     groups: [admins]
 EOF
-sudo sed -i "s/REPLACE_DOMAIN/${InternalDomain}/g" "${ConfigDir}/Authelia/UsersDatabase.yml"
+    sudo sed -i "s/REPLACE_DOMAIN/${InternalDomain}/g" "${ConfigDir}/Authelia/UsersDatabase.yml"
+fi
 
 # IAM-35: Immutable Password Database Cured. 
 # Chown exclusively executed AFTER configuration/database injection to allow daemon writes.
@@ -802,7 +807,6 @@ services:
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.websecure.address=:443"
-      # ROUTE-25: Cloudflare CDN Blackhole Cured. Dynamically ingests upstream Edge IPs natively.
       - "--entrypoints.websecure.forwardedHeaders.trustedIPs=\${TRAEFIK_TRUSTED_IPS}"
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
@@ -847,8 +851,8 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# NET-28 & SEC-32: Watchdog Boot-Storm Blindness Cured. 
-# Implements a deterministic polling loop to verify DOCKER-USER chain existence before executing cross-bridge L3 kernel injections.
+# ORCH-26 & NET-28 & SEC-32: Watchdog Amnesia Cured. Destructive logic strictly amputated.
+# Boot-Storm blindness cured via deterministic polling. Internal L3 routes actively secured.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
@@ -880,8 +884,6 @@ for manifest in "${ConfigDir}/Traefik/Dynamic/"*_assimilation.yml; do
                 ${DockerBin} network connect sovereign_gateway_proxy_network "\$alien" || true
             fi
         fi
-    else
-        rm -f "\$manifest"
     fi
 done
 EOF
