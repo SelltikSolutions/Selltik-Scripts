@@ -1,18 +1,17 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v75.0-SOVEREIGN-ZENITH
+#  Version: v76.0-SOVEREIGN-APEX
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Zenith Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-36: Hardcoded Immutable Ledger Cured. Reverted password_reset strict 
-#     disable flag to restore internal hash rotation capabilities.
-#  2. ROUTE-25: Cloudflare CDN Blackhole Cured. Dynamically injects Cloudflare's 
-#     canonical IPv4/IPv6 edge blocks into Traefik's trustedIPs array to parse 
-#     true client IPs and prevent global self-inflicted Denial of Service.
-#  3. DNS-20: Split-Horizon LAN Void Cured. Reprioritized TraefikLanIp fallback 
-#     to mathematically inherit the physical HUNTER_IP before the Docker gateway.
+#  Apex Hardening Fixes (The Final Absolute Truth):
+#  1. ROUTE-26 & IAM-37: Asymmetrical Whitelist Trap & Communal Ban Cured. 
+#     Dynamically injected the physical LAN IP into the WireGuard NAT bypass 
+#     to preserve true client IPs across the split-horizon DNS boundaries.
+#  2. NET-28: Watchdog Boot-Storm Blindness Cured. Engineered a deterministic 
+#     polling loop to guarantee DOCKER-USER chain existence before rule injection.
 #  Inherited Master Fixes:
+#  - IAM-36 (Immutable Ledger), ROUTE-25 (CDN Blackhole), DNS-20 (LAN Void)
 #  - NET-27 (NAT Bypass Timing), SEC-32 (L3 Engine Exposure), SEC-33 (VPN Whitelist)
 #  - SEC-31 (Lateral Header Spoofing), DNS-19 (Phantom LAN Sinkhole)
 #  - ROUTE-24 (Cross-Bridge Void), LOG-12 (Root Ownership), IAM-35 (Immutable DB)
@@ -309,22 +308,6 @@ sudo chown -R 70:70 "${ConfigDir}/Postgres"
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard"
 sudo chown -R 999:999 "${ConfigDir}/PiHole"
 
-# NET-27: NAT Bypass Timing Void Cured. 
-# Injects PostUp hooks directly into wg0.conf to guarantee execution AFTER wg-quick MASQUERADE.
-PrintMsg "214" "Surgically injecting Layer 3 iptables bypass for WireGuard NAT..."
-sudo mkdir -p "${ConfigDir}/WireGuard/custom-cont-init.d"
-sudo tee "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh" > /dev/null << 'EOF'
-#!/bin/bash
-if ! grep -q "10.98.0.0/16 -j RETURN" /config/wg0.conf 2>/dev/null; then
-    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN" >> /config/wg0.conf
-    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN" >> /config/wg0.conf
-    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true" >> /config/wg0.conf
-    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true" >> /config/wg0.conf
-fi
-EOF
-sudo chmod +x "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh"
-sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/custom-cont-init.d"
-
 # Prevent authelia from crashing trying to touch an inexistent file.
 sudo touch "${ConfigDir}/Authelia/notification.txt"
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
@@ -428,6 +411,25 @@ else
     TraefikLanIp="${PrevLanIp:-${HUNTER_IP:-10.99.0.1}}"; WgPeers="${PrevWgPeers}"; AcmeServerUrl="${PrevAcme}"
     WgAllowedIps="${PrevAllowedIps}"
 fi
+
+# ROUTE-26 & NET-27 & IAM-37: The Asymmetrical Whitelist Trap & Communal Ban Cured.
+# Dynamically expanding ${TraefikLanIp} BEFORE wg0.conf injection ensures the L3 NAT bypass 
+# protects the true source IPs routing to the explicit split-horizon proxy gateway.
+PrintMsg "214" "Surgically injecting physical Layer 3 iptables bypass for WireGuard NAT..."
+sudo mkdir -p "${ConfigDir}/WireGuard/custom-cont-init.d"
+sudo tee "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh" > /dev/null << EOF
+#!/bin/bash
+if ! grep -q "10.98.0.0/16 -j RETURN" /config/wg0.conf 2>/dev/null; then
+    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN" >> /config/wg0.conf
+    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN" >> /config/wg0.conf
+    echo "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN" >> /config/wg0.conf
+    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true" >> /config/wg0.conf
+    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true" >> /config/wg0.conf
+    echo "PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN || true" >> /config/wg0.conf
+fi
+EOF
+sudo chmod +x "${ConfigDir}/WireGuard/custom-cont-init.d/99-nat-bypass.sh"
+sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/custom-cont-init.d"
 
 # TLS-03: ACME State Lockout Cured. State-transition awareness added for CA pivots.
 if [ -n "${PrevAcme:-}" ] && [ "${PrevAcme}" != "${AcmeServerUrl}" ]; then
@@ -841,11 +843,20 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# SEC-32: L3 Docker Engine Exposure Cured. 
-# Explicitly restricts DOCKER-USER forwarding to target ONLY the 10.98.0.0/24 proxy network.
+# NET-28 & SEC-32: Watchdog Boot-Storm Blindness Cured. 
+# Implements a deterministic polling loop to verify DOCKER-USER chain existence before executing cross-bridge L3 kernel injections.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
+
+# Wait for Docker to establish its isolated chains
+for i in {1..30}; do
+    if iptables -n -L DOCKER-USER >/dev/null 2>&1; then
+        break
+    fi
+    sleep 2
+done
+
 if ! iptables -C DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -j ACCEPT 2>/dev/null; then
     iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.0/24 -j ACCEPT
     iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.0/24 -j ACCEPT
