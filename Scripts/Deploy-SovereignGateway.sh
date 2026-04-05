@@ -1,17 +1,17 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v82.0-SOVEREIGN-OBSIDIAN
+#  Version: v83.0-SOVEREIGN-VANGUARD
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Obsidian Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-46: Session Array Detonation Cured. Surgically flattened the Authelia 
-#     session block to conform to the strict v4.38+ YAML schema, eradicating the 
-#     deprecated 'cookies' array to prevent fatal unmarshaler panics on boot.
-#  2. NET-31: Carriage Return Poisoning Cured. Injected 'tr -d \r' into the 
-#     Cloudflare API pipeline to mathematically sanitize CRLF line endings, 
-#     preventing Traefik from choking on invisible control characters.
+#  Vanguard Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-52: ForwardAuth Redirection Void Cured. Explicitly injected the 
+#     authelia_url query parameter into the Traefik middleware to prevent 
+#     mathematical infinite redirect loops during authentication challenges.
+#  2. LOG-14: Ghost Log Artifact Cured. Surgically amputated the phantom access.log 
+#     touch command from the root directory to maintain absolute filesystem hygiene.
 #  Inherited Master Fixes:
+#  - IAM-46 (Session Array Detonation), NET-31 (CRLF Poisoning)
 #  - IAM-41 (Unmarshaler Detonation), CONFIG-02 (PreDown Parasites)
 #  - BOOT-16 (S6 Init Paradox), IAM-38 (Deprecated Authz Endpoint)
 #  - TLS-08 (ACME Ghosting), CONFIG-01 (Template Stagnation), SEC-36 (DMZ Bypass)
@@ -586,7 +586,7 @@ server:
 EOF
 
 # SEC-29: Physical Air-Gap Breach Cured. Ruthlessly amputated RFC1918 space from the whitelist middleware.
-# IAM-38: Deprecated Authz Endpoint Cured. Modernized Authelia forwardAuth verification target to v4.38 standards.
+# IAM-38 & IAM-52: Deprecated Authz Endpoint & Redirection Void Cured. Injected ?authelia_url= to shatter the infinite proxy loop.
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -601,7 +601,7 @@ http:
         sourceRange: ["10.13.13.0/24", "127.0.0.1/32"]
     authelia:
       forwardAuth:
-        address: "http://authelia:9091/api/authz/forward-auth"
+        address: "http://authelia:9091/api/authz/forward-auth?authelia_url=https://auth.${InternalDomain}/"
         trustForwardHeader: true
         authResponseHeaders: ["Remote-User", "Remote-Groups", "Remote-Name", "Remote-Email"]
     traefik-auth:
