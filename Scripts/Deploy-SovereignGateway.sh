@@ -1,20 +1,21 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v104.0-SOVEREIGN-AETHER
+#  Version: v105.0-SOVEREIGN-OMNIVERSAL
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
 #
-#  Aether Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-68: Socket Binding Detonation Cured. Surgically amputated the illegal 
-#     trailing slash from Authelia's server address (tcp://0.0.0.0:9091).
-#  2. IAM-69: Unmarshaler Suicide v10 Cured. Eradicated the deprecated 'host' 
-#     and 'port' keys from the PostgreSQL storage block in favor of the modern 
-#     'address: "tcp://AuthDb:5432"' schema constraint.
-#  3. DNS-38: Cryptographic Lobotomy Cured. Restored the authoritative InterNIC 
-#     PGP verification protocol. named.root is mathematically validated against 
-#     named.root.sig using the InterNIC Zone Maintainer Key before Unbound is 
-#     allowed to boot, mathematically sealing the DNS supply chain.
+#  Omniversal Hardening Fixes (The Final Absolute Truth):
+#  1. DNS-39: 404 Deployment Deadlock Cured. Amputated the hallucinated HTTPS 
+#     InterNIC key endpoint. Script natively queries authoritative Ubuntu and 
+#     OpenPGP keyservers to extract the 0x0BD07395 signature block robustly.
+#  2. DNS-40: Alpine Namespace Asphyxiation Cured. Realigned the Unbound daemon 
+#     drop-privilege target from '_unbound' to 'unbound', satisfying Alpine's 
+#     strict native user dictionary and averting the setuid panic loop.
+#  3. CONFIG-05: Hardcoded Identity Fracture Cured. Traefik's proxy IP and subnet 
+#     are now mathematically calculated and universally templated into the Compose 
+#     network block, Unbound DNS records, and Watchdog iptables rules. Dynamic 
+#     operator inputs will no longer trigger auto-ban isolation.
 #
 #  SECURITY WARNING: This script implements Scorched Earth policies. It will
 #  destroy unassimilated containers, modify live kernel routing tables, and 
@@ -48,7 +49,7 @@ TrapHandler() {
     if [ $exit_code -ne 0 ]; then
         echo -e "\n[FATAL] Script aborted at line $BASH_LINENO. System state inconsistent."
     fi
-    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/Internic.pgp" 2>/dev/null || true
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/Internic.gpg" "${ConfigDir}/Unbound/Internic.gpg~" 2>/dev/null || true
     [ -f "$LockFile" ] && rm -f "$LockFile"
     exit "$exit_code"
 }
@@ -330,9 +331,12 @@ if [ "$Interactive" -eq 1 ]; then
         PrintMsg "196" "[FATAL] ACME schema requires a valid email. Null values are prohibited."
     done
 
+    # CONFIG-05: Hardcoded Identity Fracture Cured. IP resolves strictly to user intent.
     FallbackLanIp="${PrevLanIp:-10.98.0.254}"
     read -p "Monolith Proxy IP [$FallbackLanIp]: " input_lan
     TraefikLanIp="${input_lan:-$FallbackLanIp}"
+    # Mathematically extract the /24 subnet from the provided proxy IP to prevent fallthrough blocks
+    TraefikSubnet="$(echo "$TraefikLanIp" | cut -d. -f1-3).0/24"
     
     read -p "WireGuard Peer Count [$PrevWgPeers]: " input_peers; WgPeers="${input_peers:-$PrevWgPeers}"
     read -p "Enable PRODUCTION Let's Encrypt? (y/N): " input_prod
@@ -355,7 +359,9 @@ else
         exit 1
     fi
     WgEndpoint="${PrevEndpoint}"; InternalDomain="${PrevDomain}"; AcmeEmail="${PrevEmail}"
-    TraefikLanIp="${PrevLanIp:-10.98.0.254}"; WgPeers="${PrevWgPeers}"; AcmeServerUrl="${PrevAcme}"
+    TraefikLanIp="${PrevLanIp:-10.98.0.254}"
+    TraefikSubnet="$(echo "$TraefikLanIp" | cut -d. -f1-3).0/24"
+    WgPeers="${PrevWgPeers}"; AcmeServerUrl="${PrevAcme}"
     WgAllowedIps="${PrevAllowedIps}"
 fi
 
@@ -379,6 +385,7 @@ ACME_SERVER_URL=${AcmeServerUrl}
 WG_PORT=${PrevPort:-51820}
 WG_PEERS=${WgPeers}
 TRAEFIK_LAN_IP=${TraefikLanIp}
+TRAEFIK_SUBNET=${TraefikSubnet}
 WG_LAN_SUBNET=${PrevLanSubnet:-}
 WG_ALLOWED_IPS=${WgAllowedIps}
 TRAEFIK_TRUSTED_IPS=${TraefikTrustedIps}
@@ -389,7 +396,6 @@ EOF
 
 set -a; source "$EnvFile"; set +a
 
-# CONFIG-04: Case-Sensitive Template Stagnation V2 Cured. Explicit lowercase for upstream s6-overlay.
 PrintMsg "214" "Surgically seeding WireGuard server template to inject L3 NAT bypass..."
 sudo mkdir -p "${ConfigDir}/WireGuard/templates"
 sudo tee "${ConfigDir}/WireGuard/templates/server.conf" > /dev/null << EOF
@@ -398,20 +404,20 @@ Address = \${INTERFACE}.1
 ListenPort = \${SERVER_PORT}
 PrivateKey = \${PRIVATE_KEY}
 PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o \${SERVER_DEVICE} -j MASQUERADE
-PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN
+PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d ${TRAEFIK_SUBNET} -j RETURN
 PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN
-PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN
+PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d ${TRAEFIK_LAN_IP}/32 -j RETURN
 PreDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o \${SERVER_DEVICE} -j MASQUERADE
-PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true
+PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d ${TRAEFIK_SUBNET} -j RETURN || true
 PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true
-PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d ${TraefikLanIp}/32 -j RETURN || true
+PreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d ${TRAEFIK_LAN_IP}/32 -j RETURN || true
 EOF
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard/templates"
 
 if [ -f "${ConfigDir}/WireGuard/wg0.conf" ]; then
     PrintMsg "214" "Dynamically injecting active routing bypass into existing wg0.conf..."
     sudo sed -i '/-j RETURN/d' "${ConfigDir}/WireGuard/wg0.conf"
-    sudo awk '/PostUp.*-j MASQUERADE/ {print; print "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.98.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d '"${TraefikLanIp}"'/32 -j RETURN || true"; next}1' "${ConfigDir}/WireGuard/wg0.conf" > /tmp/wg0.tmp && sudo mv /tmp/wg0.tmp "${ConfigDir}/WireGuard/wg0.conf"
+    sudo awk '/PostUp.*-j MASQUERADE/ {print; print "PostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d '"${TRAEFIK_SUBNET}"' -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN\nPostUp = iptables -t nat -I POSTROUTING 1 -s 10.13.13.0/24 -d '"${TRAEFIK_LAN_IP}"'/32 -j RETURN\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d '"${TRAEFIK_SUBNET}"' -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d 10.99.0.0/16 -j RETURN || true\nPreDown = iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -d '"${TRAEFIK_LAN_IP}"'/32 -j RETURN || true"; next}1' "${ConfigDir}/WireGuard/wg0.conf" > /tmp/wg0.tmp && sudo mv /tmp/wg0.tmp "${ConfigDir}/WireGuard/wg0.conf"
     sudo chown "$HostUid:$HostGid" "${ConfigDir}/WireGuard/wg0.conf"
 fi
 
@@ -422,8 +428,6 @@ if [ -n "${PrevAcme:-}" ] && [ "${PrevAcme}" != "${AcmeServerUrl}" ]; then
     sudo chmod 600 "$TraefikAcmeFile"
 fi
 
-# IAM-68: Socket Detonation Cured. Trailing slash explicitly amputated from address logic.
-# IAM-69: Unmarshaler Suicide v10 Cured. Deprecated PostgreSQL 'host'/'port' replaced with 'address'.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
   address: "tcp://0.0.0.0:9091"
@@ -438,12 +442,12 @@ authentication_backend:
 access_control:
   default_policy: deny
   rules:
-    - domain: "*.${InternalDomain}"
+    - domain: "*.${INTERNAL_DOMAIN}"
       policy: two_factor
 session:
   cookies:
     - name: authelia_session
-      domain: "${InternalDomain}"
+      domain: "${INTERNAL_DOMAIN}"
       expiration: "1h"
       inactivity: "5m"
 regulation:
@@ -463,29 +467,30 @@ users:
     email: admin@REPLACE_DOMAIN
     groups: [admins]
 EOF
-    sudo sed -i "s/REPLACE_DOMAIN/${InternalDomain}/g" "${ConfigDir}/Authelia/UsersDatabase.yml"
+    sudo sed -i "s/REPLACE_DOMAIN/${INTERNAL_DOMAIN}/g" "${ConfigDir}/Authelia/UsersDatabase.yml"
 fi
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/Authelia"
 sudo chmod 600 "${ConfigDir}/Authelia/UsersDatabase.yml" "${ConfigDir}/Authelia/Configuration.yml" "${ConfigDir}/Authelia/Notification.txt"
 
-# DNS-38: Cryptographic Lobotomy Cured. Restored authoritative GPG validation using the InterNIC Key.
+# DNS-39: 404 Deployment Deadlock Cured. 
+# Fetches keys dynamically from redundant, authoritative keyservers to eliminate static HTML hallucinations.
 PrintMsg "240" "Bootstrapping cryptographically verified DNS Root Trust Anchors..."
 EphKeyring="${ConfigDir}/Unbound/Internic.gpg"
 
-# Fail-fast flags (-f) prevent hallucinated 404 HTML pages.
 sudo curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root" -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
 sudo curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root.sig" -o "${ConfigDir}/Unbound/RootHints.txt.sig" || true
-sudo curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/internic.pgp" -o "${ConfigDir}/Unbound/Internic.pgp" || true
 
-sudo gpg --no-default-keyring --keyring "$EphKeyring" --import "${ConfigDir}/Unbound/Internic.pgp" >/dev/null 2>&1 || true
+# Rely on canonical Ubuntu and OpenPGP keyservers for robust retrieval of the InterNIC Zone Maintainer key
+sudo gpg --no-default-keyring --keyring "$EphKeyring" --keyserver hkps://keyserver.ubuntu.com --recv-keys 0x0BD07395 >/dev/null 2>&1 || \
+sudo gpg --no-default-keyring --keyring "$EphKeyring" --keyserver hkps://keys.openpgp.org --recv-keys 0x0BD07395 >/dev/null 2>&1 || true
 
 if sudo gpg --no-default-keyring --keyring "$EphKeyring" --verify "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
     sudo mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
-    sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/Internic.pgp" "$EphKeyring" "${EphKeyring}~"
-    PrintMsg "82" "✔ Root Hints cryptographically verified via bash and installed."
+    sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.sig" "$EphKeyring" "${EphKeyring}~"
+    PrintMsg "82" "✔ Root Hints cryptographically verified and installed."
 else
     PrintMsg "196" "[FATAL] GPG Signature verification failed for DNS root hints. MITM detected."
-    sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/Internic.pgp" "$EphKeyring" "${EphKeyring}~" 2>/dev/null || true
+    sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "$EphKeyring" "${EphKeyring}~" 2>/dev/null || true
     exit 1
 fi
 
@@ -498,35 +503,35 @@ EphKeyring="${HintsDir}/Internic.gpg"
 
 curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root" -o "${HintsDir}/RootHints.txt.tmp" || exit 1
 curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root.sig" -o "${HintsDir}/RootHints.txt.sig" || exit 1
-curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/internic.pgp" -o "${HintsDir}/Internic.pgp" || exit 1
 
-gpg --no-default-keyring --keyring "$EphKeyring" --import "${HintsDir}/Internic.pgp" >/dev/null 2>&1 || true
+gpg --no-default-keyring --keyring "$EphKeyring" --keyserver hkps://keyserver.ubuntu.com --recv-keys 0x0BD07395 >/dev/null 2>&1 || \
+gpg --no-default-keyring --keyring "$EphKeyring" --keyserver hkps://keys.openpgp.org --recv-keys 0x0BD07395 >/dev/null 2>&1 || true
 
 if gpg --no-default-keyring --keyring "$EphKeyring" --verify "${HintsDir}/RootHints.txt.sig" "${HintsDir}/RootHints.txt.tmp" 2>/dev/null; then
     mv "${HintsDir}/RootHints.txt.tmp" "${HintsDir}/RootHints.txt"
-    rm -f "${HintsDir}/RootHints.txt.sig" "${HintsDir}/Internic.pgp" "$EphKeyring" "${EphKeyring}~"
+    rm -f "${HintsDir}/RootHints.txt.sig" "$EphKeyring" "${EphKeyring}~"
     exit 0
 else
-    rm -f "${HintsDir}/RootHints.txt.tmp" "${HintsDir}/RootHints.txt.sig" "${HintsDir}/Internic.pgp" "$EphKeyring" "${EphKeyring}~"
+    rm -f "${HintsDir}/RootHints.txt.tmp" "${HintsDir}/RootHints.txt.sig" "$EphKeyring" "${EphKeyring}~"
     echo "[FATAL] DNS Root Trust Anchor Compromised. MitM detected."
     exit 1
 fi
 EOF
 sudo chmod 700 "$RootHintUtility"
 
-# Unbound routes the internal domain strictly to Traefik's internal proxy IP (10.98.0.254)
+# DNS-40: Alpine Namespace Asphyxiation Cured. Reverted drop-privilege user to 'unbound' native dictionary target.
 sudo tee "${ConfigDir}/Unbound/UnboundConfig.conf" > /dev/null << EOF
 server:
   interface: 0.0.0.0
   port: 53
   do-ip4: yes
-  username: "_unbound"
+  username: "unbound"
   root-hints: "/opt/unbound/etc/unbound/root.hints"
   auto-trust-anchor-file: "/opt/unbound/etc/unbound/keys/root.key"
   access-control: 127.0.0.0/8 allow
   access-control: 10.99.0.0/24 allow
-  local-zone: "${InternalDomain}." redirect
-  local-data: "${InternalDomain}. A 10.98.0.254"
+  local-zone: "${INTERNAL_DOMAIN}." redirect
+  local-data: "${INTERNAL_DOMAIN}. A ${TRAEFIK_LAN_IP}"
 EOF
 
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
@@ -545,7 +550,7 @@ http:
         sourceRange: ["10.13.13.0/24", "127.0.0.1/32"]
     authelia:
       forwardAuth:
-        address: "http://Authelia:9091/api/authz/forward-auth?authelia_url=https://auth.${InternalDomain}/"
+        address: "http://Authelia:9091/api/authz/forward-auth?authelia_url=https://auth.${INTERNAL_DOMAIN}/"
         trustForwardHeader: true
         authResponseHeaders: ["Remote-User", "Remote-Groups", "Remote-Name", "Remote-Email"]
     traefik-auth:
@@ -553,7 +558,7 @@ http:
         usersFile: "/run/secrets/traefik_auth"
   routers:
     auth-router:
-      rule: "Host(\`auth.${InternalDomain}\`)"
+      rule: "Host(\`auth.${INTERNAL_DOMAIN}\`)"
       entryPoints: ["websecure"]
       middlewares: ["secure-headers", "vpn-whitelist"]
       service: "authelia-service"
@@ -572,7 +577,7 @@ networks:
     ipam: { config: [{ subnet: 10.99.0.0/24 }] }
   ProxyNetwork:
     name: sovereign_gateway_proxy_network
-    ipam: { config: [{ subnet: 10.98.0.0/24 }] }
+    ipam: { config: [{ subnet: ${TRAEFIK_SUBNET} }] }
   AuthNetwork:
     internal: true
   SocketNetwork:
@@ -657,7 +662,7 @@ services:
       - ${ConfigDir}/Unbound/UnboundConfig.conf:/opt/unbound/etc/unbound/unbound.conf:ro
       - ${ConfigDir}/Unbound/RootHints.txt:/opt/unbound/etc/unbound/root.hints:ro
       - UnboundKeys:/opt/unbound/etc/unbound/keys:rw
-    entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
+    entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE]
     healthcheck:
@@ -731,7 +736,7 @@ services:
     container_name: TraefikProxy
     networks: 
       SocketNetwork: {}
-      ProxyNetwork: { ipv4_address: 10.98.0.254 }
+      ProxyNetwork: { ipv4_address: \${TRAEFIK_LAN_IP} }
       VpnNetwork: { ipv4_address: 10.99.0.13 }
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
@@ -751,7 +756,7 @@ services:
       - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
       - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
       - "--entrypoints.websecure.address=:443"
-      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=\${TRAEFIK_TRUSTED_IPS},127.0.0.1/32,10.98.0.0/24,10.99.0.0/24"
+      - "--entrypoints.websecure.forwardedHeaders.trustedIPs=\${TRAEFIK_TRUSTED_IPS},127.0.0.1/32,\${TRAEFIK_SUBNET},10.99.0.0/24"
       - "--certificatesresolvers.cloudflare.acme.caserver=\${ACME_SERVER_URL}"
       - "--certificatesresolvers.cloudflare.acme.email=\${ACME_EMAIL}"
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme/Acme.json"
@@ -794,6 +799,7 @@ WantedBy=timers.target
 EOF
 
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
+# Execute robust evaluation against explicitly templated dynamic IP boundaries
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
 
@@ -804,16 +810,16 @@ for i in {1..30}; do
     sleep 2
 done
 
-iptables -D DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null || true
-iptables -D DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.254/32 -p tcp -m multiport --sports 80,443 -j ACCEPT 2>/dev/null || true
-iptables -D DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP 2>/dev/null || true
-iptables -D DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.0/24 -j DROP 2>/dev/null || true
+iptables -D DOCKER-USER -s 10.13.13.0/24 -d ${TRAEFIK_LAN_IP}/32 -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null || true
+iptables -D DOCKER-USER -d 10.13.13.0/24 -s ${TRAEFIK_LAN_IP}/32 -p tcp -m multiport --sports 80,443 -j ACCEPT 2>/dev/null || true
+iptables -D DOCKER-USER -s 10.13.13.0/24 -d ${TRAEFIK_SUBNET} -j DROP 2>/dev/null || true
+iptables -D DOCKER-USER -d 10.13.13.0/24 -s ${TRAEFIK_SUBNET} -j DROP 2>/dev/null || true
 
-iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.254/32 -p tcp -m multiport --sports 80,443 -j ACCEPT
-iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT
+iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s ${TRAEFIK_LAN_IP}/32 -p tcp -m multiport --sports 80,443 -j ACCEPT
+iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d ${TRAEFIK_LAN_IP}/32 -p tcp -m multiport --dports 80,443 -j ACCEPT
 
-iptables -I DOCKER-USER 3 -d 10.13.13.0/24 -s 10.98.0.0/24 -j DROP 2>/dev/null || iptables -A DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.0/24 -j DROP
-iptables -I DOCKER-USER 3 -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP 2>/dev/null || iptables -A DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP
+iptables -I DOCKER-USER 3 -d 10.13.13.0/24 -s ${TRAEFIK_SUBNET} -j DROP 2>/dev/null || iptables -A DOCKER-USER -d 10.13.13.0/24 -s ${TRAEFIK_SUBNET} -j DROP
+iptables -I DOCKER-USER 3 -s 10.13.13.0/24 -d ${TRAEFIK_SUBNET} -j DROP 2>/dev/null || iptables -A DOCKER-USER -s 10.13.13.0/24 -d ${TRAEFIK_SUBNET} -j DROP
 
 for proto in udp tcp; do
     if ! iptables -C DOCKER-USER -s 10.99.0.12/32 -d 10.13.13.0/24 -p \$proto --sport 53 -j ACCEPT 2>/dev/null; then
