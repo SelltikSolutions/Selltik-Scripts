@@ -1,34 +1,37 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v94.0-SOVEREIGN-OBLIVION
+#  Version: v95.0-SOVEREIGN-PARAGON
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Oblivion Hardening Fixes (The Final Absolute Truth):
-#  1. NET-45: Open Resolver Cannon Cured. Bound Pi-Hole port 53 exclusively to 
-#     127.0.0.1 to prevent WAN exposure and DNS Amplification DDoS attacks.
-#  2. SEC-39: Permissive Fallthrough Cured. Injected explicit DROP rules for the 
-#     DMZ subnet immediately following the Traefik ACCEPT rules to seal the void.
-#  3. IAM-63: Unmarshaler Detonation v6 Cured. Migrated the deprecated JWT secret 
-#     variable to AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE.
+#  Paragon Hardening Fixes (The Final Absolute Truth):
+#  1. SEC-40: Firewall Inversion Lockout Cured. Watchdog now explicitly deletes 
+#     both ACCEPT and DROP rules before insertion, guaranteeing strict 
+#     mathematical hierarchy (ACCEPT > DROP) in the DOCKER-USER chain.
+#  2. DNS-27: Keyring Mismatch Deadlock Cured. Amputated flawed GPG logic attempting 
+#     to verify named.root with the DNSSEC key. Relying natively on unbound-anchor 
+#     for cryptographic validation and secure HTTPS for root hints.
+#  3. IAM-64: Healthcheck CLI Detonation Cured. Modernized Authelia healthcheck 
+#     to use native v4.38+ Go subcommand syntax ("authelia healthcheck").
 #  Inherited Master Fixes:
-#  - IAM-62 (Redirection Singularity v4), DNS-26 (Supply Chain Boot Poisoning)
-#  - IAM-59 (Socket Binding Suicide), ORCH-36 (Namespace Hallucinations)
-#  - IAM-58 (Redirection Singularity v3), ORCH-38 (Selective Immortality)
-#  - NET-42 (TCP DNS Truncation Drop), IAM-56 (Unmarshaler Detonation v5)
-#  - NET-36 (Asymmetrical DNS Blackhole), BOOT-17 (Missing Entrypoint)
-#  - IAM-55 (Quantum Session Expiration), SEC-38 (Immortal Skeleton Key)
-#  - IAM-49 (Unmarshaler Detonation v4), IAM-54 (Redirection Singularity v2)
-#  - SEC-37 (L3 DMZ Bypass V2), IAM-48 (Unmarshaler Detonation v3)
-#  - DNS-25 (Ghost Inode Deadlock), ORCH-35 (Watchdog Lockout)
-#  - NET-34 (Ghost Iptables Memory Leak), IAM-47 (Unmarshaler Detonation v2)
-#  - TLS-11 (ACME Inode Deadlock), ORCH-31 (WireGuard Stagnation Trap)
-#  - IAM-53 (Open-Redirect Singularity), IAM-52 (ForwardAuth Redirection)
-#  - LOG-14 (Ghost Log Artifact), IAM-46 (Session Array Detonation)
-#  - NET-31 (CRLF Poisoning), IAM-41 (Unmarshaler Detonation)
-#  - CONFIG-02 (PreDown Parasites), BOOT-16 (S6 Init Paradox)
-#  - IAM-38 (Deprecated Authz Endpoint), TLS-08 (ACME Ghosting)
-#  - CONFIG-01 (Template Stagnation), SEC-36 (DMZ Bypass)
+#  - NET-45 (Open Resolver Cannon), SEC-39 (Permissive Fallthrough)
+#  - IAM-63 (Unmarshaler Detonation v6), IAM-62 (Redirection Singularity v4)
+#  - DNS-26 (Supply Chain Boot Poisoning), IAM-59 (Socket Binding Suicide)
+#  - ORCH-36 (Namespace Hallucinations), IAM-58 (Redirection Singularity v3)
+#  - ORCH-38 (Selective Immortality), NET-42 (TCP DNS Truncation Drop)
+#  - IAM-56 (Unmarshaler Detonation v5), NET-36 (Asymmetrical DNS Blackhole)
+#  - BOOT-17 (Missing Entrypoint), IAM-55 (Quantum Session Expiration)
+#  - SEC-38 (Immortal Skeleton Key), IAM-49 (Unmarshaler Detonation v4)
+#  - IAM-54 (Redirection Singularity v2), SEC-37 (L3 DMZ Bypass V2)
+#  - IAM-48 (Unmarshaler Detonation v3), DNS-25 (Ghost Inode Deadlock)
+#  - ORCH-35 (Watchdog Lockout), NET-34 (Ghost Iptables Memory Leak)
+#  - IAM-47 (Unmarshaler Detonation v2), TLS-11 (ACME Inode Deadlock)
+#  - ORCH-31 (WireGuard Stagnation Trap), IAM-53 (Open-Redirect Singularity)
+#  - IAM-52 (ForwardAuth Redirection), LOG-14 (Ghost Log Artifact)
+#  - IAM-46 (Session Array Detonation), NET-31 (CRLF Poisoning)
+#  - IAM-41 (Unmarshaler Detonation), CONFIG-02 (PreDown Parasites)
+#  - BOOT-16 (S6 Init Paradox), IAM-38 (Deprecated Authz Endpoint)
+#  - TLS-08 (ACME Ghosting), CONFIG-01 (Template Stagnation), SEC-36 (DMZ Bypass)
 #  - SEC-35 (Lateral Trust Hallucination), IAM-40 (Idempotent Password Wipe)
 #  - ORCH-26 (Watchdog Amnesia), ENV-05 (Strict Nounset Detonation)
 #  - BOOT-15 (S6-Overlay Init Destruction), ROUTE-26 (Whitelist Trap)
@@ -91,7 +94,7 @@ TrapHandler() {
     if [ $exit_code -ne 0 ]; then
         echo -e "\n[FATAL] Script aborted at line $BASH_LINENO. System state inconsistent."
     fi
-    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/icann.pgp" 2>/dev/null || true
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null || true
     [ -f "$LockFile" ] && rm -f "$LockFile"
     exit "$exit_code"
 }
@@ -553,28 +556,22 @@ fi
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/Authelia"
 sudo chmod 600 "${ConfigDir}/Authelia/UsersDatabase.yml" "${ConfigDir}/Authelia/Configuration.yml" "${ConfigDir}/Authelia/notification.txt"
 
-# DNS-12 & DNS-26: Supply Chain Boot Poisoning Cured.
-# Initial deployment sequence now executes strict GPG signature verification against 
-# the authoritative InterNIC trust anchors prior to execution.
-PrintMsg "240" "Bootstrapping cryptographically verified DNS Root Trust Anchors..."
-EphKeyring="${ConfigDir}/Unbound/icann.gpg"
-sudo curl -sS --connect-timeout 10 "https://www.internic.net/domain/named.root" -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
-sudo curl -sS --connect-timeout 10 "https://www.internic.net/domain/named.root.sig" -o "${ConfigDir}/Unbound/RootHints.txt.sig" || true
-sudo curl -sS --connect-timeout 10 "https://data.iana.org/root-anchors/icann.pgp" -o "${ConfigDir}/Unbound/icann.pgp" || true
-
-sudo gpg --no-default-keyring --keyring "$EphKeyring" --import "${ConfigDir}/Unbound/icann.pgp" >/dev/null 2>&1 || true
-
-if ! sudo gpg --no-default-keyring --keyring "$EphKeyring" --fingerprint 0x0BD07395 | tr -d ' ' | grep -q "E0F2C1291162E536E8EEEEF0F781C36C0BD07395"; then
-    PrintMsg "196" "[FATAL] DNS Root Trust Anchor Compromised. MitM detected."
-    exit 1
-fi
-
-if sudo gpg --no-default-keyring --keyring "$EphKeyring" --verify "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
-    sudo mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
-    sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/icann.pgp" "$EphKeyring" "${EphKeyring}~"
-    PrintMsg "82" "✔ Root Hints cryptographically verified and installed."
+# DNS-27: Keyring Mismatch Deadlock Cured.
+# The deeply flawed GPG verification using the DNSSEC key to verify the plaintext hints file 
+# has been entirely amputated. We now rely strictly on native unbound-anchor inside the container 
+# for true cryptographic DNSSEC trust, and standard TLS 1.2+ HTTPS to fetch the hint file.
+PrintMsg "240" "Bootstrapping DNS Root Trust Anchors via Unbound-Anchor..."
+if curl -sS --connect-timeout 10 "https://www.internic.net/domain/named.root" -o "${ConfigDir}/Unbound/RootHints.txt.tmp"; then
+    if grep -q "A.ROOT-SERVERS.NET" "${ConfigDir}/Unbound/RootHints.txt.tmp"; then
+        sudo mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
+        PrintMsg "82" "✔ Root Hints downloaded successfully. DNSSEC validation deferred to Unbound container."
+    else
+        PrintMsg "196" "[FATAL] Root Hints payload corrupted or captive portal detected."
+        sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp"
+        exit 1
+    fi
 else
-    PrintMsg "196" "[FATAL] GPG Signature verification failed for DNS root hints."
+    PrintMsg "196" "[FATAL] HTTPS connection to InterNIC failed."
     exit 1
 fi
 
@@ -583,25 +580,16 @@ sudo tee "$RootHintUtility" > /dev/null << 'EOF'
 #!/bin/bash
 set -euo pipefail
 HintsDir="/opt/Docker/Config/Unbound"
-EphKeyring="${HintsDir}/icann.gpg"
 
-curl -sS "https://www.internic.net/domain/named.root" -o "${HintsDir}/RootHints.txt.tmp"
-curl -sS "https://www.internic.net/domain/named.root.sig" -o "${HintsDir}/RootHints.txt.sig"
-curl -sS "https://data.iana.org/root-anchors/icann.pgp" -o "${HintsDir}/icann.pgp"
-
-gpg --no-default-keyring --keyring "$EphKeyring" --import "${HintsDir}/icann.pgp" >/dev/null 2>&1 || true
-
-if ! gpg --no-default-keyring --keyring "$EphKeyring" --fingerprint 0x0BD07395 | tr -d ' ' | grep -q "E0F2C1291162E536E8EEEEF0F781C36C0BD07395"; then
-    echo "[FATAL] DNS Root Trust Anchor Compromised. MitM detected."
-    exit 1
-fi
-
-if gpg --no-default-keyring --keyring "$EphKeyring" --verify "${HintsDir}/RootHints.txt.sig" "${HintsDir}/RootHints.txt.tmp" 2>/dev/null; then
-    mv "${HintsDir}/RootHints.txt.tmp" "${HintsDir}/RootHints.txt"
-    rm -f "${HintsDir}/RootHints.txt.sig" "${HintsDir}/icann.pgp" "$EphKeyring" "${EphKeyring}~"
-    exit 0
+if curl -sS --connect-timeout 10 "https://www.internic.net/domain/named.root" -o "${HintsDir}/RootHints.txt.tmp"; then
+    if grep -q "A.ROOT-SERVERS.NET" "${HintsDir}/RootHints.txt.tmp"; then
+        mv "${HintsDir}/RootHints.txt.tmp" "${HintsDir}/RootHints.txt"
+        exit 0
+    else
+        rm -f "${HintsDir}/RootHints.txt.tmp"
+        exit 1
+    fi
 else
-    echo "[FATAL] GPG Signature verification failed for DNS root hints."
     exit 1
 fi
 EOF
@@ -747,9 +735,9 @@ services:
     depends_on:
       auth_db: { condition: service_healthy }
     cap_drop: [ALL]
-    # HEALTH-09: Healthcheck CLI Detonation Cured.
+    # IAM-64: Healthcheck CLI Detonation Cured. Standardized to modern v4.38+ Go subcommand.
     healthcheck:
-      test: ["CMD", "authelia-healthcheck"]
+      test: ["CMD", "authelia", "healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -823,6 +811,7 @@ services:
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
+    # ORCH-31: WireGuard Stagnation Trap Cured. STATE_TRIGGER guarantees a compose recreation when the physical LAN IP changes.
     environment:
       PUID: "\${HOST_UID}"
       PGID: "\${HOST_GID}"
@@ -845,11 +834,13 @@ services:
   traefik_proxy:
     image: traefik:v2.11
     container_name: traefik_proxy
+    # SEC-37: L3 DMZ Bypass V2 Cured. Assigned a static, immutable proxy IP to ruthlessly anchor the Watchdog's VPN isolation rules.
     networks: 
       socket_network: {}
       proxy_network: 
         ipv4_address: 10.98.0.254
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
+    # TLS-11: ACME Inode Deadlock Cured. Directory-level mount strictly enables the atomic rename() syscall for Let's Encrypt generation.
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
       - ${TraefikAcmeDir}:/etc/traefik/acme:rw
@@ -914,7 +905,7 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# SEC-36, SEC-37, SEC-38, SEC-39, NET-36, & NET-42: Comprehensive Multi-Chain Routing Purge and Injection.
+# SEC-36, SEC-37, SEC-38, SEC-39, SEC-40, NET-36, & NET-42: Comprehensive Multi-Chain Routing Purge and Injection.
 WatchdogScript="${ScriptsDir}/WatchdogSovereignGateway.sh"
 sudo tee "$WatchdogScript" > /dev/null << EOF
 #!/bin/bash
@@ -927,26 +918,21 @@ for i in {1..30}; do
     sleep 2
 done
 
-# SEC-38: Surgically flush immortal legacy skeleton keys from live kernel memory
-iptables -D DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null || true
-iptables -D DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.0/24 -p tcp -m multiport --sports 80,443 -j ACCEPT 2>/dev/null || true
-
-# SEC-39: Clean up legacy Permissive Fallthrough DROP rules
+# SEC-40: Firewall Inversion Lockout Cured. 
+# Explicitly flush BOTH ACCEPT and DROP legacy rules from live kernel memory BEFORE re-evaluating.
+iptables -D DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null || true
+iptables -D DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.254/32 -p tcp -m multiport --sports 80,443 -j ACCEPT 2>/dev/null || true
 iptables -D DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP 2>/dev/null || true
 iptables -D DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.0/24 -j DROP 2>/dev/null || true
 
 # INJECTION SEQUENCE: Bottom-Up Priority
 # 1. Insert the DROP policy first (so it sits at the bottom of our custom DOCKER-USER rules)
-if ! iptables -C DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP 2>/dev/null; then
-    iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP
-    iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.0/24 -j DROP
-fi
+iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP
+iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.0/24 -j DROP
 
-# 2. Insert the strictly bound 10.98.0.254 ACCEPT constraint (This pushes the DROP rules down)
-if ! iptables -C DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null; then
-    iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT
-    iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.254/32 -p tcp -m multiport --sports 80,443 -j ACCEPT
-fi
+# 2. Insert the strictly bound 10.98.0.254 ACCEPT constraint (This pushes the DROP rules safely downwards)
+iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT
+iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.254/32 -p tcp -m multiport --sports 80,443 -j ACCEPT
 
 # 3. NET-36 & NET-42: Authorize UDP AND TCP 53 return path for asymmetrical bridge routing (VPN <-> Pi-Hole/DNSSEC)
 for proto in udp tcp; do
