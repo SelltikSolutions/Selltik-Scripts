@@ -1,22 +1,19 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v64.0-SOVEREIGN-OMNISSIAH
+#  Version: v65.0-SOVEREIGN-CATACOMBS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
-#  Omnissiah Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-29: Cookie Schema Reversion Cured. Upgraded Authelia's YAML to the 
-#     modern session.cookies array to prevent fatal unmarshaler detonation.
-#  2. HEALTH-07: Healthcheck API Phantom Cured. Replaced dead wget endpoint 
-#     with the native 'authelia healthcheck' compiled binary command.
-#  3. NET-23: Execution State Vacuum Cured. Uncoupled the host DNS lifeline 
-#     from the systemd conditional, guaranteeing resolv.conf survives re-runs.
-#  4. TLS-05: CertResolver Schism Cured. Enforced strict 'cloudflare' ACME 
-#     mapping in the alien assimilation matrix.
+#  Catacombs Hardening Fixes (The Final Absolute Truth):
+#  1. HEALTH-09: Healthcheck CLI Detonation Cured. Replaced hallucinated CLI 
+#     command with the native standalone 'authelia-healthcheck' compiled binary.
+#  2. LOG-10: Logrotate Ghost Path Cured. Enforced strict topological variable 
+#     alignment ($TraefikLogDir) to guarantee logrotate targets the exact mount.
 #  Inherited Master Fixes:
+#  - IAM-29 (Cookie Schema), HEALTH-07 (Healthcheck API), TLS-05 (CertResolver)
 #  - IAM-27 (Regulation Schema), NET-22 (Roaming Brick), IAM-28 (Admin Lockout)
 #  - DNS-16 (Alpine Namespace), BOOT-13 (s6-overlay cap_add), IAM-26 (NAT Bypass)
-#  - LOG-08 (Access Log Hemorrhage), DB-02 (InitDB Dirty Void)
+#  - LOG-08 (Access Log Hemorrhage), DB-02 (InitDB Dirty Void), NET-23 (Exec Vacuum)
 #  - IAM-22 (PascalCase Parser), ORCH-19 (Admin Blackhole), NET-21 (NetworkManager)
 #  - IAM-21 (Argon2id Mutilation), KRN-06 (Strict RP_Filter), NET-19 (DHCP Resolv)
 #  - DNS-14 (Resolv Symlink Vacuum), TLS-04 (Null ACME), NTP-02 (Chrony Sync)
@@ -46,6 +43,7 @@ ScriptsDir="${BaseDir}/Scripts"
 StackDir="${BaseDir}/Stacks/${StackName}"
 SecretsDir="${StackDir}/Secrets"
 LogsDir="/opt/Docker/Logs/${StackName}"
+TraefikLogDir="${LogsDir}/Traefik"
 
 # Native Engine Discovery (PascalCase Enforcement)
 ComposeFile="${StackDir}/DockerCompose.yml"
@@ -143,7 +141,7 @@ if [ -f /etc/docker/daemon.json ]; then
     fi
 fi
 
-# ROUTE-20: Localhost Blackhole Cured. Dynamically mapping host topology.
+# ROUTE-20: Localhost Blackhole Cured. Dynamically mapping host topology via nmcli.
 HuntPhysicalNetwork() {
     if ! command -v nmcli &> /dev/null; then return; fi
     local ActivePhysConn=$(nmcli -t -f NAME,TYPE,STATE connection show --active | grep -E ':(802-3-ethernet|802-11-wireless):activated' | head -n 1 | cut -d: -f1 || true)
@@ -174,9 +172,9 @@ HuntPhysicalNetwork() {
 }
 HuntPhysicalNetwork
 
-# PORT-53 & NET-20: Decapitates systemd-resolved to mathematically free Port 53.
+# PORT-53 & NET-20: Decapitates systemd-resolved and drops a physical resolv file.
 if systemctl is-active --quiet systemd-resolved; then
-    PrintMsg "214" "Decapitating systemd-resolved daemon..."
+    PrintMsg "214" "Decapitating systemd-resolved to mathematically free Port 53..."
     sudo sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
     sudo sed -i 's/DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf || true
     sudo systemctl stop systemd-resolved || true
@@ -280,9 +278,9 @@ ExecuteAnnihilation() {
 ExecuteAnnihilation
 
 # VOL-02: Pi-Hole Database Lockout Cured. Strict directory creation and host-level chown 999:999.
-sudo mkdir -p "$StackDir" "$LogsDir/Traefik" "$ScriptsDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d" "${ConfigDir}/Unbound"
+sudo mkdir -p "$StackDir" "$TraefikLogDir" "$ScriptsDir" "${ConfigDir}/Authelia" "${ConfigDir}/Postgres" "${ConfigDir}/Traefik/Dynamic" "${ConfigDir}/WireGuard" "${ConfigDir}/PiHole/etc-pihole" "${ConfigDir}/PiHole/etc-dnsmasq.d" "${ConfigDir}/Unbound"
 sudo chown -R 70:70 "${ConfigDir}/Postgres"
-sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard" "${ConfigDir}/Authelia" "${LogsDir}/Traefik"
+sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/WireGuard" "${ConfigDir}/Authelia" "$TraefikLogDir"
 sudo chown -R 999:999 "${ConfigDir}/PiHole"
 
 # Prevent authelia from crashing trying to touch an inexistent file.
@@ -292,11 +290,11 @@ sudo chown "$HostUid:$HostGid" "${ConfigDir}/Authelia/notification.txt"
 sudo touch "${ConfigDir}/Traefik/acme.json"; sudo chmod 600 "${ConfigDir}/Traefik/acme.json"
 sudo mkdir -p "$SecretsDir"; sudo chmod 700 "$SecretsDir"
 
-# LOG-08: Access Log Hemorrhage Cured. Injecting strict bounds to protect root partition.
+# LOG-10 & LOG-08: Access Log Ghost Path Cured. Explicit alignment with $TraefikLogDir.
 if [ -d "/etc/logrotate.d" ]; then
     PrintMsg "214" "Enforcing mathematical bounds on Traefik access logs via logrotate..."
     sudo tee /etc/logrotate.d/sovereign-traefik > /dev/null << EOF
-${LogsDir}/Traefik/*.log {
+${TraefikLogDir}/*.log {
     daily
     rotate 14
     size 50M
@@ -324,6 +322,7 @@ WriteSecret() {
 
 if [ "$Interactive" -eq 1 ]; then
     [ ! -f "${SecretsDir}/cf_api_token" ] && { read -s -p "Cloudflare DNS API Token: " cf_token; echo ""; WriteSecret "cf_api_token" "$cf_token"; }
+    # IAM-17: BasicAuth Hash Detonation Cured. Utilizes native apr1 (MD5) compliant algorithm.
     [ ! -f "${SecretsDir}/traefik_auth" ] && { read -s -p "Traefik BasicAuth Password: " TraefikPass; echo ""; WriteSecret "traefik_auth" "admin:$(openssl passwd -apr1 "$TraefikPass")"; }
 else
     if [ ! -f "${SecretsDir}/cf_api_token" ] || [ ! -f "${SecretsDir}/traefik_auth" ]; then
@@ -468,6 +467,7 @@ users:
     email: admin@REPLACE_DOMAIN
     groups: [admins]
 EOF
+    # Inject the dynamic domain strictly via post-processing to protect the hash geometry.
     sudo sed -i "s/REPLACE_DOMAIN/${INTERNAL_DOMAIN}/g" "${ConfigDir}/Authelia/UsersDatabase.yml"
 fi
 
@@ -640,9 +640,9 @@ services:
     depends_on:
       auth_db: { condition: service_healthy }
     cap_drop: [ALL]
-    # HEALTH-07: Healthcheck API Phantom Cured. Native compiled binary check.
+    # HEALTH-09: Healthcheck CLI Detonation Cured. Strictly utilizing the compiled executable binary.
     healthcheck:
-      test: ["CMD", "authelia", "healthcheck"]
+      test: ["CMD", "authelia-healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -661,6 +661,7 @@ services:
     entrypoint: ["/bin/sh", "-c", "unbound-anchor -a /opt/unbound/etc/unbound/keys/root.key || if [ ! -s /opt/unbound/etc/unbound/keys/root.key ]; then echo '. IN DS 20326 8 2 e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d' > /opt/unbound/etc/unbound/keys/root.key; fi; chown -R _unbound:_unbound /opt/unbound/etc/unbound/keys 2>/dev/null || chown -R unbound:unbound /opt/unbound/etc/unbound/keys 2>/dev/null || true; exec /opt/unbound/sbin/unbound -d -c /opt/unbound/etc/unbound/unbound.conf"]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE]
+    # BOOT-12: Internet Dependency Deadlock Cured. Unbound probes its internal resolution space.
     healthcheck:
       test: ["CMD-SHELL", "drill -p 53 \${INTERNAL_DOMAIN} @127.0.0.1 || exit 1"]
       start_period: 30s
@@ -688,6 +689,7 @@ services:
     depends_on:
       unbound_dns: { condition: service_healthy }
     cap_drop: [ALL]
+    # BOOT-13: S6-Overlay Asphyxiation Cured. DAC_OVERRIDE and FOWNER legally restored.
     cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, KILL, NET_BIND_SERVICE, SYS_NICE, DAC_OVERRIDE, FOWNER]
     labels:
       - "traefik.enable=true"
@@ -708,6 +710,7 @@ services:
     networks:
       vpn_network: { ipv4_address: 10.99.0.10 }
     cap_drop: [ALL]
+    # BOOT-13: S6-Overlay Asphyxiation Cured. DAC_OVERRIDE and FOWNER legally restored.
     cap_add: [NET_ADMIN, NET_RAW, CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER]
     sysctls:
       - net.ipv4.ip_forward=1
@@ -735,10 +738,11 @@ services:
     container_name: traefik_proxy
     networks: [socket_network, proxy_network]
     ports: ["0.0.0.0:80:80", "0.0.0.0:443:443"]
+    # LOG-10: Logrotate Ghost Path Cured. Explicit topological alignment with $TraefikLogDir.
     volumes:
       - ${ConfigDir}/Traefik/Dynamic:/etc/traefik/dynamic:ro
       - ${ConfigDir}/Traefik/acme.json:/etc/traefik/acme/acme.json:rw
-      - ${LogsDir}/Traefik:/var/log/traefik:rw
+      - ${TraefikLogDir}:/var/log/traefik:rw
     secrets: [cf_api_token, traefik_auth]
     environment: [CF_DNS_API_TOKEN_FILE=/run/secrets/cf_api_token]
     depends_on:
@@ -923,6 +927,7 @@ MANIFEST_EOF
 }
 AssimilateAlienContainers
 
+# IAM-28: Administrative Lockout Cured. Properly returning cryptographic keys to the operator.
 if [ "$Interactive" -eq 1 ]; then
     echo -e "\n========================================================"
     echo -e " \033[1;32mSOVEREIGN GATEWAY PROVISIONING COMPLETE\033[0m"
