@@ -1,19 +1,21 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v102.0-SOVEREIGN-PALLADIUM-V2
+#  Version: v103.0-SOVEREIGN-PRIMUS
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
 #
-#  Palladium-V2 Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-66: Unmarshaler Detonation v8 Cured. Ruthlessly amputated the 
-#     hallucinated 'password_file' key from the storage.postgres YAML block. 
-#     Secret injection relies purely on AUTHELIA_STORAGE_POSTGRES_PASSWORD_FILE.
-#  2. PROXY-08: CLI Parser Detonation Cured. Corrected Traefik's strict 
-#     camelCase arguments (--entrypoints.web.http.redirections.entryPoint.to).
-#  3. SEC-45: Header Atrophy Cured. Restored 'contentTypeNosniff: true' and 
-#     'browserXssFilter: true' to the secure-headers middleware matrix to 
-#     mathematically seal Layer 7 degradation vectors.
+#  Primus Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-67: Unmarshaler Detonation v9 Cured. Ruthlessly amputated the 
+#     deprecated 'host' and 'port' keys from Authelia's YAML in favor of the 
+#     modern, strictly-typed 'address: tcp://0.0.0.0:9091/' endpoint schema.
+#  2. SEC-46: Periodic Packet Hemorrhage Cured. Inverted Watchdog iptables 
+#     injection order. ACCEPT rules are injected first, followed by DROP rules 
+#     safely underneath, eliminating the millisecond permissive-drop jitter 
+#     that severed active VPN streams every 5 minutes.
+#  3. SYNTAX-03: Assimilation Loop Asphyxiation Cured. Eradicated the illegal 
+#     backslash escape preceding the $() subshell execution. The assimilation 
+#     claw will correctly target active container IDs instead of literal strings.
 #
 #  SECURITY WARNING: This script implements Scorched Earth policies. It will
 #  destroy unassimilated containers, modify live kernel routing tables, and 
@@ -47,7 +49,7 @@ TrapHandler() {
     if [ $exit_code -ne 0 ]; then
         echo -e "\n[FATAL] Script aborted at line $BASH_LINENO. System state inconsistent."
     fi
-    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null || true
+    rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/Internic.pgp" 2>/dev/null || true
     [ -f "$LockFile" ] && rm -f "$LockFile"
     exit "$exit_code"
 }
@@ -358,6 +360,7 @@ else
     WgAllowedIps="${PrevAllowedIps}"
 fi
 
+# IAM-65: Storage Key Entropy Detonation Cured. Expanded base64 generation to 64 bytes (88 chars).
 [ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 64)" "70:$HostGid" "640"
 [ ! -f "${SecretsDir}/authelia_jwt_secret" ] && WriteSecret "authelia_jwt_secret" "$(openssl rand -base64 64)"
 [ ! -f "${SecretsDir}/authelia_session_secret" ] && WriteSecret "authelia_session_secret" "$(openssl rand -base64 64)"
@@ -421,11 +424,10 @@ if [ -n "${PrevAcme:-}" ] && [ "${PrevAcme}" != "${AcmeServerUrl}" ]; then
     sudo chmod 600 "$TraefikAcmeFile"
 fi
 
-# IAM-66: Unmarshaler Detonation v8 Cured. Explicitly eradicated 'password_file' from postgres dictionary.
+# IAM-67: Unmarshaler Detonation v9 Cured. Strictly mapped modern address directive.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
-  host: 0.0.0.0
-  port: 9091
+  address: "tcp://0.0.0.0:9091/"
 storage:
   postgres:
     host: AuthDb
@@ -720,7 +722,6 @@ services:
     depends_on:
       DockerSocketProxy: { condition: service_healthy }
       Authelia: { condition: service_healthy }
-    # PROXY-08: CLI Parser Detonation Cured. Strictly applied camelCase 'entryPoint' to resolve boot exceptions.
     command:
       - "--providers.docker=true"
       - "--providers.docker.endpoint=tcp://DockerSocketProxy:2375"
@@ -783,16 +784,20 @@ for i in {1..30}; do
     sleep 2
 done
 
+# SEC-46: Periodic Packet Hemorrhage Cured. 
+# Explicitly flush BOTH ACCEPT and DROP legacy rules from live kernel memory BEFORE re-evaluating.
 iptables -D DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null || true
 iptables -D DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.254/32 -p tcp -m multiport --sports 80,443 -j ACCEPT 2>/dev/null || true
 iptables -D DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP 2>/dev/null || true
 iptables -D DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.0/24 -j DROP 2>/dev/null || true
 
-iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP
-iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.0/24 -j DROP
-
-iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT
+# INJECTION SEQUENCE: ACCEPT rules FIRST to establish proxy pathways instantly.
 iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.254/32 -p tcp -m multiport --sports 80,443 -j ACCEPT
+iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT
+
+# INJECTION SEQUENCE: DROP rules SECOND to rest safely underneath the ACCEPT pathways.
+iptables -I DOCKER-USER 3 -d 10.13.13.0/24 -s 10.98.0.0/24 -j DROP 2>/dev/null || iptables -A DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.0/24 -j DROP
+iptables -I DOCKER-USER 3 -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP 2>/dev/null || iptables -A DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP
 
 for proto in udp tcp; do
     if ! iptables -C DOCKER-USER -s 10.99.0.12/32 -d 10.13.13.0/24 -p \$proto --sport 53 -j ACCEPT 2>/dev/null; then
@@ -845,7 +850,8 @@ sudo /bin/bash "$WatchdogScript"
 AssimilateAlienContainers() {
     ProxyNetworkName="sovereign_gateway_proxy_network"
     if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
-        local foreign_containers=\$(sudo $DockerBin ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($2) != stack && $1 != "" {print $1}')
+        # SYNTAX-03: Assimilation Loop Asphyxiation Cured. Removed illegal backslash before $(...) execution.
+        local foreign_containers=$(sudo $DockerBin ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($2) != stack && $1 != "" {print $1}')
         if [ -n "$foreign_containers" ]; then
             local found_new=0
             for container in $foreign_containers; do
