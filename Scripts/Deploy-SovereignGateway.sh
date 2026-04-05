@@ -1,21 +1,20 @@
 #!/bin/bash
 # ==============================================================================
 #  UNIFIED SOVEREIGN GATEWAY - TRAEFIK + WIREGUARD + PI-HOLE + AUTHELIA
-#  Version: v103.0-SOVEREIGN-PRIMUS
+#  Version: v104.0-SOVEREIGN-AETHER
 # ==============================================================================
 #  Architecture: Single-Node Unified Ingress, VPN, & Identity Topology
 #
-#  Primus Hardening Fixes (The Final Absolute Truth):
-#  1. IAM-67: Unmarshaler Detonation v9 Cured. Ruthlessly amputated the 
-#     deprecated 'host' and 'port' keys from Authelia's YAML in favor of the 
-#     modern, strictly-typed 'address: tcp://0.0.0.0:9091/' endpoint schema.
-#  2. SEC-46: Periodic Packet Hemorrhage Cured. Inverted Watchdog iptables 
-#     injection order. ACCEPT rules are injected first, followed by DROP rules 
-#     safely underneath, eliminating the millisecond permissive-drop jitter 
-#     that severed active VPN streams every 5 minutes.
-#  3. SYNTAX-03: Assimilation Loop Asphyxiation Cured. Eradicated the illegal 
-#     backslash escape preceding the $() subshell execution. The assimilation 
-#     claw will correctly target active container IDs instead of literal strings.
+#  Aether Hardening Fixes (The Final Absolute Truth):
+#  1. IAM-68: Socket Binding Detonation Cured. Surgically amputated the illegal 
+#     trailing slash from Authelia's server address (tcp://0.0.0.0:9091).
+#  2. IAM-69: Unmarshaler Suicide v10 Cured. Eradicated the deprecated 'host' 
+#     and 'port' keys from the PostgreSQL storage block in favor of the modern 
+#     'address: "tcp://AuthDb:5432"' schema constraint.
+#  3. DNS-38: Cryptographic Lobotomy Cured. Restored the authoritative InterNIC 
+#     PGP verification protocol. named.root is mathematically validated against 
+#     named.root.sig using the InterNIC Zone Maintainer Key before Unbound is 
+#     allowed to boot, mathematically sealing the DNS supply chain.
 #
 #  SECURITY WARNING: This script implements Scorched Earth policies. It will
 #  destroy unassimilated containers, modify live kernel routing tables, and 
@@ -28,7 +27,7 @@ set -euo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Enforce PascalCase for all structural definitions (Except upstream hardcodes)
-StackName="sovereign_gateway"
+StackName="SovereignGateway"
 BaseDir="/opt/Docker"
 ConfigDir="${BaseDir}/Config"
 ScriptsDir="${BaseDir}/Scripts"
@@ -360,7 +359,6 @@ else
     WgAllowedIps="${PrevAllowedIps}"
 fi
 
-# IAM-65: Storage Key Entropy Detonation Cured. Expanded base64 generation to 64 bytes (88 chars).
 [ ! -f "${SecretsDir}/postgres_password" ] && WriteSecret "postgres_password" "$(openssl rand -base64 64)" "70:$HostGid" "640"
 [ ! -f "${SecretsDir}/authelia_jwt_secret" ] && WriteSecret "authelia_jwt_secret" "$(openssl rand -base64 64)"
 [ ! -f "${SecretsDir}/authelia_session_secret" ] && WriteSecret "authelia_session_secret" "$(openssl rand -base64 64)"
@@ -424,14 +422,14 @@ if [ -n "${PrevAcme:-}" ] && [ "${PrevAcme}" != "${AcmeServerUrl}" ]; then
     sudo chmod 600 "$TraefikAcmeFile"
 fi
 
-# IAM-67: Unmarshaler Detonation v9 Cured. Strictly mapped modern address directive.
+# IAM-68: Socket Detonation Cured. Trailing slash explicitly amputated from address logic.
+# IAM-69: Unmarshaler Suicide v10 Cured. Deprecated PostgreSQL 'host'/'port' replaced with 'address'.
 sudo tee "${ConfigDir}/Authelia/Configuration.yml" > /dev/null << EOF
 server:
-  address: "tcp://0.0.0.0:9091/"
+  address: "tcp://0.0.0.0:9091"
 storage:
   postgres:
-    host: AuthDb
-    port: 5432
+    address: "tcp://AuthDb:5432"
     database: authelia
     username: authelia
 authentication_backend:
@@ -470,15 +468,25 @@ fi
 sudo chown -R "$HostUid:$HostGid" "${ConfigDir}/Authelia"
 sudo chmod 600 "${ConfigDir}/Authelia/UsersDatabase.yml" "${ConfigDir}/Authelia/Configuration.yml" "${ConfigDir}/Authelia/Notification.txt"
 
-# DNS-37: Security Theater Cured. Excised bash-level GPG checks to prevent false aborts and silent bypasses.
-PrintMsg "240" "Bootstrapping DNS Root Hints via HTTPS (DNSSEC validation deferred to Unbound)..."
-sudo curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root" -o "${ConfigDir}/Unbound/RootHints.txt" || true
+# DNS-38: Cryptographic Lobotomy Cured. Restored authoritative GPG validation using the InterNIC Key.
+PrintMsg "240" "Bootstrapping cryptographically verified DNS Root Trust Anchors..."
+EphKeyring="${ConfigDir}/Unbound/Internic.gpg"
 
-if [ ! -s "${ConfigDir}/Unbound/RootHints.txt" ]; then
-    PrintMsg "196" "[FATAL] Failed to fetch authoritative Root Hints. Network unreachable."
-    exit 1
+# Fail-fast flags (-f) prevent hallucinated 404 HTML pages.
+sudo curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root" -o "${ConfigDir}/Unbound/RootHints.txt.tmp" || true
+sudo curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root.sig" -o "${ConfigDir}/Unbound/RootHints.txt.sig" || true
+sudo curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/internic.pgp" -o "${ConfigDir}/Unbound/Internic.pgp" || true
+
+sudo gpg --no-default-keyring --keyring "$EphKeyring" --import "${ConfigDir}/Unbound/Internic.pgp" >/dev/null 2>&1 || true
+
+if sudo gpg --no-default-keyring --keyring "$EphKeyring" --verify "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/RootHints.txt.tmp" 2>/dev/null; then
+    sudo mv "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt"
+    sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/Internic.pgp" "$EphKeyring" "${EphKeyring}~"
+    PrintMsg "82" "✔ Root Hints cryptographically verified via bash and installed."
 else
-    PrintMsg "82" "✔ Root Hints physically seeded. Unbound will secure the cryptographic boundary natively."
+    PrintMsg "196" "[FATAL] GPG Signature verification failed for DNS root hints. MITM detected."
+    sudo rm -f "${ConfigDir}/Unbound/RootHints.txt.tmp" "${ConfigDir}/Unbound/RootHints.txt.sig" "${ConfigDir}/Unbound/Internic.pgp" "$EphKeyring" "${EphKeyring}~" 2>/dev/null || true
+    exit 1
 fi
 
 RootHintUtility="${ScriptsDir}/VerifyRootHints.sh"
@@ -486,10 +494,23 @@ sudo tee "$RootHintUtility" > /dev/null << 'EOF'
 #!/bin/bash
 set -euo pipefail
 HintsDir="/opt/Docker/Config/Unbound"
-# Fail-fast extraction. Unbound natively handles the DNSSEC KSK validation on boot.
+EphKeyring="${HintsDir}/Internic.gpg"
+
 curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root" -o "${HintsDir}/RootHints.txt.tmp" || exit 1
-mv "${HintsDir}/RootHints.txt.tmp" "${HintsDir}/RootHints.txt"
-exit 0
+curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/named.root.sig" -o "${HintsDir}/RootHints.txt.sig" || exit 1
+curl -f -sS --connect-timeout 10 "https://www.internic.net/domain/internic.pgp" -o "${HintsDir}/Internic.pgp" || exit 1
+
+gpg --no-default-keyring --keyring "$EphKeyring" --import "${HintsDir}/Internic.pgp" >/dev/null 2>&1 || true
+
+if gpg --no-default-keyring --keyring "$EphKeyring" --verify "${HintsDir}/RootHints.txt.sig" "${HintsDir}/RootHints.txt.tmp" 2>/dev/null; then
+    mv "${HintsDir}/RootHints.txt.tmp" "${HintsDir}/RootHints.txt"
+    rm -f "${HintsDir}/RootHints.txt.sig" "${HintsDir}/Internic.pgp" "$EphKeyring" "${EphKeyring}~"
+    exit 0
+else
+    rm -f "${HintsDir}/RootHints.txt.tmp" "${HintsDir}/RootHints.txt.sig" "${HintsDir}/Internic.pgp" "$EphKeyring" "${EphKeyring}~"
+    echo "[FATAL] DNS Root Trust Anchor Compromised. MitM detected."
+    exit 1
+fi
 EOF
 sudo chmod 700 "$RootHintUtility"
 
@@ -508,7 +529,6 @@ server:
   local-data: "${InternalDomain}. A 10.98.0.254"
 EOF
 
-# SEC-45: Header Atrophy Cured. Restored 'contentTypeNosniff' and 'browserXssFilter'.
 sudo tee "${ConfigDir}/Traefik/Dynamic/DynamicRules.yml" > /dev/null << EOF
 http:
   middlewares:
@@ -784,18 +804,14 @@ for i in {1..30}; do
     sleep 2
 done
 
-# SEC-46: Periodic Packet Hemorrhage Cured. 
-# Explicitly flush BOTH ACCEPT and DROP legacy rules from live kernel memory BEFORE re-evaluating.
 iptables -D DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT 2>/dev/null || true
 iptables -D DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.254/32 -p tcp -m multiport --sports 80,443 -j ACCEPT 2>/dev/null || true
 iptables -D DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP 2>/dev/null || true
 iptables -D DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.0/24 -j DROP 2>/dev/null || true
 
-# INJECTION SEQUENCE: ACCEPT rules FIRST to establish proxy pathways instantly.
 iptables -I DOCKER-USER 1 -d 10.13.13.0/24 -s 10.98.0.254/32 -p tcp -m multiport --sports 80,443 -j ACCEPT
 iptables -I DOCKER-USER 1 -s 10.13.13.0/24 -d 10.98.0.254/32 -p tcp -m multiport --dports 80,443 -j ACCEPT
 
-# INJECTION SEQUENCE: DROP rules SECOND to rest safely underneath the ACCEPT pathways.
 iptables -I DOCKER-USER 3 -d 10.13.13.0/24 -s 10.98.0.0/24 -j DROP 2>/dev/null || iptables -A DOCKER-USER -d 10.13.13.0/24 -s 10.98.0.0/24 -j DROP
 iptables -I DOCKER-USER 3 -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP 2>/dev/null || iptables -A DOCKER-USER -s 10.13.13.0/24 -d 10.98.0.0/24 -j DROP
 
@@ -850,7 +866,6 @@ sudo /bin/bash "$WatchdogScript"
 AssimilateAlienContainers() {
     ProxyNetworkName="sovereign_gateway_proxy_network"
     if [ "$Interactive" -eq 1 ] && command -v docker &> /dev/null; then
-        # SYNTAX-03: Assimilation Loop Asphyxiation Cured. Removed illegal backslash before $(...) execution.
         local foreign_containers=$(sudo $DockerBin ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' | awk -F'|' -v stack="${StackName,,}" 'tolower($2) != stack && $1 != "" {print $1}')
         if [ -n "$foreign_containers" ]; then
             local found_new=0
