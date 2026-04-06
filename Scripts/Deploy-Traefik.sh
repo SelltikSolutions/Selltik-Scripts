@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.22)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.23)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -14,7 +14,8 @@
 #    - Router Syntax Sanitization (Converts invalid underscores to hyphens).
 #    - Redundant Mount Prevention (Fixes Let's Encrypt Inode locking).
 #    - Graceful Port-Conflict error handling on deployment.
-#    - JQ Injection-Proof variable parsing in Inspector.
+#    - Docker Daemon & Compose V2 availability verification.
+#    - Timestamped multi-service patch append logic.
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
@@ -38,8 +39,19 @@ R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; C='\033[0;36m'; NC='\033[0m'
 check_environment() {
     local deps=(gum jq docker curl)
     for cmd in "${deps[@]}"; do
-        if ! command -v "$cmd" &> /dev/null; then echo "Missing $cmd. Please install."; exit 1; fi
+        if ! command -v "$cmd" &> /dev/null; then echo -e "${R}Missing $cmd. Please install.${NC}"; exit 1; fi
     done
+    
+    # Daemon & Compose V2 Validation Guard
+    if ! sudo docker info >/dev/null 2>&1; then
+        echo -e "${R}Error: Docker daemon is not running or requires privileges.${NC}"
+        exit 1
+    fi
+    if ! sudo docker compose version >/dev/null 2>&1; then
+        echo -e "${R}Error: Docker Compose V2 ('docker compose') is not installed or accessible.${NC}"
+        exit 1
+    fi
+
     sudo mkdir -p "$STACKS_DIR" "$CONFIG_DIR" "$SECRETS_DIR"
     
     # Vault Protection
@@ -314,10 +326,11 @@ wizard_labeler() {
         HOST="${SUB}.${DOMAIN}"
     fi
 
+    local TIMESTAMP; TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
     local PATCH_BLOCK=$(cat <<EOF
 
 # ==============================================================================
-# TRAEFIK INGRESS PATCH FOR: $SELECTED
+# [$TIMESTAMP] TRAEFIK INGRESS PATCH FOR: $SELECTED
 # ==============================================================================
 
 # --- 1. ADD THIS TO THE '$SELECTED' SERVICE BLOCK ---
@@ -363,7 +376,7 @@ check_diagnostics() {
             # Appended || true prevents Ctrl+C from triggering set -e script death
             sudo docker logs -f Traefik || true ;;
         3*) 
-            DOMAIN=$(read_secret RootDomain)
+            local DOMAIN; DOMAIN=$(read_secret RootDomain)
             if command -v nslookup &> /dev/null; then
                 nslookup "$DOMAIN" || true
             else
@@ -429,7 +442,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.22)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.23)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit" || echo "__ABORT__")
     case "$OP" in
         1*) wizard_core ;;
