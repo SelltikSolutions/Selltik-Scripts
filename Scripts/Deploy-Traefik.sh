@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.16)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.17)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -11,9 +11,11 @@
 #    - Ingress Inspector v3: Advanced JQ Router Name Extraction
 #    - Diagnostic Suite: Real-time Health & Log Monitoring
 #  ROBUSTNESS: 
-#    - Secret Retention Logic (Prevents forced token reentry on updates).
-#    - Project-Directory Context applied to Compose Config Discovery.
-#    - Sudo Tee pipeline for patch exports to prevent permission denied errors.
+#    - Native 'docker compose config' parsing (Zero-regex flaw).
+#    - Explicit Auth Selection to prevent var collision.
+#    - Safe ACME persistence to prevent Let's Encrypt Rate-Limit bans.
+#    - Restored Global External Network patch block (Critical Regression Fix).
+#    - Hardened UI cancellation (Esc/Ctrl+C) guards.
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
@@ -90,6 +92,7 @@ wizard_core() {
     # Environment Selection
     echo -e "${C}>> Select Let's Encrypt Environment:${NC}"
     local LE_ENV; LE_ENV=$(gum choose "Staging (Testing - Prevents Rate Limits)" "Production (Live - Strict Limits)")
+    [[ -z "$LE_ENV" ]] && return 1
     
     local CA_SERVER="https://acme-v02.api.letsencrypt.org/directory"
     if [[ "$LE_ENV" == *"Staging"* ]]; then
@@ -99,6 +102,7 @@ wizard_core() {
     # Explicit Auth Selection & Secret Retention Logic
     echo -e "${C}>> Select Cloudflare Authentication Method:${NC}"
     local AUTH_TYPE; AUTH_TYPE=$(gum choose "API Token (Recommended - Restrict to Zone:DNS:Edit)" "Global API Key (Legacy)")
+    [[ -z "$AUTH_TYPE" ]] && return 1
 
     local CF_ENV_BLOCK=""
     local CF_SECRET_BLOCK=""
@@ -238,6 +242,8 @@ wizard_labeler() {
     gum style --border double --margin "1 2" --padding "1 2" --foreground 33 "SERVICE LABELING WIZARD"
 
     local TARGET_PATH; TARGET_PATH=$(gum input --placeholder "Path to Docker directory" --value "$(pwd)")
+    [[ -z "$TARGET_PATH" ]] && return 1
+    
     if [ ! -f "$TARGET_PATH/docker-compose.yml" ]; then
         gum style --foreground 196 "Error: No docker-compose.yml found at $TARGET_PATH"
         read -p "Press Enter..."
@@ -253,16 +259,25 @@ wizard_labeler() {
     fi
     
     local SELECTED; SELECTED=$(gum choose $SERVICES)
+    [[ -z "$SELECTED" ]] && return 1
+    
     local DOMAIN; DOMAIN=$(read_secret RootDomain)
     [[ -z "$DOMAIN" ]] && DOMAIN="example.com"
 
     local SUB; SUB=$(gum input --placeholder "Subdomain" --value "${SELECTED,,}")
+    [[ -z "$SUB" ]] && return 1
+    
     local PORT; PORT=$(gum input --placeholder "Internal Container Port" --value "80")
+    [[ -z "$PORT" ]] && return 1
 
     local HOST="${SUB}.${DOMAIN}"
 
     local PATCH_BLOCK=$(cat <<EOF
-# --- START TRAEFIK PATCH FOR $SELECTED ---
+# ==============================================================================
+# TRAEFIK INGRESS PATCH FOR: $SELECTED
+# ==============================================================================
+
+# --- 1. ADD THIS TO THE '$SELECTED' SERVICE BLOCK ---
     networks:
       - public_ingress
     labels:
@@ -271,7 +286,11 @@ wizard_labeler() {
       - "traefik.http.routers.${SELECTED,,}.entrypoints=websecure"
       - "traefik.http.routers.${SELECTED,,}.tls.certresolver=cloudflare"
       - "traefik.http.services.${SELECTED,,}.loadbalancer.server.port=${PORT}"
-# --- END TRAEFIK PATCH ---
+
+# --- 2. ADD THIS TO THE VERY BOTTOM OF THE COMPOSE FILE ---
+networks:
+  public_ingress:
+    external: true
 EOF
 )
 
@@ -316,11 +335,12 @@ inspect_ingress() {
     local CONTAINERS; CONTAINERS=$(sudo docker ps --format "{{.Names}}" || true)
     [[ -z "$CONTAINERS" ]] && return
     local TARGET; TARGET=$(gum choose $CONTAINERS)
+    [[ -z "$TARGET" ]] && return
     
     echo -e "${C}>> Auditing: $TARGET${NC}"
     
-    # Network Attachment
-    local NETS; NETS=$(sudo docker inspect "$TARGET" | jq -r '.[0].NetworkSettings.Networks | keys[]' 2>/dev/null || echo "")
+    # Network Attachment (Safe parsing against null/empty networks)
+    local NETS; NETS=$(sudo docker inspect "$TARGET" | jq -r '.[0].NetworkSettings.Networks | keys[] // empty' 2>/dev/null || echo "")
     if echo "$NETS" | grep -q "public_ingress"; then echo -e "${G}[PASS]${NC} Attached to public_ingress."; else echo -e "${R}[FAIL]${NC} NOT on public_ingress."; fi
 
     # Labels Core Status & JQ Pipeline Guard
@@ -363,7 +383,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.16)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.17)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit")
     case "$OP" in
         1*) wizard_core ;;
