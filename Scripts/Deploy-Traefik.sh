@@ -1,18 +1,17 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.13)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.14)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
 #  SECURITY: No-New-Privileges, Cap-Drop, Read-Only FS, User Namespace
 #  FEATURES:
 #    - All-in-One Deployment & Service Labeler
-#    - Ingress Inspector v2: Intelligent container auditing (404 Debugger)
+#    - Ingress Inspector v3: Advanced JQ Router Name Extraction
 #    - Diagnostic Suite: Real-time Health & Log Monitoring
-#  ROBUSTNESS: Pre-locked secrets, set-e crash mitigation, automated backups.
-#  FIXES: Updated deprecated CF_ env vars to CLOUDFLARE_ format for Traefik v3.
-#  STATUS: Authoritative. Hardened. Audited.
+#  ROBUSTNESS: Dynamic secret block generation, strict regex service discovery.
+#  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
 set -euo pipefail
@@ -63,7 +62,7 @@ write_secret() {
 
 read_secret() {
     local NAME=$1; [[ "$NAME" != *.txt ]] && NAME="${NAME}.txt"
-    if [ -f "$SECRETS_DIR/$NAME" ]; then sudo cat "$SECRETS_DIR/$NAME" | tr -d '\n\r '; else echo "Not Set"; fi
+    if [ -f "$SECRETS_DIR/$NAME" ]; then sudo cat "$SECRETS_DIR/$NAME" | tr -d '\n\r '; fi
 }
 
 # ==============================================================================
@@ -79,7 +78,7 @@ wizard_core() {
     local EMAIL; EMAIL=$(gum input --placeholder "Let's Encrypt Email (REQUIRED)" --value "$(read_secret LetsEncryptEmail)")
     
     # Strict Email Validation to prevent ACME 400 InvalidContact errors
-    if [[ "$EMAIL" != *"@"* || "$EMAIL" == *" "* || "$EMAIL" == "Not Set" ]]; then
+    if [[ "$EMAIL" != *"@"* || "$EMAIL" == *" "* || -z "$EMAIL" ]]; then
         gum style --foreground 196 "Error: Let's Encrypt strictly requires a valid email address format."
         read -p "Press Enter to return to menu..."
         return 1
@@ -91,7 +90,6 @@ wizard_core() {
     
     local CA_SERVER="https://acme-v02.api.letsencrypt.org/directory"
     if [[ "$LE_ENV" == *"Staging"* ]]; then
-        # Use the correct staging URL format
         CA_SERVER="https://acme-staging-v02.api.letsencrypt.org/directory"
     fi
     
@@ -102,7 +100,7 @@ wizard_core() {
     write_secret "RootDomain" "$DOMAIN"
     write_secret "LetsEncryptEmail" "$EMAIL"
     [[ -n "$CF_TOKEN" ]] && write_secret "CloudflareApiToken" "$CF_TOKEN"
-    [[ -n "$CF_EMAIL" && "$CF_EMAIL" != "Not Set" ]] && write_secret "CloudflareEmail" "$CF_EMAIL"
+    [[ -n "$CF_EMAIL" ]] && write_secret "CloudflareEmail" "$CF_EMAIL"
 
     # Reset ACME JSON to prevent cross-environment corruption
     sudo rm -f "$ACME_FILE"
@@ -118,10 +116,13 @@ wizard_core() {
     # Determine Auth Method (Updated for Traefik v3 / Lego v4 CLOUDFLARE_ format)
     local CF_ENV_BLOCK="      - CLOUDFLARE_DNS_API_TOKEN_FILE=/run/secrets/CloudflareApiToken"
     local CF_SECRET_BLOCK="CloudflareApiToken"
-    if [[ -n "$CF_EMAIL" && "$CF_EMAIL" != "Not Set" ]]; then
+    local SECRETS_YAML="  LetsEncryptEmail: { file: $SECRETS_DIR/LetsEncryptEmail.txt }\n  CloudflareApiToken: { file: $SECRETS_DIR/CloudflareApiToken.txt }"
+
+    if [[ -n "$CF_EMAIL" ]]; then
         # Legacy Global Key Fallback
         CF_ENV_BLOCK="      - CLOUDFLARE_EMAIL_FILE=/run/secrets/CloudflareEmail\n      - CLOUDFLARE_API_KEY_FILE=/run/secrets/CloudflareApiToken"
         CF_SECRET_BLOCK="CloudflareEmail, CloudflareApiToken"
+        SECRETS_YAML="  LetsEncryptEmail: { file: $SECRETS_DIR/LetsEncryptEmail.txt }\n  CloudflareApiToken: { file: $SECRETS_DIR/CloudflareApiToken.txt }\n  CloudflareEmail: { file: $SECRETS_DIR/CloudflareEmail.txt }"
     fi
 
     echo -e "${C}>> Forging Hardened Monolith Compose at $STACKS_DIR...${NC}"
@@ -178,9 +179,7 @@ networks:
     ipam: { config: [{ subnet: "10.20.0.0/24" }] }
 
 secrets:
-  CloudflareApiToken: { file: $SECRETS_DIR/CloudflareApiToken.txt }
-  CloudflareEmail: { file: $SECRETS_DIR/CloudflareEmail.txt }
-  LetsEncryptEmail: { file: $SECRETS_DIR/LetsEncryptEmail.txt }
+$(echo -e "$SECRETS_YAML")
 EOF
 
     if gum confirm "Deploy/Update Ingress Cluster?"; then
@@ -204,13 +203,13 @@ wizard_labeler() {
         return 1
     fi
 
-    # Robust grep: catch error code to prevent set -e script exit
-    local SERVICES; SERVICES=$(grep -E '^[  ]{2}[a-zA-Z0-9_-]+:' "$TARGET_PATH/docker-compose.yml" | sed 's/://' | xargs || true)
+    # Robust grep: catch error code, accommodate varied whitespace indentation
+    local SERVICES; SERVICES=$(grep -E '^[ \t]+[a-zA-Z0-9_-]+:' "$TARGET_PATH/docker-compose.yml" | sed -e 's/://' -e 's/^[ \t]*//' | xargs || true)
     [[ -z "$SERVICES" ]] && { echo "No services found."; return 1; }
     
     local SELECTED; SELECTED=$(gum choose $SERVICES)
     local DOMAIN; DOMAIN=$(read_secret RootDomain)
-    [[ "$DOMAIN" == "Not Set" ]] && DOMAIN="example.com"
+    [[ -z "$DOMAIN" ]] && DOMAIN="example.com"
 
     local SUB; SUB=$(gum input --placeholder "Subdomain" --value "${SELECTED,,}")
     local PORT; PORT=$(gum input --placeholder "Internal Container Port" --value "80")
@@ -253,7 +252,14 @@ check_diagnostics() {
             sudo docker ps --filter "name=Traefik" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
             read -p "Press Enter..." ;;
         2*) sudo docker logs -f Traefik ;;
-        3*) DOMAIN=$(read_secret RootDomain); nslookup "$DOMAIN" || true; read -p "Press Enter..." ;;
+        3*) 
+            DOMAIN=$(read_secret RootDomain)
+            if command -v nslookup &> /dev/null; then
+                nslookup "$DOMAIN" || true
+            else
+                echo -e "${R}Error: 'nslookup' is not installed on this system.${NC}"
+            fi
+            read -p "Press Enter..." ;;
         *) return ;;
     esac
 }
@@ -267,22 +273,30 @@ inspect_ingress() {
     
     echo -e "${C}>> Auditing: $TARGET${NC}"
     
-    # Network Attachment (Safe parsing)
+    # Network Attachment
     local NETS; NETS=$(sudo docker inspect "$TARGET" | jq -r '.[0].NetworkSettings.Networks | keys[]' 2>/dev/null || echo "")
     if echo "$NETS" | grep -q "public_ingress"; then echo -e "${G}[PASS]${NC} Attached to public_ingress."; else echo -e "${R}[FAIL]${NC} NOT on public_ingress."; fi
 
-    # Labels
+    # Labels Core Status
     local LABELS; LABELS=$(sudo docker inspect "$TARGET" | jq -r '.[0].Config.Labels // empty' 2>/dev/null || echo "")
     if echo "$LABELS" | grep -q '"traefik.enable": "true"'; then echo -e "${G}[PASS]${NC} Enabled label found."; else echo -e "${R}[FAIL]${NC} traefik.enable missing."; fi
 
-    # Router/Rule Check
-    local NAME_LOWER=${TARGET,,}
-    local RULE; RULE=$(echo "$LABELS" | jq -r '."traefik.http.routers.'$TARGET'.rule" // ."traefik.http.routers.'$NAME_LOWER'.rule" // "null"' 2>/dev/null || echo "null")
-    if [[ "$RULE" != "null" ]]; then echo -e "${G}[PASS]${NC} Host Rule: $RULE"; else echo -e "${Y}[WARN]${NC} No Host Rule found for '$TARGET'."; fi
+    # Router/Rule Check - Dynamically Extract Router Name
+    local ROUTER_NAME; ROUTER_NAME=$(echo "$LABELS" | jq -r 'keys[] | select(test("^traefik\\.http\\.routers\\..*\\.rule$")) | capture("^traefik\\.http\\.routers\\.(?<name>.*)\\.rule$").name' 2>/dev/null | head -n 1 || echo "")
+    
+    local RULE="null"
+    local L_PORT="null"
 
-    # Port Check
-    local L_PORT; L_PORT=$(echo "$LABELS" | jq -r '."traefik.http.services.'$TARGET'.loadbalancer.server.port" // ."traefik.http.services.'$NAME_LOWER'.loadbalancer.server.port" // "null"' 2>/dev/null || echo "null")
-    if [[ "$L_PORT" != "null" ]]; then echo -e "${G}[PASS]${NC} Backend Port: $L_PORT"; else echo -e "${R}[FAIL]${NC} Backend Port label missing."; fi
+    if [[ -n "$ROUTER_NAME" ]]; then
+        echo -e "${G}[PASS]${NC} Active Router Name: $ROUTER_NAME"
+        RULE=$(echo "$LABELS" | jq -r '."traefik.http.routers.'$ROUTER_NAME'.rule"' 2>/dev/null || echo "null")
+        L_PORT=$(echo "$LABELS" | jq -r '."traefik.http.services.'$ROUTER_NAME'.loadbalancer.server.port"' 2>/dev/null || echo "null")
+    else
+        echo -e "${Y}[WARN]${NC} No Traefik router configuration detected."
+    fi
+
+    if [[ "$RULE" != "null" ]]; then echo -e "${G}[PASS]${NC} Host Rule: $RULE"; else echo -e "${Y}[WARN]${NC} Host Rule missing."; fi
+    if [[ "$L_PORT" != "null" ]]; then echo -e "${G}[PASS]${NC} Backend Port: $L_PORT"; else echo -e "${R}[FAIL]${NC} Backend Port missing."; fi
 
     read -p "Press Enter to return..."
 }
@@ -294,7 +308,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.13)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.14)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit")
     case "$OP" in
         1*) wizard_core ;;
