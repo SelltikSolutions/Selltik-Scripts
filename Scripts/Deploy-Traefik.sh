@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.26)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.27)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -11,11 +11,11 @@
 #    - Ingress Inspector v3: Advanced JQ Router Name Extraction
 #    - Diagnostic Suite: Real-time Health & Log Monitoring
 #  ROBUSTNESS: 
+#    - Docker Compose Schema Fix (Resolves tmpfs invalid syntax rejection).
+#    - POSIX-compliant String Lowercasing (Supports legacy macOS Bash 3.2).
 #    - Dashboard Zero-Trust Security (Ephemeral BasicAuth generation).
 #    - Strict ACME File Ownership (Prevents CAP_DAC_OVERRIDE failures).
 #    - RFC 1035 DNS Sanitization (Strips invalid characters from subdomains).
-#    - DNS-01 Race Condition Fix (Authoritative Resolvers + Delay).
-#    - tmpfs Memory Bounding (100MB limit prevents RAM DoS).
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
@@ -239,7 +239,7 @@ services:
     restart: unless-stopped
     init: true
     pids_limit: 200
-    security_opt: [no-new-privileges:true]
+    security_opt: ["no-new-privileges:true"]
     read_only: true
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
@@ -257,8 +257,10 @@ ${CF_ENV_BLOCK}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - $CONFIG_DIR:/etc/traefik
-    tmpfs:
-      - /tmp:size=100m,mode=1777
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: "100m"
     command:
       - "--global.checknewversion=false"
       - "--ping=true"
@@ -359,8 +361,8 @@ wizard_labeler() {
     local SELECTED; SELECTED=$(gum choose $SERVICES || echo "__ABORT__")
     [[ "$SELECTED" == "__ABORT__" || -z "$SELECTED" ]] && return 1
     
-    # Sanitize router name: Traefik strictly forbids spaces/underscores/special chars in router names
-    local ROUTER_NAME="${SELECTED,,}"
+    # POSIX-compliant sanitization: Traefik forbids spaces/underscores/special chars in router names
+    local ROUTER_NAME; ROUTER_NAME=$(echo "$SELECTED" | tr '[:upper:]' '[:lower:]')
     ROUTER_NAME="${ROUTER_NAME// /-}"
     ROUTER_NAME="${ROUTER_NAME//_/-}"
     ROUTER_NAME=$(echo "$ROUTER_NAME" | tr -cd 'a-z0-9-')
@@ -503,7 +505,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.26)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.27)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit" || echo "__ABORT__")
     case "$OP" in
         1*) wizard_core ;;
