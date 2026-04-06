@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.19)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.20)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -12,11 +12,10 @@
 #    - Diagnostic Suite: Real-time Health & Log Monitoring
 #  ROBUSTNESS: 
 #    - Native 'docker compose config' parsing (Zero-regex flaw).
-#    - Explicit Auth Selection to prevent var collision.
 #    - Safe ACME persistence to prevent Let's Encrypt Rate-Limit bans.
-#    - Subdomain bypass logic (Allows mapping to root domain).
+#    - Append-mode patch exports (Prevents overwriting multi-service patches).
 #    - Strict pipeline death traps (Prevents set-e script crashes on ESC).
-#    - Prime Directive Compliance (Healthchecks, PID Limits, Log Rotation).
+#    - JQ Object Type-Safety (Prevents null parsing crashes).
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
@@ -88,7 +87,7 @@ wizard_core() {
     # Strict Email Validation
     if [[ "$EMAIL" != *"@"* || "$EMAIL" == *" "* || -z "$EMAIL" ]]; then
         gum style --foreground 196 "Error: Let's Encrypt strictly requires a valid email address format."
-        read -p "Press Enter to return to menu..."
+        read -r -p "Press Enter to return to menu..."
         return 1
     fi
 
@@ -120,7 +119,7 @@ wizard_core() {
         [[ "$CF_TOKEN" == "__ABORT__" ]] && return 1
         
         if [[ -z "$CF_TOKEN" ]]; then
-            [[ -z "$EXISTING_TOKEN" ]] && { gum style --foreground 196 "Error: API Token required."; read -p "Press Enter..."; return 1; }
+            [[ -z "$EXISTING_TOKEN" ]] && { gum style --foreground 196 "Error: API Token required."; read -r -p "Press Enter..."; return 1; }
         else
             write_secret "CloudflareApiToken" "$CF_TOKEN"
         fi
@@ -140,7 +139,7 @@ wizard_core() {
         [[ "$CF_KEY" == "__ABORT__" ]] && return 1
         
         if [[ -z "$CF_KEY" ]]; then
-            [[ -z "$EXISTING_KEY" ]] && { gum style --foreground 196 "Error: Global API Key required."; read -p "Press Enter..."; return 1; }
+            [[ -z "$EXISTING_KEY" ]] && { gum style --foreground 196 "Error: Global API Key required."; read -r -p "Press Enter..."; return 1; }
         else
             write_secret "CloudflareApiKey" "$CF_KEY"
         fi
@@ -182,7 +181,7 @@ services:
     container_name: Traefik
     restart: unless-stopped
     init: true
-    pids_limit: 100
+    pids_limit: 200
     security_opt: [no-new-privileges:true]
     read_only: true
     cap_drop: [ALL]
@@ -264,7 +263,7 @@ wizard_labeler() {
     
     if [ ! -f "$TARGET_PATH/docker-compose.yml" ]; then
         gum style --foreground 196 "Error: No docker-compose.yml found at $TARGET_PATH"
-        read -p "Press Enter..."
+        read -r -p "Press Enter..."
         return 1
     fi
 
@@ -272,7 +271,7 @@ wizard_labeler() {
     local SERVICES; SERVICES=$(sudo docker compose --project-directory "$TARGET_PATH" -f "$TARGET_PATH/docker-compose.yml" config --services 2>/dev/null | xargs || true)
     if [[ -z "$SERVICES" ]]; then
         gum style --foreground 196 "No services found or invalid compose file structure in $TARGET_PATH."
-        read -p "Press Enter..."
+        read -r -p "Press Enter..."
         return 1
     fi
     
@@ -297,6 +296,7 @@ wizard_labeler() {
     fi
 
     local PATCH_BLOCK=$(cat <<EOF
+
 # ==============================================================================
 # TRAEFIK INGRESS PATCH FOR: $SELECTED
 # ==============================================================================
@@ -322,9 +322,9 @@ EOF
     echo -e "${C}${PATCH_BLOCK}${NC}"
 
     if gum confirm "Export patch to ${TARGET_PATH}/traefik_patch.txt?"; then
-        # Sudo Tee used to bypass strict user folder permissions
-        echo "$PATCH_BLOCK" | sudo tee "${TARGET_PATH}/traefik_patch.txt" > /dev/null
-        gum style --foreground 10 "Patch exported to ${TARGET_PATH}/traefik_patch.txt"
+        # Append mode (-a) used to prevent multi-service patch overwrites
+        echo "$PATCH_BLOCK" | sudo tee -a "${TARGET_PATH}/traefik_patch.txt" > /dev/null
+        gum style --foreground 10 "Patch appended to ${TARGET_PATH}/traefik_patch.txt"
     fi
 }
 
@@ -339,7 +339,7 @@ check_diagnostics() {
     case "$DIAG" in
         1*)
             sudo docker ps --filter "name=Traefik" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-            read -p "Press Enter..." ;;
+            read -r -p "Press Enter..." ;;
         2*) sudo docker logs -f Traefik ;;
         3*) 
             DOMAIN=$(read_secret RootDomain)
@@ -348,7 +348,7 @@ check_diagnostics() {
             else
                 echo -e "${R}Error: 'nslookup' is not installed on this system.${NC}"
             fi
-            read -p "Press Enter..." ;;
+            read -r -p "Press Enter..." ;;
         *) return ;;
     esac
 }
@@ -363,16 +363,16 @@ inspect_ingress() {
     
     echo -e "${C}>> Auditing: $TARGET${NC}"
     
-    # Network Attachment (Safe parsing against null/empty networks)
-    local NETS; NETS=$(sudo docker inspect "$TARGET" | jq -r '.[0].NetworkSettings.Networks | keys[] // empty' 2>/dev/null || echo "")
+    # Network Attachment (Safe Object mapping)
+    local NETS; NETS=$(sudo docker inspect "$TARGET" | jq -r '.[0].NetworkSettings.Networks | objects | keys[]' 2>/dev/null || echo "")
     if echo "$NETS" | grep -q "public_ingress"; then echo -e "${G}[PASS]${NC} Attached to public_ingress."; else echo -e "${R}[FAIL]${NC} NOT on public_ingress."; fi
 
-    # Labels Core Status & JQ Pipeline Guard
-    local LABELS; LABELS=$(sudo docker inspect "$TARGET" | jq -r '.[0].Config.Labels // empty' 2>/dev/null || echo "")
+    # Labels Core Status & Object Guard
+    local LABELS; LABELS=$(sudo docker inspect "$TARGET" | jq -r '.[0].Config.Labels | objects' 2>/dev/null || echo "")
     
-    if [[ -z "$LABELS" || "$LABELS" == "null" ]]; then
+    if [[ -z "$LABELS" || "$LABELS" == "{}" ]]; then
         echo -e "${R}[FAIL]${NC} No labels found on container."
-        read -p "Press Enter to return..."
+        read -r -p "Press Enter to return..."
         return
     fi
 
@@ -397,7 +397,7 @@ inspect_ingress() {
     if [[ "$RULE" != "null" ]]; then echo -e "${G}[PASS]${NC} Host Rule: $RULE"; else echo -e "${Y}[WARN]${NC} Host Rule missing."; fi
     if [[ "$L_PORT" != "null" ]]; then echo -e "${G}[PASS]${NC} Backend Port: $L_PORT"; else echo -e "${R}[FAIL]${NC} Backend Port missing."; fi
 
-    read -p "Press Enter to return..."
+    read -r -p "Press Enter to return..."
 }
 
 # ==============================================================================
@@ -407,7 +407,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.19)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.20)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit" || echo "__ABORT__")
     case "$OP" in
         1*) wizard_core ;;
@@ -421,7 +421,7 @@ while true; do
                 echo -n "$(basename "$f"): "
                 sudo cat "$f" | head -c 8; echo "..."
             done
-            read -p "Press Enter..." ;;
+            read -r -p "Press Enter..." ;;
         6* | "__ABORT__") exit 0 ;;
     esac
 done
