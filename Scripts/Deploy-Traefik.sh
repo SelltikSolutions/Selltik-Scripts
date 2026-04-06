@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.15)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.16)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -11,9 +11,9 @@
 #    - Ingress Inspector v3: Advanced JQ Router Name Extraction
 #    - Diagnostic Suite: Real-time Health & Log Monitoring
 #  ROBUSTNESS: 
-#    - Native 'docker compose config' parsing (Zero-regex flaw).
-#    - Explicit Auth Selection to prevent var collision.
-#    - Safe ACME persistence to prevent Let's Encrypt Rate-Limit bans.
+#    - Secret Retention Logic (Prevents forced token reentry on updates).
+#    - Project-Directory Context applied to Compose Config Discovery.
+#    - Sudo Tee pipeline for patch exports to prevent permission denied errors.
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
@@ -96,7 +96,7 @@ wizard_core() {
         CA_SERVER="https://acme-staging-v02.api.letsencrypt.org/directory"
     fi
 
-    # Explicit Auth Selection
+    # Explicit Auth Selection & Secret Retention Logic
     echo -e "${C}>> Select Cloudflare Authentication Method:${NC}"
     local AUTH_TYPE; AUTH_TYPE=$(gum choose "API Token (Recommended - Restrict to Zone:DNS:Edit)" "Global API Key (Legacy)")
 
@@ -105,21 +105,38 @@ wizard_core() {
     local SECRETS_YAML=""
 
     if [[ "$AUTH_TYPE" == *"API Token"* ]]; then
-        local CF_TOKEN; CF_TOKEN=$(gum input --password --placeholder "Cloudflare API Token")
-        [[ -z "$CF_TOKEN" ]] && return 1
+        local EXISTING_TOKEN; EXISTING_TOKEN=$(read_secret CloudflareApiToken)
+        local CF_TOKEN_PROMPT="Cloudflare API Token"
+        [[ -n "$EXISTING_TOKEN" ]] && CF_TOKEN_PROMPT="Cloudflare API Token (Leave blank to keep existing)"
         
-        write_secret "CloudflareApiToken" "$CF_TOKEN"
+        local CF_TOKEN; CF_TOKEN=$(gum input --password --placeholder "$CF_TOKEN_PROMPT")
+        
+        if [[ -z "$CF_TOKEN" ]]; then
+            [[ -z "$EXISTING_TOKEN" ]] && { gum style --foreground 196 "Error: API Token required."; read -p "Press Enter..."; return 1; }
+        else
+            write_secret "CloudflareApiToken" "$CF_TOKEN"
+        fi
         
         CF_ENV_BLOCK="      - CLOUDFLARE_DNS_API_TOKEN_FILE=/run/secrets/CloudflareApiToken"
         CF_SECRET_BLOCK="CloudflareApiToken"
         SECRETS_YAML="  LetsEncryptEmail: { file: $SECRETS_DIR/LetsEncryptEmail.txt }\n  CloudflareApiToken: { file: $SECRETS_DIR/CloudflareApiToken.txt }"
     else
         local CF_EMAIL; CF_EMAIL=$(gum input --placeholder "Cloudflare Account Email" --value "$(read_secret CloudflareEmail)")
-        local CF_KEY; CF_KEY=$(gum input --password --placeholder "Cloudflare Global API Key")
-        [[ -z "$CF_EMAIL" || -z "$CF_KEY" ]] && return 1
+        [[ -z "$CF_EMAIL" ]] && return 1
+        
+        local EXISTING_KEY; EXISTING_KEY=$(read_secret CloudflareApiKey)
+        local CF_KEY_PROMPT="Cloudflare Global API Key"
+        [[ -n "$EXISTING_KEY" ]] && CF_KEY_PROMPT="Cloudflare Global API Key (Leave blank to keep existing)"
+
+        local CF_KEY; CF_KEY=$(gum input --password --placeholder "$CF_KEY_PROMPT")
+        
+        if [[ -z "$CF_KEY" ]]; then
+            [[ -z "$EXISTING_KEY" ]] && { gum style --foreground 196 "Error: Global API Key required."; read -p "Press Enter..."; return 1; }
+        else
+            write_secret "CloudflareApiKey" "$CF_KEY"
+        fi
         
         write_secret "CloudflareEmail" "$CF_EMAIL"
-        write_secret "CloudflareApiKey" "$CF_KEY"
         
         CF_ENV_BLOCK="      - CLOUDFLARE_EMAIL_FILE=/run/secrets/CloudflareEmail\n      - CLOUDFLARE_API_KEY_FILE=/run/secrets/CloudflareApiKey"
         CF_SECRET_BLOCK="CloudflareEmail, CloudflareApiKey"
@@ -227,10 +244,10 @@ wizard_labeler() {
         return 1
     fi
 
-    # Native Docker Compose Discovery (Zero-Regex Flaw)
-    local SERVICES; SERVICES=$(sudo docker compose -f "$TARGET_PATH/docker-compose.yml" config --services 2>/dev/null | xargs || true)
+    # Native Context-Aware Docker Compose Discovery
+    local SERVICES; SERVICES=$(sudo docker compose --project-directory "$TARGET_PATH" -f "$TARGET_PATH/docker-compose.yml" config --services 2>/dev/null | xargs || true)
     if [[ -z "$SERVICES" ]]; then
-        gum style --foreground 196 "No services found or invalid compose file structure."
+        gum style --foreground 196 "No services found or invalid compose file structure in $TARGET_PATH."
         read -p "Press Enter..."
         return 1
     fi
@@ -262,8 +279,9 @@ EOF
     echo -e "${C}${PATCH_BLOCK}${NC}"
 
     if gum confirm "Export patch to ${TARGET_PATH}/traefik_patch.txt?"; then
-        echo "$PATCH_BLOCK" > "${TARGET_PATH}/traefik_patch.txt"
-        gum style --foreground 10 "Patch exported."
+        # Sudo Tee used to bypass strict user folder permissions
+        echo "$PATCH_BLOCK" | sudo tee "${TARGET_PATH}/traefik_patch.txt" > /dev/null
+        gum style --foreground 10 "Patch exported to ${TARGET_PATH}/traefik_patch.txt"
     fi
 }
 
@@ -345,7 +363,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.15)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.16)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit")
     case "$OP" in
         1*) wizard_core ;;
