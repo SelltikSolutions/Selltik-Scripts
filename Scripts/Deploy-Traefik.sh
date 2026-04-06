@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.23)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.24)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -11,10 +11,9 @@
 #    - Ingress Inspector v3: Advanced JQ Router Name Extraction
 #    - Diagnostic Suite: Real-time Health & Log Monitoring
 #  ROBUSTNESS: 
-#    - Router Syntax Sanitization (Converts invalid underscores to hyphens).
-#    - Redundant Mount Prevention (Fixes Let's Encrypt Inode locking).
-#    - Graceful Port-Conflict error handling on deployment.
-#    - Docker Daemon & Compose V2 availability verification.
+#    - DAC_OVERRIDE Secret Hardening (Ensures UID 0 can read secrets with dropped caps).
+#    - Docker Volume Glitch Guard (Prevents acme.json directory corruption).
+#    - RFC 1035 DNS Sanitization (Strips invalid characters from subdomains).
 #    - Timestamped multi-service patch append logic.
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
@@ -29,8 +28,6 @@ STACKS_DIR="$BASE_DIR/Stacks/$STACK_NAME"
 CONFIG_DIR="$BASE_DIR/Config/$STACK_NAME"
 SECRETS_DIR="$BASE_DIR/Config/Secrets"
 ACME_FILE="$CONFIG_DIR/acme.json"
-DETECTED_PUID=${SUDO_UID:-$(id -u)}
-DETECTED_PGID=${SUDO_GID:-$(id -g)}
 
 # Visuals
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; C='\033[0;36m'; NC='\033[0m'
@@ -67,10 +64,11 @@ write_secret() {
     [[ "$NAME" != *.txt ]] && NAME="${NAME}.txt" || true
     local FILEPATH="$SECRETS_DIR/$NAME"
     
-    # Pre-lock the file before writing to prevent race-condition exposure
+    # Pre-lock the file before writing to prevent race-condition exposure.
+    # CRITICAL: Must be owned by root:root so UID 0 can read it after cap_drop: [ALL]
     sudo touch "$FILEPATH"
+    sudo chown root:root "$FILEPATH"
     sudo chmod 600 "$FILEPATH"
-    sudo chown "$DETECTED_PUID":"$DETECTED_PGID" "$FILEPATH"
     
     # Use printf instead of echo to handle special characters securely
     printf "%s" "$CONTENT" | sudo tee "$FILEPATH" > /dev/null
@@ -170,6 +168,12 @@ wizard_core() {
 
     write_secret "RootDomain" "$DOMAIN"
     write_secret "LetsEncryptEmail" "$EMAIL"
+
+    # Guard: Docker Volume Directory Bug (Heals corrupted environment)
+    if [ -d "$ACME_FILE" ]; then
+        echo -e "${Y}>> Fixing Docker Bug: acme.json was created as a directory. Purging...${NC}"
+        sudo rm -rf "$ACME_FILE"
+    fi
 
     # Smart ACME Persistence (Rate Limit Protection)
     if [ -s "$ACME_FILE" ]; then
@@ -316,6 +320,9 @@ wizard_labeler() {
     local SUB; SUB=$(gum input --placeholder "Subdomain (Leave blank for root domain)" --value "${ROUTER_NAME}" || echo "__ABORT__")
     [[ "$SUB" == "__ABORT__" ]] && return 1
     
+    # RFC 1035 Subdomain Sanitization (No underscores allowed in DNS hosts)
+    SUB="${SUB//_/-}"
+    
     local PORT; PORT=$(gum input --placeholder "Internal Container Port" --value "80" || echo "__ABORT__")
     [[ "$PORT" == "__ABORT__" || -z "$PORT" ]] && return 1
 
@@ -442,7 +449,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.23)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.24)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit" || echo "__ABORT__")
     case "$OP" in
         1*) wizard_core ;;
