@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.28)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.29)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -11,11 +11,11 @@
 #    - Ingress Inspector v3: Advanced JQ Router Name Extraction
 #    - Diagnostic Suite: Real-time Health & Log Monitoring
 #  ROBUSTNESS: 
+#    - BasicAuth Stderr Isolation (Prevents hash corruption from Docker logs).
+#    - Patch File User-Ownership (Prevents root lockouts in code editors).
+#    - Strict Port Integer Validation (Prevents malformed router mapping).
 #    - Array Collapse Fix (Restores multi-service selection menus).
 #    - Tilde (~) Path Expansion (Prevents false-negative directory errors).
-#    - tmpfs Sticky-Bit Enforcement (01777 isolation guarantee).
-#    - POSIX-compliant String Lowercasing (Supports legacy Bash 3.2).
-#    - Dashboard Zero-Trust Security (Ephemeral BasicAuth generation).
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
@@ -29,6 +29,8 @@ STACKS_DIR="$BASE_DIR/Stacks/$STACK_NAME"
 CONFIG_DIR="$BASE_DIR/Config/$STACK_NAME"
 SECRETS_DIR="$BASE_DIR/Config/Secrets"
 ACME_FILE="$CONFIG_DIR/acme.json"
+DETECTED_PUID=${SUDO_UID:-$(id -u)}
+DETECTED_PGID=${SUDO_GID:-$(id -g)}
 
 # Visuals
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; C='\033[0;36m'; NC='\033[0m'
@@ -188,8 +190,9 @@ wizard_core() {
         [[ "$DASH_PASS" == "__ABORT__" || -z "$DASH_PASS" ]] && return 1
         
         echo -e "${Y}>> Generating secure bcrypt hash (Requires internet)...${NC}"
-        # Securely pass variables to ephemeral container to prevent Bash interpolation bugs
-        local DASH_HASH; DASH_HASH=$(sudo docker run --rm -e U="$DASH_USER" -e P="$DASH_PASS" alpine:latest sh -c 'apk add --no-cache apache2-utils >/dev/null 2>&1 && htpasswd -nb "$U" "$P"' | sed 's/\$/\$\$/g' || true)
+        # Securely pass variables to ephemeral container to prevent Bash interpolation bugs.
+        # Strict 2>/dev/null suppression ensures docker pull logs don't corrupt the hash variable.
+        local DASH_HASH; DASH_HASH=$(sudo docker run --rm -e U="$DASH_USER" -e P="$DASH_PASS" alpine:latest sh -c 'apk add --no-cache apache2-utils >/dev/null 2>&1 && htpasswd -nb "$U" "$P"' 2>/dev/null | sed 's/\$/\$\$/g' || true)
         
         if [[ -z "$DASH_HASH" ]]; then
             gum style --foreground 196 "Failed to generate password hash. Ensure Docker can pull alpine:latest."
@@ -385,6 +388,13 @@ wizard_labeler() {
     
     local PORT; PORT=$(gum input --placeholder "Internal Container Port" --value "80" || echo "__ABORT__")
     [[ "$PORT" == "__ABORT__" || -z "$PORT" ]] && return 1
+    
+    # Strict Port Integer Validation
+    if ! [[ "$PORT" =~ ^[0-9]+$ ]]; then
+        gum style --foreground 196 "Error: Port must be a valid integer (e.g. 80 or 8080)."
+        read -r -p "Press Enter..."
+        return 1
+    fi
 
     local HOST
     if [[ -z "$SUB" ]]; then
@@ -423,6 +433,12 @@ EOF
     if gum confirm "Export patch to ${TARGET_PATH}/traefik_patch.txt?"; then
         # Append mode (-a) used to prevent multi-service patch overwrites
         echo "$PATCH_BLOCK" | sudo tee -a "${TARGET_PATH}/traefik_patch.txt" > /dev/null
+        
+        # Ensure the user who ran the script owns the patch file, not root
+        if [[ -n "$DETECTED_PUID" && -n "$DETECTED_PGID" ]]; then
+            sudo chown "$DETECTED_PUID":"$DETECTED_PGID" "${TARGET_PATH}/traefik_patch.txt" 2>/dev/null || true
+        fi
+        
         gum style --foreground 10 "Patch appended to ${TARGET_PATH}/traefik_patch.txt"
     fi
 }
@@ -509,7 +525,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.28)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.29)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit" || echo "__ABORT__")
     case "$OP" in
         1*) wizard_core ;;
