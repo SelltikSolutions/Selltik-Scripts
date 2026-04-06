@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.14)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.15)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -10,7 +10,10 @@
 #    - All-in-One Deployment & Service Labeler
 #    - Ingress Inspector v3: Advanced JQ Router Name Extraction
 #    - Diagnostic Suite: Real-time Health & Log Monitoring
-#  ROBUSTNESS: Dynamic secret block generation, strict regex service discovery.
+#  ROBUSTNESS: 
+#    - Native 'docker compose config' parsing (Zero-regex flaw).
+#    - Explicit Auth Selection to prevent var collision.
+#    - Safe ACME persistence to prevent Let's Encrypt Rate-Limit bans.
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
@@ -18,10 +21,10 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # --- 1. SYSTEM DEFINITIONS ---
-SERVICE_NAME="Traefik"
+STACK_NAME="Traefik"
 BASE_DIR="/opt/Docker"
-STACKS_DIR="$BASE_DIR/Stacks/$SERVICE_NAME"
-CONFIG_DIR="$BASE_DIR/Config/$SERVICE_NAME"
+STACKS_DIR="$BASE_DIR/Stacks/$STACK_NAME"
+CONFIG_DIR="$BASE_DIR/Config/$STACK_NAME"
 SECRETS_DIR="$BASE_DIR/Config/Secrets"
 ACME_FILE="$CONFIG_DIR/acme.json"
 DETECTED_PUID=${SUDO_UID:-$(id -u)}
@@ -77,52 +80,72 @@ wizard_core() {
 
     local EMAIL; EMAIL=$(gum input --placeholder "Let's Encrypt Email (REQUIRED)" --value "$(read_secret LetsEncryptEmail)")
     
-    # Strict Email Validation to prevent ACME 400 InvalidContact errors
+    # Strict Email Validation
     if [[ "$EMAIL" != *"@"* || "$EMAIL" == *" "* || -z "$EMAIL" ]]; then
         gum style --foreground 196 "Error: Let's Encrypt strictly requires a valid email address format."
         read -p "Press Enter to return to menu..."
         return 1
     fi
 
-    # Let's Encrypt Environment Selection
-    echo -e "${C}>> Select Let's Encrypt Environment (Staging prevents strict rate-limiting bans during setup):${NC}"
-    local LE_ENV; LE_ENV=$(gum choose "Staging (Testing - No Rate Limits)" "Production (Live - Strict Rate Limits)")
+    # Environment Selection
+    echo -e "${C}>> Select Let's Encrypt Environment:${NC}"
+    local LE_ENV; LE_ENV=$(gum choose "Staging (Testing - Prevents Rate Limits)" "Production (Live - Strict Limits)")
     
     local CA_SERVER="https://acme-v02.api.letsencrypt.org/directory"
     if [[ "$LE_ENV" == *"Staging"* ]]; then
         CA_SERVER="https://acme-staging-v02.api.letsencrypt.org/directory"
     fi
-    
-    echo -e "${Y}>> Security Note: Cloudflare Restricted API Tokens are heavily preferred over Global Keys.${NC}"
-    local CF_TOKEN; CF_TOKEN=$(gum input --password --placeholder "Cloudflare API Token (Zone:DNS:Edit)")
-    local CF_EMAIL; CF_EMAIL=$(gum input --placeholder "Cloudflare Email (ONLY IF using legacy Global Key)" --value "$(read_secret CloudflareEmail)")
+
+    # Explicit Auth Selection
+    echo -e "${C}>> Select Cloudflare Authentication Method:${NC}"
+    local AUTH_TYPE; AUTH_TYPE=$(gum choose "API Token (Recommended - Restrict to Zone:DNS:Edit)" "Global API Key (Legacy)")
+
+    local CF_ENV_BLOCK=""
+    local CF_SECRET_BLOCK=""
+    local SECRETS_YAML=""
+
+    if [[ "$AUTH_TYPE" == *"API Token"* ]]; then
+        local CF_TOKEN; CF_TOKEN=$(gum input --password --placeholder "Cloudflare API Token")
+        [[ -z "$CF_TOKEN" ]] && return 1
+        
+        write_secret "CloudflareApiToken" "$CF_TOKEN"
+        
+        CF_ENV_BLOCK="      - CLOUDFLARE_DNS_API_TOKEN_FILE=/run/secrets/CloudflareApiToken"
+        CF_SECRET_BLOCK="CloudflareApiToken"
+        SECRETS_YAML="  LetsEncryptEmail: { file: $SECRETS_DIR/LetsEncryptEmail.txt }\n  CloudflareApiToken: { file: $SECRETS_DIR/CloudflareApiToken.txt }"
+    else
+        local CF_EMAIL; CF_EMAIL=$(gum input --placeholder "Cloudflare Account Email" --value "$(read_secret CloudflareEmail)")
+        local CF_KEY; CF_KEY=$(gum input --password --placeholder "Cloudflare Global API Key")
+        [[ -z "$CF_EMAIL" || -z "$CF_KEY" ]] && return 1
+        
+        write_secret "CloudflareEmail" "$CF_EMAIL"
+        write_secret "CloudflareApiKey" "$CF_KEY"
+        
+        CF_ENV_BLOCK="      - CLOUDFLARE_EMAIL_FILE=/run/secrets/CloudflareEmail\n      - CLOUDFLARE_API_KEY_FILE=/run/secrets/CloudflareApiKey"
+        CF_SECRET_BLOCK="CloudflareEmail, CloudflareApiKey"
+        SECRETS_YAML="  LetsEncryptEmail: { file: $SECRETS_DIR/LetsEncryptEmail.txt }\n  CloudflareApiKey: { file: $SECRETS_DIR/CloudflareApiKey.txt }\n  CloudflareEmail: { file: $SECRETS_DIR/CloudflareEmail.txt }"
+    fi
 
     write_secret "RootDomain" "$DOMAIN"
     write_secret "LetsEncryptEmail" "$EMAIL"
-    [[ -n "$CF_TOKEN" ]] && write_secret "CloudflareApiToken" "$CF_TOKEN"
-    [[ -n "$CF_EMAIL" ]] && write_secret "CloudflareEmail" "$CF_EMAIL"
 
-    # Reset ACME JSON to prevent cross-environment corruption
-    sudo rm -f "$ACME_FILE"
-    sudo touch "$ACME_FILE" && sudo chmod 600 "$ACME_FILE"
+    # Smart ACME Persistence (Rate Limit Protection)
+    if [ -s "$ACME_FILE" ]; then
+        echo -e "${Y}>> Existing ACME certificates detected.${NC}"
+        if gum confirm "Wipe existing certificates? (Only required if switching between Staging and Production)"; then
+            sudo rm -f "$ACME_FILE"
+            sudo touch "$ACME_FILE" && sudo chmod 600 "$ACME_FILE"
+            echo -e "${C}>> ACME cleared.${NC}"
+        fi
+    else
+        sudo touch "$ACME_FILE" && sudo chmod 600 "$ACME_FILE"
+    fi
 
     # Automated Backup
     local COMPOSE_PATH="$STACKS_DIR/docker-compose.yml"
     if [ -f "$COMPOSE_PATH" ]; then
         sudo cp "$COMPOSE_PATH" "${COMPOSE_PATH}.bak"
         echo -e "${Y}>> Backed up existing docker-compose.yml${NC}"
-    fi
-
-    # Determine Auth Method (Updated for Traefik v3 / Lego v4 CLOUDFLARE_ format)
-    local CF_ENV_BLOCK="      - CLOUDFLARE_DNS_API_TOKEN_FILE=/run/secrets/CloudflareApiToken"
-    local CF_SECRET_BLOCK="CloudflareApiToken"
-    local SECRETS_YAML="  LetsEncryptEmail: { file: $SECRETS_DIR/LetsEncryptEmail.txt }\n  CloudflareApiToken: { file: $SECRETS_DIR/CloudflareApiToken.txt }"
-
-    if [[ -n "$CF_EMAIL" ]]; then
-        # Legacy Global Key Fallback
-        CF_ENV_BLOCK="      - CLOUDFLARE_EMAIL_FILE=/run/secrets/CloudflareEmail\n      - CLOUDFLARE_API_KEY_FILE=/run/secrets/CloudflareApiToken"
-        CF_SECRET_BLOCK="CloudflareEmail, CloudflareApiToken"
-        SECRETS_YAML="  LetsEncryptEmail: { file: $SECRETS_DIR/LetsEncryptEmail.txt }\n  CloudflareApiToken: { file: $SECRETS_DIR/CloudflareApiToken.txt }\n  CloudflareEmail: { file: $SECRETS_DIR/CloudflareEmail.txt }"
     fi
 
     echo -e "${C}>> Forging Hardened Monolith Compose at $STACKS_DIR...${NC}"
@@ -200,12 +223,17 @@ wizard_labeler() {
     local TARGET_PATH; TARGET_PATH=$(gum input --placeholder "Path to Docker directory" --value "$(pwd)")
     if [ ! -f "$TARGET_PATH/docker-compose.yml" ]; then
         gum style --foreground 196 "Error: No docker-compose.yml found at $TARGET_PATH"
+        read -p "Press Enter..."
         return 1
     fi
 
-    # Robust grep: catch error code, accommodate varied whitespace indentation
-    local SERVICES; SERVICES=$(grep -E '^[ \t]+[a-zA-Z0-9_-]+:' "$TARGET_PATH/docker-compose.yml" | sed -e 's/://' -e 's/^[ \t]*//' | xargs || true)
-    [[ -z "$SERVICES" ]] && { echo "No services found."; return 1; }
+    # Native Docker Compose Discovery (Zero-Regex Flaw)
+    local SERVICES; SERVICES=$(sudo docker compose -f "$TARGET_PATH/docker-compose.yml" config --services 2>/dev/null | xargs || true)
+    if [[ -z "$SERVICES" ]]; then
+        gum style --foreground 196 "No services found or invalid compose file structure."
+        read -p "Press Enter..."
+        return 1
+    fi
     
     local SELECTED; SELECTED=$(gum choose $SERVICES)
     local DOMAIN; DOMAIN=$(read_secret RootDomain)
@@ -277,17 +305,26 @@ inspect_ingress() {
     local NETS; NETS=$(sudo docker inspect "$TARGET" | jq -r '.[0].NetworkSettings.Networks | keys[]' 2>/dev/null || echo "")
     if echo "$NETS" | grep -q "public_ingress"; then echo -e "${G}[PASS]${NC} Attached to public_ingress."; else echo -e "${R}[FAIL]${NC} NOT on public_ingress."; fi
 
-    # Labels Core Status
+    # Labels Core Status & JQ Pipeline Guard
     local LABELS; LABELS=$(sudo docker inspect "$TARGET" | jq -r '.[0].Config.Labels // empty' 2>/dev/null || echo "")
+    
+    if [[ -z "$LABELS" || "$LABELS" == "null" ]]; then
+        echo -e "${R}[FAIL]${NC} No labels found on container."
+        read -p "Press Enter to return..."
+        return
+    fi
+
     if echo "$LABELS" | grep -q '"traefik.enable": "true"'; then echo -e "${G}[PASS]${NC} Enabled label found."; else echo -e "${R}[FAIL]${NC} traefik.enable missing."; fi
 
-    # Router/Rule Check - Dynamically Extract Router Name
-    local ROUTER_NAME; ROUTER_NAME=$(echo "$LABELS" | jq -r 'keys[] | select(test("^traefik\\.http\\.routers\\..*\\.rule$")) | capture("^traefik\\.http\\.routers\\.(?<name>.*)\\.rule$").name' 2>/dev/null | head -n 1 || echo "")
-    
+    # Router/Rule Check - Dynamically Extract Router Name safely
+    local ROUTER_NAME="null"
+    ROUTER_NAME=$(echo "$LABELS" | jq -r 'keys[] | select(test("^traefik\\.http\\.routers\\..*\\.rule$")) | capture("^traefik\\.http\\.routers\\.(?<name>.*)\\.rule$").name' 2>/dev/null | head -n 1 || true)
+    [[ -z "$ROUTER_NAME" ]] && ROUTER_NAME="null"
+
     local RULE="null"
     local L_PORT="null"
 
-    if [[ -n "$ROUTER_NAME" ]]; then
+    if [[ "$ROUTER_NAME" != "null" ]]; then
         echo -e "${G}[PASS]${NC} Active Router Name: $ROUTER_NAME"
         RULE=$(echo "$LABELS" | jq -r '."traefik.http.routers.'$ROUTER_NAME'.rule"' 2>/dev/null || echo "null")
         L_PORT=$(echo "$LABELS" | jq -r '."traefik.http.services.'$ROUTER_NAME'.loadbalancer.server.port"' 2>/dev/null || echo "null")
@@ -308,7 +345,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.14)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.15)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit")
     case "$OP" in
         1*) wizard_core ;;
