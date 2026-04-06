@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.20)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.21)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -11,10 +11,10 @@
 #    - Ingress Inspector v3: Advanced JQ Router Name Extraction
 #    - Diagnostic Suite: Real-time Health & Log Monitoring
 #  ROBUSTNESS: 
-#    - Native 'docker compose config' parsing (Zero-regex flaw).
+#    - Ephemeral 'tmpfs' isolation (Host-pollution prevention).
+#    - Literal string Heredoc injection (YAML whitespace integrity).
+#    - Diagnostic SIGINT trapping (Prevents log-exit script crashes).
 #    - Safe ACME persistence to prevent Let's Encrypt Rate-Limit bans.
-#    - Append-mode patch exports (Prevents overwriting multi-service patches).
-#    - Strict pipeline death traps (Prevents set-e script crashes on ESC).
 #    - JQ Object Type-Safety (Prevents null parsing crashes).
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
@@ -124,9 +124,11 @@ wizard_core() {
             write_secret "CloudflareApiToken" "$CF_TOKEN"
         fi
         
+        # Multi-line string literal to prevent bash subshell whitespace collapse
         CF_ENV_BLOCK="      - CLOUDFLARE_DNS_API_TOKEN_FILE=/run/secrets/CloudflareApiToken"
         CF_SECRET_BLOCK="CloudflareApiToken"
-        SECRETS_YAML="  LetsEncryptEmail: { file: $SECRETS_DIR/LetsEncryptEmail.txt }\n  CloudflareApiToken: { file: $SECRETS_DIR/CloudflareApiToken.txt }"
+        SECRETS_YAML="  LetsEncryptEmail: { file: $SECRETS_DIR/LetsEncryptEmail.txt }
+  CloudflareApiToken: { file: $SECRETS_DIR/CloudflareApiToken.txt }"
     else
         local CF_EMAIL; CF_EMAIL=$(gum input --placeholder "Cloudflare Account Email" --value "$(read_secret CloudflareEmail)" || echo "__ABORT__")
         [[ "$CF_EMAIL" == "__ABORT__" || -z "$CF_EMAIL" ]] && return 1
@@ -146,9 +148,13 @@ wizard_core() {
         
         write_secret "CloudflareEmail" "$CF_EMAIL"
         
-        CF_ENV_BLOCK="      - CLOUDFLARE_EMAIL_FILE=/run/secrets/CloudflareEmail\n      - CLOUDFLARE_API_KEY_FILE=/run/secrets/CloudflareApiKey"
+        # Multi-line string literal to prevent bash subshell whitespace collapse
+        CF_ENV_BLOCK="      - CLOUDFLARE_EMAIL_FILE=/run/secrets/CloudflareEmail
+      - CLOUDFLARE_API_KEY_FILE=/run/secrets/CloudflareApiKey"
         CF_SECRET_BLOCK="CloudflareEmail, CloudflareApiKey"
-        SECRETS_YAML="  LetsEncryptEmail: { file: $SECRETS_DIR/LetsEncryptEmail.txt }\n  CloudflareApiKey: { file: $SECRETS_DIR/CloudflareApiKey.txt }\n  CloudflareEmail: { file: $SECRETS_DIR/CloudflareEmail.txt }"
+        SECRETS_YAML="  LetsEncryptEmail: { file: $SECRETS_DIR/LetsEncryptEmail.txt }
+  CloudflareApiKey: { file: $SECRETS_DIR/CloudflareApiKey.txt }
+  CloudflareEmail: { file: $SECRETS_DIR/CloudflareEmail.txt }"
     fi
 
     write_secret "RootDomain" "$DOMAIN"
@@ -195,13 +201,14 @@ services:
       public_ingress: { ipv4_address: 10.20.0.2 }
     secrets: [$CF_SECRET_BLOCK, LetsEncryptEmail]
     environment:
-$(echo -e "$CF_ENV_BLOCK")
+${CF_ENV_BLOCK}
       - DOCKER_API_VERSION=1.41
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - $CONFIG_DIR:/etc/traefik
       - $ACME_FILE:/etc/traefik/acme.json
-      - /tmp:/tmp
+    tmpfs:
+      - /tmp
     command:
       - "--global.checknewversion=false"
       - "--ping=true"
@@ -240,7 +247,7 @@ networks:
     ipam: { config: [{ subnet: "10.20.0.0/24" }] }
 
 secrets:
-$(echo -e "$SECRETS_YAML")
+${SECRETS_YAML}
 EOF
 
     if gum confirm "Deploy/Update Ingress Cluster?"; then
@@ -340,7 +347,9 @@ check_diagnostics() {
         1*)
             sudo docker ps --filter "name=Traefik" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
             read -r -p "Press Enter..." ;;
-        2*) sudo docker logs -f Traefik ;;
+        2*) 
+            # Appended || true prevents Ctrl+C from triggering set -e script death
+            sudo docker logs -f Traefik || true ;;
         3*) 
             DOMAIN=$(read_secret RootDomain)
             if command -v nslookup &> /dev/null; then
@@ -407,7 +416,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.20)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.21)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit" || echo "__ABORT__")
     case "$OP" in
         1*) wizard_core ;;
