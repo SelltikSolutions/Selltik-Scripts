@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.30)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.31)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -11,11 +11,11 @@
 #    - Ingress Inspector v3: Advanced JQ Router Name Extraction
 #    - Diagnostic Suite: Real-time Health & Log Monitoring
 #  ROBUSTNESS: 
+#    - Sudo-Aware Tilde Expansion (Prevents /root/ pathing errors).
+#    - Cryptographic Whitespace Stripping (Prevents API Key copy-paste corruption).
+#    - Post-Sanitization Null-Deploy Guards.
 #    - Multi-level Subdomain Support (Prevents nested subdomains from flattening).
 #    - YAML tmpfs mode strict quoting (Prevents octal parsing errors in Compose).
-#    - Rigorous Root Domain DNS sanitization (Prevents hidden text artifacts).
-#    - BasicAuth Stderr Isolation (Prevents hash corruption from Docker logs).
-#    - Patch File User-Ownership (Prevents root lockouts in code editors).
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
@@ -99,11 +99,19 @@ wizard_core() {
     
     # Strict DNS sanitization to prevent routing corruption from hidden characters
     DOMAIN=$(echo "$DOMAIN" | tr -cd 'a-zA-Z0-9-.')
+    
+    # Post-sanitization guard (prevents deploying a completely stripped, empty string)
+    if [[ -z "$DOMAIN" ]]; then
+        gum style --foreground 196 "Error: Invalid domain characters provided."
+        read -r -p "Press Enter to return to menu..."
+        return 1
+    fi
 
     local EMAIL; EMAIL=$(gum input --placeholder "Let's Encrypt Email (REQUIRED)" --value "$(read_secret LetsEncryptEmail)" || echo "__ABORT__")
     [[ "$EMAIL" == "__ABORT__" ]] && return 1
     
-    # Strict Email Validation
+    # Strict Email Validation & Whitespace Stripping
+    EMAIL="${EMAIL// /}"
     if [[ "$EMAIL" != *"@"* || "$EMAIL" == *" "* || -z "$EMAIL" ]]; then
         gum style --foreground 196 "Error: Let's Encrypt strictly requires a valid email address format."
         read -r -p "Press Enter to return to menu..."
@@ -137,6 +145,7 @@ wizard_core() {
         
         local CF_TOKEN; CF_TOKEN=$(gum input --password --placeholder "$CF_TOKEN_PROMPT" || echo "__ABORT__")
         [[ "$CF_TOKEN" == "__ABORT__" ]] && return 1
+        CF_TOKEN="${CF_TOKEN// /}" # Cryptographic whitespace stripping
         
         if [[ -z "$CF_TOKEN" ]]; then
             [[ -z "$EXISTING_TOKEN" ]] && { gum style --foreground 196 "Error: API Token required."; read -r -p "Press Enter..."; return 1; }
@@ -152,6 +161,7 @@ wizard_core() {
     else
         local CF_EMAIL; CF_EMAIL=$(gum input --placeholder "Cloudflare Account Email" --value "$(read_secret CloudflareEmail)" || echo "__ABORT__")
         [[ "$CF_EMAIL" == "__ABORT__" || -z "$CF_EMAIL" ]] && return 1
+        CF_EMAIL="${CF_EMAIL// /}"
         
         local EXISTING_KEY; EXISTING_KEY=$(read_secret CloudflareApiKey)
         local CF_KEY_PROMPT="Cloudflare Global API Key"
@@ -159,6 +169,7 @@ wizard_core() {
 
         local CF_KEY; CF_KEY=$(gum input --password --placeholder "$CF_KEY_PROMPT" || echo "__ABORT__")
         [[ "$CF_KEY" == "__ABORT__" ]] && return 1
+        CF_KEY="${CF_KEY// /}" # Cryptographic whitespace stripping
         
         if [[ -z "$CF_KEY" ]]; then
             [[ -z "$EXISTING_KEY" ]] && { gum style --foreground 196 "Error: Global API Key required."; read -r -p "Press Enter..."; return 1; }
@@ -343,8 +354,13 @@ wizard_labeler() {
     local TARGET_PATH; TARGET_PATH=$(gum input --placeholder "Path to Docker directory" --value "$(pwd)" || echo "__ABORT__")
     [[ "$TARGET_PATH" == "__ABORT__" || -z "$TARGET_PATH" ]] && return 1
     
-    # Safely expand tilde (~) to absolute home directory to prevent read errors
-    TARGET_PATH="${TARGET_PATH/#\~/$HOME}"
+    # Safely expand tilde (~) based on the true invoking user, preventing /root/ path failures under sudo.
+    local REAL_HOME="$HOME"
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        REAL_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+    fi
+    TARGET_PATH="${TARGET_PATH/#\~/$REAL_HOME}"
+    
     # Strip trailing slashes safely
     TARGET_PATH="${TARGET_PATH%/}"
 
@@ -464,7 +480,9 @@ check_diagnostics() {
             sudo docker logs -f Traefik || true ;;
         3*) 
             local DOMAIN; DOMAIN=$(read_secret RootDomain)
-            if command -v nslookup &> /dev/null; then
+            if [[ -z "$DOMAIN" ]]; then
+                echo -e "${Y}Warning: Root Domain is not yet configured in the Vault.${NC}"
+            elif command -v nslookup &> /dev/null; then
                 nslookup "$DOMAIN" || true
             else
                 echo -e "${R}Error: 'nslookup' is not installed on this system.${NC}"
@@ -529,7 +547,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.30)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.31)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit" || echo "__ABORT__")
     case "$OP" in
         1*) wizard_core ;;
