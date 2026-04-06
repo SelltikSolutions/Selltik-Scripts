@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.29)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.30)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -11,11 +11,11 @@
 #    - Ingress Inspector v3: Advanced JQ Router Name Extraction
 #    - Diagnostic Suite: Real-time Health & Log Monitoring
 #  ROBUSTNESS: 
+#    - Multi-level Subdomain Support (Prevents nested subdomains from flattening).
+#    - YAML tmpfs mode strict quoting (Prevents octal parsing errors in Compose).
+#    - Rigorous Root Domain DNS sanitization (Prevents hidden text artifacts).
 #    - BasicAuth Stderr Isolation (Prevents hash corruption from Docker logs).
 #    - Patch File User-Ownership (Prevents root lockouts in code editors).
-#    - Strict Port Integer Validation (Prevents malformed router mapping).
-#    - Array Collapse Fix (Restores multi-service selection menus).
-#    - Tilde (~) Path Expansion (Prevents false-negative directory errors).
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
@@ -39,7 +39,11 @@ R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; C='\033[0;36m'; NC='\033[0m'
 check_environment() {
     local deps=(gum jq docker curl)
     for cmd in "${deps[@]}"; do
-        if ! command -v "$cmd" &> /dev/null; then echo -e "${R}Missing $cmd. Please install.${NC}"; exit 1; fi
+        if ! command -v "$cmd" &> /dev/null; then 
+            echo -e "${R}Missing dependency: $cmd${NC}"
+            [[ "$cmd" == "gum" ]] && echo -e "${Y}Hint: Install gum using 'sudo apt install gum' or 'brew install gum'${NC}"
+            exit 1
+        fi
     done
     
     # Daemon & Compose V2 Validation Guard
@@ -93,8 +97,8 @@ wizard_core() {
     local DOMAIN; DOMAIN=$(gum input --placeholder "Root Domain (e.g. example.com)" --value "$(read_secret RootDomain)" || echo "__ABORT__")
     [[ "$DOMAIN" == "__ABORT__" || -z "$DOMAIN" ]] && return 1
     
-    # Whitespace sanitization to prevent routing corruption
-    DOMAIN="${DOMAIN// /}"
+    # Strict DNS sanitization to prevent routing corruption from hidden characters
+    DOMAIN=$(echo "$DOMAIN" | tr -cd 'a-zA-Z0-9-.')
 
     local EMAIL; EMAIL=$(gum input --placeholder "Let's Encrypt Email (REQUIRED)" --value "$(read_secret LetsEncryptEmail)" || echo "__ABORT__")
     [[ "$EMAIL" == "__ABORT__" ]] && return 1
@@ -264,7 +268,7 @@ ${CF_ENV_BLOCK}
         target: /tmp
         tmpfs:
           size: "100m"
-          mode: 01777
+          mode: "1777"
     command:
       - "--global.checknewversion=false"
       - "--ping=true"
@@ -381,10 +385,10 @@ wizard_labeler() {
     local SUB; SUB=$(gum input --placeholder "Subdomain (Leave blank for root domain)" --value "${ROUTER_NAME}" || echo "__ABORT__")
     [[ "$SUB" == "__ABORT__" ]] && return 1
     
-    # RFC 1035 Subdomain Sanitization (No spaces/underscores/special chars allowed in DNS hosts)
+    # RFC 1035 Subdomain Sanitization (Allows alphanumeric, hyphens, and dots for nested subdomains)
     SUB="${SUB// /-}"
     SUB="${SUB//_/-}"
-    SUB=$(echo "$SUB" | tr -cd 'a-zA-Z0-9-')
+    SUB=$(echo "$SUB" | tr -cd 'a-zA-Z0-9-.')
     
     local PORT; PORT=$(gum input --placeholder "Internal Container Port" --value "80" || echo "__ABORT__")
     [[ "$PORT" == "__ABORT__" || -z "$PORT" ]] && return 1
@@ -525,7 +529,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.29)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.30)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit" || echo "__ABORT__")
     case "$OP" in
         1*) wizard_core ;;
