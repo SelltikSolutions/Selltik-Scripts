@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.21)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.22)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -11,11 +11,10 @@
 #    - Ingress Inspector v3: Advanced JQ Router Name Extraction
 #    - Diagnostic Suite: Real-time Health & Log Monitoring
 #  ROBUSTNESS: 
-#    - Ephemeral 'tmpfs' isolation (Host-pollution prevention).
-#    - Literal string Heredoc injection (YAML whitespace integrity).
-#    - Diagnostic SIGINT trapping (Prevents log-exit script crashes).
-#    - Safe ACME persistence to prevent Let's Encrypt Rate-Limit bans.
-#    - JQ Object Type-Safety (Prevents null parsing crashes).
+#    - Router Syntax Sanitization (Converts invalid underscores to hyphens).
+#    - Redundant Mount Prevention (Fixes Let's Encrypt Inode locking).
+#    - Graceful Port-Conflict error handling on deployment.
+#    - JQ Injection-Proof variable parsing in Inspector.
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
@@ -206,7 +205,6 @@ ${CF_ENV_BLOCK}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - $CONFIG_DIR:/etc/traefik
-      - $ACME_FILE:/etc/traefik/acme.json
     tmpfs:
       - /tmp
     command:
@@ -253,8 +251,15 @@ EOF
     if gum confirm "Deploy/Update Ingress Cluster?"; then
         cd "$STACKS_DIR"
         sudo docker compose pull traefik
-        sudo docker compose up -d
-        gum style --foreground 10 "Ingress Online: https://traefik.$DOMAIN"
+        
+        # Graceful error handling for Port Bind conflicts
+        if sudo docker compose up -d; then
+            gum style --foreground 10 "Ingress Online: https://traefik.$DOMAIN"
+        else
+            gum style --foreground 196 "Deployment Failed!"
+            echo -e "${Y}Reason: Ports 80/443 may already be in use by another service (like Apache or Nginx), or your configuration is invalid.${NC}"
+            read -r -p "Press Enter to return to menu..."
+        fi
     fi
 }
 
@@ -268,6 +273,9 @@ wizard_labeler() {
     local TARGET_PATH; TARGET_PATH=$(gum input --placeholder "Path to Docker directory" --value "$(pwd)" || echo "__ABORT__")
     [[ "$TARGET_PATH" == "__ABORT__" || -z "$TARGET_PATH" ]] && return 1
     
+    # Strip trailing slashes safely
+    TARGET_PATH="${TARGET_PATH%/}"
+
     if [ ! -f "$TARGET_PATH/docker-compose.yml" ]; then
         gum style --foreground 196 "Error: No docker-compose.yml found at $TARGET_PATH"
         read -r -p "Press Enter..."
@@ -285,11 +293,15 @@ wizard_labeler() {
     local SELECTED; SELECTED=$(gum choose $SERVICES || echo "__ABORT__")
     [[ "$SELECTED" == "__ABORT__" || -z "$SELECTED" ]] && return 1
     
+    # Sanitize router name: Traefik strictly forbids underscores in router names
+    local ROUTER_NAME="${SELECTED,,}"
+    ROUTER_NAME="${ROUTER_NAME//_/-}"
+
     local DOMAIN; DOMAIN=$(read_secret RootDomain)
     [[ -z "$DOMAIN" ]] && DOMAIN="example.com"
 
     # Support for Root Domain Mapping
-    local SUB; SUB=$(gum input --placeholder "Subdomain (Leave blank for root domain)" --value "${SELECTED,,}" || echo "__ABORT__")
+    local SUB; SUB=$(gum input --placeholder "Subdomain (Leave blank for root domain)" --value "${ROUTER_NAME}" || echo "__ABORT__")
     [[ "$SUB" == "__ABORT__" ]] && return 1
     
     local PORT; PORT=$(gum input --placeholder "Internal Container Port" --value "80" || echo "__ABORT__")
@@ -313,10 +325,10 @@ wizard_labeler() {
       - public_ingress
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.${SELECTED,,}.rule=Host(\`${HOST}\`)"
-      - "traefik.http.routers.${SELECTED,,}.entrypoints=websecure"
-      - "traefik.http.routers.${SELECTED,,}.tls.certresolver=cloudflare"
-      - "traefik.http.services.${SELECTED,,}.loadbalancer.server.port=${PORT}"
+      - "traefik.http.routers.${ROUTER_NAME}.rule=Host(\`${HOST}\`)"
+      - "traefik.http.routers.${ROUTER_NAME}.entrypoints=websecure"
+      - "traefik.http.routers.${ROUTER_NAME}.tls.certresolver=cloudflare"
+      - "traefik.http.services.${ROUTER_NAME}.loadbalancer.server.port=${PORT}"
 
 # --- 2. ADD THIS TO THE VERY BOTTOM OF THE COMPOSE FILE ---
 networks:
@@ -397,8 +409,9 @@ inspect_ingress() {
 
     if [[ "$ROUTER_NAME" != "null" ]]; then
         echo -e "${G}[PASS]${NC} Active Router Name: $ROUTER_NAME"
-        RULE=$(echo "$LABELS" | jq -r '."traefik.http.routers.'$ROUTER_NAME'.rule"' 2>/dev/null || echo "null")
-        L_PORT=$(echo "$LABELS" | jq -r '."traefik.http.services.'$ROUTER_NAME'.loadbalancer.server.port"' 2>/dev/null || echo "null")
+        # Injection-proof JQ argument parsing
+        RULE=$(echo "$LABELS" | jq -r --arg rn "traefik.http.routers.${ROUTER_NAME}.rule" '.[$rn]' 2>/dev/null || echo "null")
+        L_PORT=$(echo "$LABELS" | jq -r --arg pn "traefik.http.services.${ROUTER_NAME}.loadbalancer.server.port" '.[$pn]' 2>/dev/null || echo "null")
     else
         echo -e "${Y}[WARN]${NC} No Traefik router configuration detected."
     fi
@@ -416,7 +429,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.21)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.22)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit" || echo "__ABORT__")
     case "$OP" in
         1*) wizard_core ;;
@@ -428,7 +441,7 @@ while true; do
             for f in "$SECRETS_DIR"/*.txt; do
                 [[ -e "$f" ]] || continue
                 echo -n "$(basename "$f"): "
-                sudo cat "$f" | head -c 8; echo "..."
+                sudo cat "$f" | tr -d '\n\r' | head -c 8; echo "..."
             done
             read -r -p "Press Enter..." ;;
         6* | "__ABORT__") exit 0 ;;
