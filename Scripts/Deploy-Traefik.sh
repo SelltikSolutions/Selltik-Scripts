@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.17)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.18)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -14,8 +14,8 @@
 #    - Native 'docker compose config' parsing (Zero-regex flaw).
 #    - Explicit Auth Selection to prevent var collision.
 #    - Safe ACME persistence to prevent Let's Encrypt Rate-Limit bans.
-#    - Restored Global External Network patch block (Critical Regression Fix).
-#    - Hardened UI cancellation (Esc/Ctrl+C) guards.
+#    - Subdomain bypass logic (Allows mapping to root domain).
+#    - Strict pipeline death traps (Prevents set-e script crashes on ESC).
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
@@ -77,10 +77,11 @@ read_secret() {
 wizard_core() {
     gum style --border double --margin "1 2" --padding "1 2" --foreground 212 "TRAEFIK CORE DEPLOYMENT"
 
-    local DOMAIN; DOMAIN=$(gum input --placeholder "Root Domain (e.g. example.com)" --value "$(read_secret RootDomain)")
-    [[ -z "$DOMAIN" ]] && return 1
+    local DOMAIN; DOMAIN=$(gum input --placeholder "Root Domain (e.g. example.com)" --value "$(read_secret RootDomain)" || echo "__ABORT__")
+    [[ "$DOMAIN" == "__ABORT__" || -z "$DOMAIN" ]] && return 1
 
-    local EMAIL; EMAIL=$(gum input --placeholder "Let's Encrypt Email (REQUIRED)" --value "$(read_secret LetsEncryptEmail)")
+    local EMAIL; EMAIL=$(gum input --placeholder "Let's Encrypt Email (REQUIRED)" --value "$(read_secret LetsEncryptEmail)" || echo "__ABORT__")
+    [[ "$EMAIL" == "__ABORT__" ]] && return 1
     
     # Strict Email Validation
     if [[ "$EMAIL" != *"@"* || "$EMAIL" == *" "* || -z "$EMAIL" ]]; then
@@ -91,8 +92,8 @@ wizard_core() {
 
     # Environment Selection
     echo -e "${C}>> Select Let's Encrypt Environment:${NC}"
-    local LE_ENV; LE_ENV=$(gum choose "Staging (Testing - Prevents Rate Limits)" "Production (Live - Strict Limits)")
-    [[ -z "$LE_ENV" ]] && return 1
+    local LE_ENV; LE_ENV=$(gum choose "Staging (Testing - Prevents Rate Limits)" "Production (Live - Strict Limits)" || echo "__ABORT__")
+    [[ "$LE_ENV" == "__ABORT__" || -z "$LE_ENV" ]] && return 1
     
     local CA_SERVER="https://acme-v02.api.letsencrypt.org/directory"
     if [[ "$LE_ENV" == *"Staging"* ]]; then
@@ -101,8 +102,8 @@ wizard_core() {
 
     # Explicit Auth Selection & Secret Retention Logic
     echo -e "${C}>> Select Cloudflare Authentication Method:${NC}"
-    local AUTH_TYPE; AUTH_TYPE=$(gum choose "API Token (Recommended - Restrict to Zone:DNS:Edit)" "Global API Key (Legacy)")
-    [[ -z "$AUTH_TYPE" ]] && return 1
+    local AUTH_TYPE; AUTH_TYPE=$(gum choose "API Token (Recommended - Restrict to Zone:DNS:Edit)" "Global API Key (Legacy)" || echo "__ABORT__")
+    [[ "$AUTH_TYPE" == "__ABORT__" || -z "$AUTH_TYPE" ]] && return 1
 
     local CF_ENV_BLOCK=""
     local CF_SECRET_BLOCK=""
@@ -113,7 +114,8 @@ wizard_core() {
         local CF_TOKEN_PROMPT="Cloudflare API Token"
         [[ -n "$EXISTING_TOKEN" ]] && CF_TOKEN_PROMPT="Cloudflare API Token (Leave blank to keep existing)"
         
-        local CF_TOKEN; CF_TOKEN=$(gum input --password --placeholder "$CF_TOKEN_PROMPT")
+        local CF_TOKEN; CF_TOKEN=$(gum input --password --placeholder "$CF_TOKEN_PROMPT" || echo "__ABORT__")
+        [[ "$CF_TOKEN" == "__ABORT__" ]] && return 1
         
         if [[ -z "$CF_TOKEN" ]]; then
             [[ -z "$EXISTING_TOKEN" ]] && { gum style --foreground 196 "Error: API Token required."; read -p "Press Enter..."; return 1; }
@@ -125,14 +127,15 @@ wizard_core() {
         CF_SECRET_BLOCK="CloudflareApiToken"
         SECRETS_YAML="  LetsEncryptEmail: { file: $SECRETS_DIR/LetsEncryptEmail.txt }\n  CloudflareApiToken: { file: $SECRETS_DIR/CloudflareApiToken.txt }"
     else
-        local CF_EMAIL; CF_EMAIL=$(gum input --placeholder "Cloudflare Account Email" --value "$(read_secret CloudflareEmail)")
-        [[ -z "$CF_EMAIL" ]] && return 1
+        local CF_EMAIL; CF_EMAIL=$(gum input --placeholder "Cloudflare Account Email" --value "$(read_secret CloudflareEmail)" || echo "__ABORT__")
+        [[ "$CF_EMAIL" == "__ABORT__" || -z "$CF_EMAIL" ]] && return 1
         
         local EXISTING_KEY; EXISTING_KEY=$(read_secret CloudflareApiKey)
         local CF_KEY_PROMPT="Cloudflare Global API Key"
         [[ -n "$EXISTING_KEY" ]] && CF_KEY_PROMPT="Cloudflare Global API Key (Leave blank to keep existing)"
 
-        local CF_KEY; CF_KEY=$(gum input --password --placeholder "$CF_KEY_PROMPT")
+        local CF_KEY; CF_KEY=$(gum input --password --placeholder "$CF_KEY_PROMPT" || echo "__ABORT__")
+        [[ "$CF_KEY" == "__ABORT__" ]] && return 1
         
         if [[ -z "$CF_KEY" ]]; then
             [[ -z "$EXISTING_KEY" ]] && { gum style --foreground 196 "Error: Global API Key required."; read -p "Press Enter..."; return 1; }
@@ -241,8 +244,8 @@ EOF
 wizard_labeler() {
     gum style --border double --margin "1 2" --padding "1 2" --foreground 33 "SERVICE LABELING WIZARD"
 
-    local TARGET_PATH; TARGET_PATH=$(gum input --placeholder "Path to Docker directory" --value "$(pwd)")
-    [[ -z "$TARGET_PATH" ]] && return 1
+    local TARGET_PATH; TARGET_PATH=$(gum input --placeholder "Path to Docker directory" --value "$(pwd)" || echo "__ABORT__")
+    [[ "$TARGET_PATH" == "__ABORT__" || -z "$TARGET_PATH" ]] && return 1
     
     if [ ! -f "$TARGET_PATH/docker-compose.yml" ]; then
         gum style --foreground 196 "Error: No docker-compose.yml found at $TARGET_PATH"
@@ -258,19 +261,25 @@ wizard_labeler() {
         return 1
     fi
     
-    local SELECTED; SELECTED=$(gum choose $SERVICES)
-    [[ -z "$SELECTED" ]] && return 1
+    local SELECTED; SELECTED=$(gum choose $SERVICES || echo "__ABORT__")
+    [[ "$SELECTED" == "__ABORT__" || -z "$SELECTED" ]] && return 1
     
     local DOMAIN; DOMAIN=$(read_secret RootDomain)
     [[ -z "$DOMAIN" ]] && DOMAIN="example.com"
 
-    local SUB; SUB=$(gum input --placeholder "Subdomain" --value "${SELECTED,,}")
-    [[ -z "$SUB" ]] && return 1
+    # Support for Root Domain Mapping
+    local SUB; SUB=$(gum input --placeholder "Subdomain (Leave blank for root domain)" --value "${SELECTED,,}" || echo "__ABORT__")
+    [[ "$SUB" == "__ABORT__" ]] && return 1
     
-    local PORT; PORT=$(gum input --placeholder "Internal Container Port" --value "80")
-    [[ -z "$PORT" ]] && return 1
+    local PORT; PORT=$(gum input --placeholder "Internal Container Port" --value "80" || echo "__ABORT__")
+    [[ "$PORT" == "__ABORT__" || -z "$PORT" ]] && return 1
 
-    local HOST="${SUB}.${DOMAIN}"
+    local HOST
+    if [[ -z "$SUB" ]]; then
+        HOST="$DOMAIN"
+    else
+        HOST="${SUB}.${DOMAIN}"
+    fi
 
     local PATCH_BLOCK=$(cat <<EOF
 # ==============================================================================
@@ -311,7 +320,7 @@ EOF
 check_diagnostics() {
     clear
     gum style --foreground 212 --border double "TRAEFIK DIAGNOSTIC SUITE"
-    local DIAG; DIAG=$(gum choose "1) Check Health Status" "2) View Live Logs" "3) Test DNS-01 Resolver" "4) Back")
+    local DIAG; DIAG=$(gum choose "1) Check Health Status" "2) View Live Logs" "3) Test DNS-01 Resolver" "4) Back" || echo "__ABORT__")
     case "$DIAG" in
         1*)
             sudo docker ps --filter "name=Traefik" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
@@ -334,8 +343,8 @@ inspect_ingress() {
     gum style --foreground 212 --border double "INGRESS INSPECTOR (404 DEBUGGER)"
     local CONTAINERS; CONTAINERS=$(sudo docker ps --format "{{.Names}}" || true)
     [[ -z "$CONTAINERS" ]] && return
-    local TARGET; TARGET=$(gum choose $CONTAINERS)
-    [[ -z "$TARGET" ]] && return
+    local TARGET; TARGET=$(gum choose $CONTAINERS || echo "__ABORT__")
+    [[ "$TARGET" == "__ABORT__" || -z "$TARGET" ]] && return
     
     echo -e "${C}>> Auditing: $TARGET${NC}"
     
@@ -383,8 +392,8 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.17)"
-    OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit")
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.18)"
+    OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit" || echo "__ABORT__")
     case "$OP" in
         1*) wizard_core ;;
         2*) wizard_labeler ;;
@@ -398,6 +407,6 @@ while true; do
                 sudo cat "$f" | head -c 8; echo "..."
             done
             read -p "Press Enter..." ;;
-        6*) exit 0 ;;
+        6* | "__ABORT__") exit 0 ;;
     esac
 done
