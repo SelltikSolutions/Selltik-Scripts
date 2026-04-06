@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.18)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.19)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -16,6 +16,7 @@
 #    - Safe ACME persistence to prevent Let's Encrypt Rate-Limit bans.
 #    - Subdomain bypass logic (Allows mapping to root domain).
 #    - Strict pipeline death traps (Prevents set-e script crashes on ESC).
+#    - Prime Directive Compliance (Healthchecks, PID Limits, Log Rotation).
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
@@ -53,7 +54,7 @@ check_environment() {
 # --- 3. HELPER FUNCTIONS ---
 write_secret() {
     local NAME=$1; local CONTENT=$2
-    [[ "$NAME" != *.txt ]] && NAME="${NAME}.txt"
+    [[ "$NAME" != *.txt ]] && NAME="${NAME}.txt" || true
     local FILEPATH="$SECRETS_DIR/$NAME"
     
     # Pre-lock the file before writing to prevent race-condition exposure
@@ -66,8 +67,9 @@ write_secret() {
 }
 
 read_secret() {
-    local NAME=$1; [[ "$NAME" != *.txt ]] && NAME="${NAME}.txt"
-    if [ -f "$SECRETS_DIR/$NAME" ]; then sudo cat "$SECRETS_DIR/$NAME" | tr -d '\n\r '; fi
+    local NAME=$1
+    [[ "$NAME" != *.txt ]] && NAME="${NAME}.txt" || true
+    if [ -f "$SECRETS_DIR/$NAME" ]; then sudo cat "$SECRETS_DIR/$NAME" | tr -d '\n\r'; fi
 }
 
 # ==============================================================================
@@ -179,10 +181,17 @@ services:
     image: traefik:v3
     container_name: Traefik
     restart: unless-stopped
+    init: true
+    pids_limit: 100
     security_opt: [no-new-privileges:true]
     read_only: true
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       public_ingress: { ipv4_address: 10.20.0.2 }
     secrets: [$CF_SECRET_BLOCK, LetsEncryptEmail]
@@ -196,6 +205,7 @@ $(echo -e "$CF_ENV_BLOCK")
       - /tmp:/tmp
     command:
       - "--global.checknewversion=false"
+      - "--ping=true"
       - "--entryPoints.web.address=:80"
       - "--entryPoints.websecure.address=:443"
       - "--entryPoints.web.http.redirections.entryPoint.to=websecure"
@@ -208,6 +218,11 @@ $(echo -e "$CF_ENV_BLOCK")
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme.json"
       - "--certificatesresolvers.cloudflare.acme.caserver=$CA_SERVER"
       - "--api.dashboard=true"
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.traefik.rule=Host(\`traefik.$DOMAIN\`)"
@@ -392,7 +407,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.18)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.19)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit" || echo "__ABORT__")
     case "$OP" in
         1*) wizard_core ;;
