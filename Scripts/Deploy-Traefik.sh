@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.27)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.28)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -11,11 +11,11 @@
 #    - Ingress Inspector v3: Advanced JQ Router Name Extraction
 #    - Diagnostic Suite: Real-time Health & Log Monitoring
 #  ROBUSTNESS: 
-#    - Docker Compose Schema Fix (Resolves tmpfs invalid syntax rejection).
-#    - POSIX-compliant String Lowercasing (Supports legacy macOS Bash 3.2).
+#    - Array Collapse Fix (Restores multi-service selection menus).
+#    - Tilde (~) Path Expansion (Prevents false-negative directory errors).
+#    - tmpfs Sticky-Bit Enforcement (01777 isolation guarantee).
+#    - POSIX-compliant String Lowercasing (Supports legacy Bash 3.2).
 #    - Dashboard Zero-Trust Security (Ephemeral BasicAuth generation).
-#    - Strict ACME File Ownership (Prevents CAP_DAC_OVERRIDE failures).
-#    - RFC 1035 DNS Sanitization (Strips invalid characters from subdomains).
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
@@ -261,6 +261,7 @@ ${CF_ENV_BLOCK}
         target: /tmp
         tmpfs:
           size: "100m"
+          mode: 01777
     command:
       - "--global.checknewversion=false"
       - "--ping=true"
@@ -335,6 +336,8 @@ wizard_labeler() {
     local TARGET_PATH; TARGET_PATH=$(gum input --placeholder "Path to Docker directory" --value "$(pwd)" || echo "__ABORT__")
     [[ "$TARGET_PATH" == "__ABORT__" || -z "$TARGET_PATH" ]] && return 1
     
+    # Safely expand tilde (~) to absolute home directory to prevent read errors
+    TARGET_PATH="${TARGET_PATH/#\~/$HOME}"
     # Strip trailing slashes safely
     TARGET_PATH="${TARGET_PATH%/}"
 
@@ -350,14 +353,15 @@ wizard_labeler() {
         return 1
     fi
 
-    # Native Context-Aware Docker Compose Discovery
-    local SERVICES; SERVICES=$(sudo docker compose --project-directory "$TARGET_PATH" -f "$COMPOSE_FILE" config --services 2>/dev/null | xargs || true)
+    # Native Context-Aware Docker Compose Discovery (Array Collapse bug fixed)
+    local SERVICES; SERVICES=$(sudo docker compose --project-directory "$TARGET_PATH" -f "$COMPOSE_FILE" config --services 2>/dev/null || true)
     if [[ -z "$SERVICES" ]]; then
         gum style --foreground 196 "No services found or invalid compose file structure in $COMPOSE_FILE."
         read -r -p "Press Enter..."
         return 1
     fi
     
+    # IFS parses the native newline output into safe individual menu items
     local SELECTED; SELECTED=$(gum choose $SERVICES || echo "__ABORT__")
     [[ "$SELECTED" == "__ABORT__" || -z "$SELECTED" ]] && return 1
     
@@ -505,7 +509,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.27)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.28)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit" || echo "__ABORT__")
     case "$OP" in
         1*) wizard_core ;;
