@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.24)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.25)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -11,10 +11,11 @@
 #    - Ingress Inspector v3: Advanced JQ Router Name Extraction
 #    - Diagnostic Suite: Real-time Health & Log Monitoring
 #  ROBUSTNESS: 
-#    - DAC_OVERRIDE Secret Hardening (Ensures UID 0 can read secrets with dropped caps).
-#    - Docker Volume Glitch Guard (Prevents acme.json directory corruption).
-#    - RFC 1035 DNS Sanitization (Strips invalid characters from subdomains).
-#    - Timestamped multi-service patch append logic.
+#    - DNS-01 Race Condition Fix (Authoritative Resolvers + Delay).
+#    - tmpfs Memory Bounding (100MB limit prevents RAM DoS).
+#    - Universal Compose Discovery (Supports yaml/yml variants).
+#    - Domain Whitespace Sanitization.
+#    - DAC_OVERRIDE Secret Hardening (Ensures UID 0 can read secrets).
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
@@ -89,6 +90,9 @@ wizard_core() {
 
     local DOMAIN; DOMAIN=$(gum input --placeholder "Root Domain (e.g. example.com)" --value "$(read_secret RootDomain)" || echo "__ABORT__")
     [[ "$DOMAIN" == "__ABORT__" || -z "$DOMAIN" ]] && return 1
+    
+    # Whitespace sanitization to prevent routing corruption
+    DOMAIN="${DOMAIN// /}"
 
     local EMAIL; EMAIL=$(gum input --placeholder "Let's Encrypt Email (REQUIRED)" --value "$(read_secret LetsEncryptEmail)" || echo "__ABORT__")
     [[ "$EMAIL" == "__ABORT__" ]] && return 1
@@ -108,6 +112,7 @@ wizard_core() {
     local CA_SERVER="https://acme-v02.api.letsencrypt.org/directory"
     if [[ "$LE_ENV" == *"Staging"* ]]; then
         CA_SERVER="https://acme-staging-v02.api.letsencrypt.org/directory"
+        gum style --foreground 220 "Note: Staging certificates trigger an 'Untrusted' browser warning. This is perfectly normal for testing."
     fi
 
     # Explicit Auth Selection & Secret Retention Logic
@@ -222,7 +227,7 @@ ${CF_ENV_BLOCK}
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - $CONFIG_DIR:/etc/traefik
     tmpfs:
-      - /tmp
+      - /tmp:size=100m,mode=1777
     command:
       - "--global.checknewversion=false"
       - "--ping=true"
@@ -234,6 +239,8 @@ ${CF_ENV_BLOCK}
       - "--providers.docker.network=public_ingress"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge=true"
       - "--certificatesresolvers.cloudflare.acme.dnschallenge.provider=cloudflare"
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge.delaybeforecheck=10"
+      - "--certificatesresolvers.cloudflare.acme.dnschallenge.resolvers=1.1.1.1:53,1.0.0.1:53"
       - "--certificatesresolvers.cloudflare.acme.email=$EMAIL"
       - "--certificatesresolvers.cloudflare.acme.storage=/etc/traefik/acme.json"
       - "--certificatesresolvers.cloudflare.acme.caserver=$CA_SERVER"
@@ -266,7 +273,12 @@ EOF
 
     if gum confirm "Deploy/Update Ingress Cluster?"; then
         cd "$STACKS_DIR"
-        sudo docker compose pull traefik
+        
+        if ! sudo docker compose pull traefik; then
+            gum style --foreground 196 "Error: Failed to pull Traefik image. Check your internet connection."
+            read -r -p "Press Enter to return to menu..."
+            return 1
+        fi
         
         # Graceful error handling for Port Bind conflicts
         if sudo docker compose up -d; then
@@ -292,16 +304,22 @@ wizard_labeler() {
     # Strip trailing slashes safely
     TARGET_PATH="${TARGET_PATH%/}"
 
-    if [ ! -f "$TARGET_PATH/docker-compose.yml" ]; then
-        gum style --foreground 196 "Error: No docker-compose.yml found at $TARGET_PATH"
+    # Universal Compose Discovery
+    local COMPOSE_FILE=""
+    for f in "docker-compose.yml" "docker-compose.yaml" "compose.yml" "compose.yaml"; do
+        if [ -f "$TARGET_PATH/$f" ]; then COMPOSE_FILE="$TARGET_PATH/$f"; break; fi
+    done
+
+    if [ -z "$COMPOSE_FILE" ]; then
+        gum style --foreground 196 "Error: No valid compose file found in $TARGET_PATH"
         read -r -p "Press Enter..."
         return 1
     fi
 
     # Native Context-Aware Docker Compose Discovery
-    local SERVICES; SERVICES=$(sudo docker compose --project-directory "$TARGET_PATH" -f "$TARGET_PATH/docker-compose.yml" config --services 2>/dev/null | xargs || true)
+    local SERVICES; SERVICES=$(sudo docker compose --project-directory "$TARGET_PATH" -f "$COMPOSE_FILE" config --services 2>/dev/null | xargs || true)
     if [[ -z "$SERVICES" ]]; then
-        gum style --foreground 196 "No services found or invalid compose file structure in $TARGET_PATH."
+        gum style --foreground 196 "No services found or invalid compose file structure in $COMPOSE_FILE."
         read -r -p "Press Enter..."
         return 1
     fi
@@ -449,7 +467,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.24)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.25)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit" || echo "__ABORT__")
     case "$OP" in
         1*) wizard_core ;;
