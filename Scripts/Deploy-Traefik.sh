@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.25)
+#  TRAEFIK INGRESS MONOLITH - PARANOID EDITION (v4.26)
 # ==============================================================================
 #  ARCHITECTURE: Hardened Ingress | DNS-01 (Cloudflare) | Docker Secrets
 #  DIR STRUCTURE: /opt/Docker/Stacks/Traefik (Surgical Isolation)
@@ -11,11 +11,11 @@
 #    - Ingress Inspector v3: Advanced JQ Router Name Extraction
 #    - Diagnostic Suite: Real-time Health & Log Monitoring
 #  ROBUSTNESS: 
+#    - Dashboard Zero-Trust Security (Ephemeral BasicAuth generation).
+#    - Strict ACME File Ownership (Prevents CAP_DAC_OVERRIDE failures).
+#    - RFC 1035 DNS Sanitization (Strips invalid characters from subdomains).
 #    - DNS-01 Race Condition Fix (Authoritative Resolvers + Delay).
 #    - tmpfs Memory Bounding (100MB limit prevents RAM DoS).
-#    - Universal Compose Discovery (Supports yaml/yml variants).
-#    - Domain Whitespace Sanitization.
-#    - DAC_OVERRIDE Secret Hardening (Ensures UID 0 can read secrets).
 #  STATUS: Authoritative. Hardened. Fully Audited.
 # ==============================================================================
 
@@ -174,6 +174,33 @@ wizard_core() {
     write_secret "RootDomain" "$DOMAIN"
     write_secret "LetsEncryptEmail" "$EMAIL"
 
+    # Dashboard Zero-Trust Authentication Configuration
+    echo -e "${C}>> Traefik Dashboard Security:${NC}"
+    local ENABLE_AUTH; ENABLE_AUTH=$(gum choose "Enable Basic Auth (Recommended)" "No Auth (I use Authelia/Authentik or Local Only)" || echo "__ABORT__")
+    [[ "$ENABLE_AUTH" == "__ABORT__" || -z "$ENABLE_AUTH" ]] && return 1
+
+    local AUTH_LABEL_BLOCK=""
+    if [[ "$ENABLE_AUTH" == *"Enable Basic Auth"* ]]; then
+        local DASH_USER; DASH_USER=$(gum input --placeholder "Dashboard Username (e.g. admin)" || echo "__ABORT__")
+        [[ "$DASH_USER" == "__ABORT__" || -z "$DASH_USER" ]] && return 1
+        
+        local DASH_PASS; DASH_PASS=$(gum input --password --placeholder "Dashboard Password" || echo "__ABORT__")
+        [[ "$DASH_PASS" == "__ABORT__" || -z "$DASH_PASS" ]] && return 1
+        
+        echo -e "${Y}>> Generating secure bcrypt hash (Requires internet)...${NC}"
+        # Securely pass variables to ephemeral container to prevent Bash interpolation bugs
+        local DASH_HASH; DASH_HASH=$(sudo docker run --rm -e U="$DASH_USER" -e P="$DASH_PASS" alpine:latest sh -c 'apk add --no-cache apache2-utils >/dev/null 2>&1 && htpasswd -nb "$U" "$P"' | sed 's/\$/\$\$/g' || true)
+        
+        if [[ -z "$DASH_HASH" ]]; then
+            gum style --foreground 196 "Failed to generate password hash. Ensure Docker can pull alpine:latest."
+            read -r -p "Press Enter to return to menu..."
+            return 1
+        fi
+        
+        AUTH_LABEL_BLOCK="      - \"traefik.http.middlewares.dashboard-auth.basicauth.users=$DASH_HASH\"
+      - \"traefik.http.routers.traefik.middlewares=dashboard-auth\""
+    fi
+
     # Guard: Docker Volume Directory Bug (Heals corrupted environment)
     if [ -d "$ACME_FILE" ]; then
         echo -e "${Y}>> Fixing Docker Bug: acme.json was created as a directory. Purging...${NC}"
@@ -185,12 +212,16 @@ wizard_core() {
         echo -e "${Y}>> Existing ACME certificates detected.${NC}"
         if gum confirm "Wipe existing certificates? (Only required if switching between Staging and Production)"; then
             sudo rm -f "$ACME_FILE"
-            sudo touch "$ACME_FILE" && sudo chmod 600 "$ACME_FILE"
+            sudo touch "$ACME_FILE"
             echo -e "${C}>> ACME cleared.${NC}"
         fi
     else
-        sudo touch "$ACME_FILE" && sudo chmod 600 "$ACME_FILE"
+        sudo touch "$ACME_FILE"
     fi
+
+    # CRITICAL SECURITY: Explicitly set to root:root so UID 0 can read it when CAP_DAC_OVERRIDE is dropped.
+    sudo chown root:root "$ACME_FILE"
+    sudo chmod 600 "$ACME_FILE"
 
     # Automated Backup
     local COMPOSE_PATH="$STACKS_DIR/docker-compose.yml"
@@ -256,6 +287,7 @@ ${CF_ENV_BLOCK}
       - "traefik.http.routers.traefik.service=api@internal"
       - "traefik.http.routers.traefik.entrypoints=websecure"
       - "traefik.http.routers.traefik.tls.certresolver=cloudflare"
+${AUTH_LABEL_BLOCK}
       - "traefik.http.services.traefik.loadbalancer.server.port=8080"
     ports:
       - "80:80"
@@ -327,9 +359,11 @@ wizard_labeler() {
     local SELECTED; SELECTED=$(gum choose $SERVICES || echo "__ABORT__")
     [[ "$SELECTED" == "__ABORT__" || -z "$SELECTED" ]] && return 1
     
-    # Sanitize router name: Traefik strictly forbids underscores in router names
+    # Sanitize router name: Traefik strictly forbids spaces/underscores/special chars in router names
     local ROUTER_NAME="${SELECTED,,}"
+    ROUTER_NAME="${ROUTER_NAME// /-}"
     ROUTER_NAME="${ROUTER_NAME//_/-}"
+    ROUTER_NAME=$(echo "$ROUTER_NAME" | tr -cd 'a-z0-9-')
 
     local DOMAIN; DOMAIN=$(read_secret RootDomain)
     [[ -z "$DOMAIN" ]] && DOMAIN="example.com"
@@ -338,8 +372,10 @@ wizard_labeler() {
     local SUB; SUB=$(gum input --placeholder "Subdomain (Leave blank for root domain)" --value "${ROUTER_NAME}" || echo "__ABORT__")
     [[ "$SUB" == "__ABORT__" ]] && return 1
     
-    # RFC 1035 Subdomain Sanitization (No underscores allowed in DNS hosts)
+    # RFC 1035 Subdomain Sanitization (No spaces/underscores/special chars allowed in DNS hosts)
+    SUB="${SUB// /-}"
     SUB="${SUB//_/-}"
+    SUB=$(echo "$SUB" | tr -cd 'a-zA-Z0-9-')
     
     local PORT; PORT=$(gum input --placeholder "Internal Container Port" --value "80" || echo "__ABORT__")
     [[ "$PORT" == "__ABORT__" || -z "$PORT" ]] && return 1
@@ -467,7 +503,7 @@ inspect_ingress() {
 check_environment
 while true; do
     clear
-    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.25)"
+    gum style --foreground 212 --border double "PARANOID INGRESS CONTROLLER (v4.26)"
     OP=$(gum choose "1) Traefik Core: Deploy/Update" "2) Service Tool: Attach Service" "3) Diagnostics: Health & Logs" "4) Ingress Inspector: Fix 404s" "5) Secrets: View Vault" "6) Exit" || echo "__ABORT__")
     case "$OP" in
         1*) wizard_core ;;
